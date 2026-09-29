@@ -11,6 +11,9 @@ type (
 	ConversationRepository = memrepo.ConversationRepository
 	MemoryRepository       = memrepo.MemoryRepository
 	RunRepository          = memrepo.RunRepository
+	RestaurantStore        = memrepo.RestaurantStore
+	ReviewStore            = memrepo.ReviewStore
+	PipelineStore          = memrepo.PipelineStore
 )
 
 // NewRestaurantRepository returns an empty in-memory restaurant repository.
@@ -36,4 +39,19 @@ func NewMemoryRepository() *memrepo.MemoryRepository {
 // NewRunRepository returns an empty in-memory run repository.
 func NewRunRepository() *memrepo.RunRepository {
 	return memrepo.NewRunRepository()
+}
+
+// NewRestaurantStore returns an empty in-memory write-side restaurant store.
+func NewRestaurantStore() *memrepo.RestaurantStore {
+	return memrepo.NewRestaurantStore()
+}
+
+// NewReviewStore returns an empty in-memory review store.
+func NewReviewStore() *memrepo.ReviewStore {
+	return memrepo.NewReviewStore()
+}
+
+// NewPipelineStore returns an empty in-memory pipeline audit store.
+func NewPipelineStore() *memrepo.PipelineStore {
+	return memrepo.NewPipelineStore()
 }

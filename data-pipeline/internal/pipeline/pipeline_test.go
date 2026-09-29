@@ -9,14 +9,13 @@ import (
 	sharedcfg "github.com/zed/platepilot/shared/config"
 )
 
-func TestStagesReportTheirMilestone(t *testing.T) {
+func TestRemainingStagesReportTheirMilestone(t *testing.T) {
 	cfg := config.Config{}
 	cases := []struct {
 		name      string
 		milestone string
 		run       func() error
 	}{
-		{"import", "M1-04", func() error { return Import(context.Background(), cfg) }},
 		{"build-documents", "M2-03", func() error { return BuildDocuments(context.Background(), cfg) }},
 		{"embed", "M2-06", func() error { return Embed(context.Background(), cfg) }},
 	}
@@ -33,7 +32,7 @@ func TestStagesReportTheirMilestone(t *testing.T) {
 	}
 }
 
-func TestReportSummarisesConfiguration(t *testing.T) {
+func TestConfigSummarySummarisesConfiguration(t *testing.T) {
 	cfg := config.Config{
 		Pipeline: config.PipelineConfig{DataDir: "/data", BatchSize: 10, Workers: 2},
 		Mongo:    sharedcfg.MongoConfig{Database: "platepilot"},
@@ -43,10 +42,25 @@ func TestReportSummarisesConfiguration(t *testing.T) {
 			Dimensions: 1024,
 		},
 	}
-	report := Report(cfg)
+	summary := ConfigSummary(cfg)
 	for _, want := range []string{"/data", "batch=10", "workers=2", "qwen3-embedding:0.6b", "1024", "platepilot"} {
-		if !strings.Contains(report, want) {
-			t.Errorf("report %q should contain %q", report, want)
+		if !strings.Contains(summary, want) {
+			t.Errorf("summary %q should contain %q", summary, want)
 		}
+	}
+}
+
+func TestDefaultImportOptions(t *testing.T) {
+	cfg := config.Config{
+		Pipeline: config.PipelineConfig{DataDir: "/data", BatchSize: 250, Workers: 4},
+	}
+	opts := DefaultImportOptions(cfg)
+	if opts.Stage != "all" || opts.DataDir != "/data" || opts.BatchSize != 250 {
+		t.Fatalf("defaults = %+v", opts)
+	}
+	// A zero batch size must fall back to a usable default rather than looping.
+	opts = DefaultImportOptions(config.Config{})
+	if opts.BatchSize <= 0 {
+		t.Fatalf("batch size = %d", opts.BatchSize)
 	}
 }

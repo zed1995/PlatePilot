@@ -1,0 +1,222 @@
+package curate
+
+import (
+	"errors"
+	"strings"
+	"time"
+
+	"github.com/zed/platepilot/shared/domain/errs"
+	"github.com/zed/platepilot/shared/domain/restaurant"
+	"github.com/zed/platepilot/shared/domain/review"
+
+	"github.com/zed/platepilot/data-pipeline/internal/pipeline/raw"
+)
+
+// CurationVersion identifies the normalisation rules. It is recorded on every
+// batch report so data can be traced back to the rules that produced it.
+const CurationVersion = "1"
+
+// SourceReviewCountCap is the value at which Google Local's num_of_reviews is
+// treated as potentially capped.
+const SourceReviewCountCap = 9998
+
+// ErrFiltered marks a record that is valid but out of scope (for example a
+// place that is not a restaurant). It is counted separately from a rejection.
+var ErrFiltered = errors.New("record filtered out of the knowledge base")
+
+// MetaResult is one curated restaurant plus its auxiliary documents.
+type MetaResult struct {
+	Restaurant restaurant.Restaurant
+	Documents  []restaurant.Document
+}
+
+// ReviewOptions controls review normalisation.
+type ReviewOptions struct {
+	// MinTextChars is the shortest scrubbed text considered usable evidence.
+	// Shorter text is dropped (blanked) but the review is still kept so the
+	// rating sample stays complete.
+	MinTextChars int
+	// ObservedAt is the data snapshot time stamped onto the curated review.
+	ObservedAt time.Time
+}
+
+// NormalizeMeta converts a raw Meta record into a curated restaurant.
+//
+// It returns ErrFiltered for places outside the food scope and an *errs.Error
+// for records that are structurally invalid.
+func NormalizeMeta(m raw.Meta, id string, observedAt time.Time) (MetaResult, error) {
+	if strings.TrimSpace(m.GmapID) == "" {
+		return MetaResult{}, errs.New(errs.CodeInvalidArgument, "meta: gmap_id is required")
+	}
+	if !IsFoodPlace(m.Category) {
+		return MetaResult{}, ErrFiltered
+	}
+	if !ValidCoordinates(m.Latitude, m.Longitude) {
+		return MetaResult{}, errs.Newf(errs.CodeInvalidArgument, "meta %s: invalid coordinates", m.GmapID)
+	}
+	name := strings.TrimSpace(m.Name)
+	if name == "" {
+		return MetaResult{}, errs.Newf(errs.CodeInvalidArgument, "meta %s: name is required", m.GmapID)
+	}
+
+	r := restaurant.Restaurant{
+		ID:             id,
+		Source:         restaurant.SourceGoogleLocal2021,
+		SourceRecordID: m.GmapID,
+		Name:           name,
+		Address:        derefString(m.Address),
+		Categories:     m.Category,
+		CuisineTags:    CuisineTags(m.Category),
+		Description:    derefString(m.Description),
+		Price:          restaurant.Price{Raw: derefString(m.Price), Level: PriceLevel(m.Price)},
+		Rating:         restaurant.Rating{SourceAvg: m.AvgRating},
+		Attributes:     NormalizeAttributes(m.MISC),
+		SnapshotStatus: SnapshotStatus(m.State),
+		ObservedAt:     observedAt,
+		SourceURL:      m.URL,
+		ReviewStats: restaurant.ReviewStats{
+			StatsUpdatedAt: observedAt,
+		},
+	}
+	if m.Latitude != nil && m.Longitude != nil {
+		r.Location = &restaurant.GeoPoint{Longitude: *m.Longitude, Latitude: *m.Latitude}
+		r.BoroughGuess = BoroughGuess(*m.Latitude, *m.Longitude)
+	}
+	if m.NumOfReviews != nil {
+		r.ReviewStats.SourceReviewCount = *m.NumOfReviews
+		r.ReviewStats.SourceReviewCountCapped = *m.NumOfReviews >= SourceReviewCountCap
+	}
+
+	return MetaResult{Restaurant: r, Documents: metaDocuments(m, id, observedAt)}, nil
+}
+
+// NormalizeReview converts a raw review into a curated review for a restaurant.
+func NormalizeReview(r raw.Review, restaurantID string, opts ReviewOptions) (review.Review, error) {
+	if strings.TrimSpace(r.GmapID) == "" {
+		return review.Review{}, errs.New(errs.CodeInvalidArgument, "review: gmap_id is required")
+	}
+	if strings.TrimSpace(restaurantID) == "" {
+		return review.Review{}, errs.New(errs.CodeInvalidArgument, "review: restaurant_id is required")
+	}
+	if r.Rating < 1 || r.Rating > 5 {
+		return review.Review{}, errs.Newf(errs.CodeInvalidArgument, "review %s: rating %d out of range", r.GmapID, r.Rating)
+	}
+	if r.Time <= 0 {
+		return review.Review{}, errs.Newf(errs.CodeInvalidArgument, "review %s: time is required", r.GmapID)
+	}
+	at := time.UnixMilli(r.Time).UTC()
+	if at.Year() < 2000 || at.Year() > 2022 {
+		return review.Review{}, errs.Newf(errs.CodeInvalidArgument, "review %s: reviewed_at %s out of range", r.GmapID, at.Format(time.RFC3339))
+	}
+
+	text := ""
+	if r.Text != nil {
+		text = ScrubPII(strings.TrimSpace(*r.Text))
+	}
+	minChars := opts.MinTextChars
+	if minChars <= 0 {
+		minChars = 1
+	}
+	if len([]rune(text)) < minChars {
+		// Drop unusable text but keep the rating sample; text_review_count then
+		// reflects usable evidence rather than every stored row.
+		text = ""
+	}
+	textHash := TextHash(text)
+
+	return review.Review{
+		ID:               ReviewID(r.GmapID, r.UserID, r.Time, textHash),
+		RestaurantID:     restaurantID,
+		Rating:           r.Rating,
+		ReviewedAt:       at,
+		Text:             text,
+		TextHash:         textHash,
+		SourceObservedAt: opts.ObservedAt,
+	}, nil
+}
+
+// SnapshotStatus maps the 2021 source state to a snapshot enum.
+func SnapshotStatus(state *string) restaurant.SnapshotStatus {
+	if state == nil {
+		return restaurant.StatusUnknown
+	}
+	switch strings.ToLower(strings.TrimSpace(*state)) {
+	case "open":
+		return restaurant.StatusOpen
+	case "closed":
+		return restaurant.StatusClosed
+	case "permanently closed":
+		return restaurant.StatusPermanentlyClosed
+	default:
+		return restaurant.StatusUnknown
+	}
+}
+
+func metaDocuments(m raw.Meta, id string, observedAt time.Time) []restaurant.Document {
+	var docs []restaurant.Document
+	base := func(docType restaurant.DocumentType) restaurant.Document {
+		return restaurant.Document{
+			RestaurantID:   id,
+			DocumentType:   docType,
+			ObservedAt:     observedAt,
+			SourceRecordID: m.GmapID,
+		}
+	}
+	if len(m.Hours) > 0 {
+		doc := base(restaurant.DocumentHours)
+		doc.Raw = m.Hours
+		doc.Normalized = ParseHours(m.Hours)
+		docs = append(docs, doc)
+	}
+	if len(m.MISC) > 0 {
+		doc := base(restaurant.DocumentAttributesRaw)
+		doc.Raw = map[string][]string(m.MISC)
+		docs = append(docs, doc)
+	}
+	if description := derefString(m.Description); description != "" {
+		doc := base(restaurant.DocumentDescription)
+		doc.Raw = description
+		docs = append(docs, doc)
+	}
+	if len(m.RelativeResults) > 0 {
+		doc := base(restaurant.DocumentRelativeResults)
+		doc.Raw = m.RelativeResults
+		docs = append(docs, doc)
+	}
+	return docs
+}
+
+func derefString(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return strings.TrimSpace(*value)
+}
+
+// MissingMetaFields lists the optional fields absent from a raw Meta record so
+// a batch report can quantify data gaps without storing the record.
+func MissingMetaFields(m raw.Meta) []string {
+	var missing []string
+	if m.Address == nil || strings.TrimSpace(*m.Address) == "" {
+		missing = append(missing, "address")
+	}
+	if m.Description == nil || strings.TrimSpace(*m.Description) == "" {
+		missing = append(missing, "description")
+	}
+	if m.Price == nil || strings.TrimSpace(*m.Price) == "" {
+		missing = append(missing, "price")
+	}
+	if len(m.Hours) == 0 {
+		missing = append(missing, "hours")
+	}
+	if len(m.MISC) == 0 {
+		missing = append(missing, "misc")
+	}
+	if m.AvgRating == nil {
+		missing = append(missing, "avg_rating")
+	}
+	if m.NumOfReviews == nil {
+		missing = append(missing, "num_of_reviews")
+	}
+	return missing
+}

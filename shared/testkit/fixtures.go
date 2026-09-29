@@ -6,6 +6,8 @@ import (
 	"github.com/zed/platepilot/shared/domain/conversation"
 	"github.com/zed/platepilot/shared/domain/evidence"
 	"github.com/zed/platepilot/shared/domain/memory"
+	"github.com/zed/platepilot/shared/domain/restaurant"
+	"github.com/zed/platepilot/shared/domain/review"
 	"github.com/zed/platepilot/shared/domain/run"
 	"github.com/zed/platepilot/shared/domain/search"
 )
@@ -92,5 +94,47 @@ func SampleMemory(userID, content string) memory.Memory {
 		Confidence: 1,
 		CreatedAt:  FixedSnapshotAt,
 		UpdatedAt:  FixedSnapshotAt,
+	}
+}
+
+// SampleCuratedRestaurant returns a deterministic curated restaurant fixture.
+func SampleCuratedRestaurant(id, sourceRecordID, name string) restaurant.Restaurant {
+	price := 2
+	avg := 4.5
+	return restaurant.Restaurant{
+		ID:             id,
+		Source:         restaurant.SourceGoogleLocal2021,
+		SourceRecordID: sourceRecordID,
+		Name:           name,
+		Address:        "7 Carmine St, New York, NY",
+		BoroughGuess:   "manhattan",
+		Location:       &restaurant.GeoPoint{Longitude: -74.002, Latitude: 40.730},
+		Categories:     []string{"Pizza restaurant", "Restaurant"},
+		CuisineTags:    []string{"pizza", "italian"},
+		Description:    "Neighbourhood pizza slice shop",
+		Price:          restaurant.Price{Raw: "$$", Level: &price},
+		Rating:         restaurant.Rating{SourceAvg: &avg},
+		Attributes: restaurant.Attributes{
+			TriStates:      map[string]string{"outdoor_seating": restaurant.TriStateTrue},
+			AtmosphereTags: []string{"casual"},
+		},
+		SnapshotStatus: restaurant.StatusOpen,
+		ObservedAt:     FixedSnapshotAt,
+		CreatedAt:      FixedSnapshotAt,
+		UpdatedAt:      FixedSnapshotAt,
+	}
+}
+
+// SampleReview returns a deterministic curated review fixture.
+func SampleReview(id, restaurantID, text string) review.Review {
+	return review.Review{
+		ID:               id,
+		RestaurantID:     restaurantID,
+		Rating:           5,
+		ReviewedAt:       FixedSnapshotAt,
+		Text:             text,
+		Language:         "en",
+		TextHash:         "sha256:" + id,
+		SourceObservedAt: FixedSnapshotAt,
 	}
 }

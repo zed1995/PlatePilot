@@ -6,7 +6,7 @@ VERSION       ?= dev
 LDFLAGS       := -X main.version=$(VERSION)
 
 .PHONY: help build build-chat build-pipeline run-chat run-pipeline \
-        test test-race vet cover lint clean
+        migrate import-sample test test-race vet cover lint clean
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
@@ -24,6 +24,16 @@ run-chat: ## Run the chat service (HTTP, default :8080)
 
 run-pipeline: ## Run the data pipeline (prints the resolved config)
 	go run ./$(DATA_PIPELINE) check-config
+
+migrate: ## Ensure Atlas collections and indexes (requires MONGO_URI)
+	go run ./$(DATA_PIPELINE) migrate
+
+import-sample: ## Import a bounded sample, then rebuild stats and scores
+	go run ./$(DATA_PIPELINE) import --stage=meta   --limit=20000
+	go run ./$(DATA_PIPELINE) import --stage=review --limit=200000
+	go run ./$(DATA_PIPELINE) import --stage=stats
+	go run ./$(DATA_PIPELINE) import --stage=score
+	go run ./$(DATA_PIPELINE) report --last=5
 
 test: ## Run unit tests for both services
 	go test $(PKG)

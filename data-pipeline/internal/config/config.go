@@ -18,6 +18,12 @@ const DotEnvFile = ".env"
 // DefaultDataDir is where the raw Google Local files are expected.
 const DefaultDataDir = "data/raw/google_local"
 
+// Defaults for the curation knobs.
+const (
+	DefaultMinReviewChars = 20
+	DefaultDemoTarget     = 3000
+)
+
 // Config is the fully resolved data-pipeline configuration.
 type Config struct {
 	App       sharedcfg.AppConfig
@@ -30,9 +36,16 @@ type Config struct {
 
 // PipelineConfig holds batch-processing settings.
 type PipelineConfig struct {
-	DataDir   string
+	DataDir string
+	// BatchSize is the number of documents written per bulk upsert.
 	BatchSize int
-	Workers   int
+	// Workers reserved for parallel stages (unused by the streaming stages).
+	Workers int
+	// MinReviewChars is the shortest review text kept as usable evidence.
+	MinReviewChars int
+	// DemoTarget is the target number of demo restaurants (clamped to
+	// [2000, 5000] when selecting).
+	DemoTarget int
 }
 
 // Load reads configuration from the environment, layering .env underneath when
@@ -49,9 +62,11 @@ func Load() (Config, error) {
 		Embedding: l.Embedding(),
 		Timeout:   l.Timeout(),
 		Pipeline: PipelineConfig{
-			DataDir:   l.String("PIPELINE_DATA_DIR", DefaultDataDir),
-			BatchSize: l.Int("PIPELINE_BATCH_SIZE", 1000),
-			Workers:   l.Int("PIPELINE_WORKERS", 4),
+			DataDir:        l.String("PIPELINE_DATA_DIR", DefaultDataDir),
+			BatchSize:      l.Int("PIPELINE_BATCH_SIZE", 1000),
+			Workers:        l.Int("PIPELINE_WORKERS", 4),
+			MinReviewChars: l.Int("PIPELINE_MIN_REVIEW_CHARS", DefaultMinReviewChars),
+			DemoTarget:     l.Int("PIPELINE_DEMO_TARGET", DefaultDemoTarget),
 		},
 	}
 	if err := l.Err(); err != nil {
@@ -82,6 +97,12 @@ func (c PipelineConfig) validate() []string {
 	if c.Workers <= 0 {
 		problems = append(problems, fmt.Sprintf("PIPELINE_WORKERS: must be > 0 (got %d)", c.Workers))
 	}
+	if c.MinReviewChars < 0 {
+		problems = append(problems, fmt.Sprintf("PIPELINE_MIN_REVIEW_CHARS: must be >= 0 (got %d)", c.MinReviewChars))
+	}
+	if c.DemoTarget < 0 {
+		problems = append(problems, fmt.Sprintf("PIPELINE_DEMO_TARGET: must be >= 0 (got %d)", c.DemoTarget))
+	}
 	return problems
 }
 
@@ -94,17 +115,19 @@ func (c Config) Redacted() Config {
 // Summary returns a log-friendly, secret-free view of the configuration.
 func (c Config) Summary() map[string]any {
 	return map[string]any{
-		"app_env":              c.App.Env,
-		"log_level":            c.Log.Level,
-		"mongo_enabled":        c.Mongo.Enabled(),
-		"mongo_database":       c.Mongo.Database,
-		"mongo_timeout":        c.Mongo.Timeout.String(),
-		"embedding_provider":   c.Embedding.Provider,
-		"embedding_model":      c.Embedding.Model,
-		"embedding_dimensions": c.Embedding.Dimensions,
-		"request_timeout":      c.Timeout.Request.String(),
-		"pipeline_data_dir":    c.Pipeline.DataDir,
-		"pipeline_batch_size":  c.Pipeline.BatchSize,
-		"pipeline_workers":     c.Pipeline.Workers,
+		"app_env":                   c.App.Env,
+		"log_level":                 c.Log.Level,
+		"mongo_enabled":             c.Mongo.Enabled(),
+		"mongo_database":            c.Mongo.Database,
+		"mongo_timeout":             c.Mongo.Timeout.String(),
+		"embedding_provider":        c.Embedding.Provider,
+		"embedding_model":           c.Embedding.Model,
+		"embedding_dimensions":      c.Embedding.Dimensions,
+		"request_timeout":           c.Timeout.Request.String(),
+		"pipeline_data_dir":         c.Pipeline.DataDir,
+		"pipeline_batch_size":       c.Pipeline.BatchSize,
+		"pipeline_workers":          c.Pipeline.Workers,
+		"pipeline_min_review_chars": c.Pipeline.MinReviewChars,
+		"pipeline_demo_target":      c.Pipeline.DemoTarget,
 	}
 }

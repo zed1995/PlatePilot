@@ -1,8 +1,8 @@
 // Package pipeline owns the data production stages: raw ingestion, curation,
-// knowledge document building, and embedding.
+// scoring, knowledge document building, and embedding.
 //
-// M0 only provides the seam. Each stage is implemented in the milestone noted on
-// its function so that main can stay a thin command dispatcher.
+// The write stages (import, migrate, stats, score) are implemented; document
+// building and embedding land in M2.
 package pipeline
 
 import (
@@ -11,14 +11,6 @@ import (
 
 	"github.com/zed/platepilot/data-pipeline/internal/config"
 )
-
-// Import reads the raw Google Local Meta and Review JSONL files and writes
-// curated restaurants and reviews to Atlas.
-//
-// TODO(M1-04, M1-05, M1-06, M1-07): streaming reader, cleaning, dedup, upserts.
-func Import(_ context.Context, _ config.Config) error {
-	return notImplemented("import", "M1-04/M1-05")
-}
 
 // BuildDocuments builds restaurant-level and evidence-level knowledge documents.
 //
@@ -35,9 +27,9 @@ func Embed(_ context.Context, _ config.Config) error {
 	return notImplemented("embed", "M2-06")
 }
 
-// Report summarises the pipeline configuration without touching any data. It is
-// safe to run before the data pipeline is implemented.
-func Report(cfg config.Config) string {
+// ConfigSummary summarises the pipeline configuration without touching any
+// data. It is safe to run before Atlas is reachable.
+func ConfigSummary(cfg config.Config) string {
 	return fmt.Sprintf(
 		"data dir: %s (batch=%d, workers=%d)\nmongo: enabled=%t database=%s\nembedding: provider=%q model=%q dimensions=%d",
 		cfg.Pipeline.DataDir,
