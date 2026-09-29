@@ -40,8 +40,6 @@ type RestaurantStore interface {
 	SelectForDemo(ctx context.Context, limit int) ([]restaurant.Restaurant, error)
 	// CountActiveForDemo reports how many restaurants are active for the demo.
 	CountActiveForDemo(ctx context.Context) (int64, error)
-	// UpsertDocuments writes auxiliary restaurant documents (hours, ...).
-	UpsertDocuments(ctx context.Context, docs []restaurant.Document) error
 }
 
 // ReviewStore is the write-side review port used by the data pipeline.

@@ -258,37 +258,6 @@ func (s *RestaurantStore) CountActiveForDemo(ctx context.Context) (int64, error)
 	return n, nil
 }
 
-// UpsertDocuments writes auxiliary restaurant documents (hours, ...).
-func (s *RestaurantStore) UpsertDocuments(ctx context.Context, docs []restaurant.Document) error {
-	if len(docs) == 0 {
-		return nil
-	}
-	models := make([]mongo.WriteModel, 0, len(docs))
-	for _, d := range docs {
-		if strings.TrimSpace(d.RestaurantID) == "" || strings.TrimSpace(string(d.DocumentType)) == "" {
-			return errs.New(errs.CodeInvalidArgument, "restaurant document requires restaurant_id and document_type")
-		}
-		payload := restaurantDocumentDoc{
-			RestaurantID:   d.RestaurantID,
-			DocumentType:   string(d.DocumentType),
-			Raw:            d.Raw,
-			Normalized:     d.Normalized,
-			ObservedAt:     d.ObservedAt,
-			SourceRecordID: d.SourceRecordID,
-		}
-		models = append(models, mongo.NewUpdateOneModel().
-			SetFilter(bson.M{"restaurant_id": d.RestaurantID, "document_type": string(d.DocumentType)}).
-			SetUpdate(bson.M{"$set": payload}).
-			SetUpsert(true))
-	}
-	ctx, cancel := s.client.withWriteTimeout(ctx)
-	defer cancel()
-	if _, err := s.client.collection(CollectionRestaurantDocuments).BulkWrite(ctx, models, options.BulkWrite().SetOrdered(false)); err != nil {
-		return operationError("mongo: upsert restaurant documents", err)
-	}
-	return nil
-}
-
 // restaurantUpsertModel builds the upsert that keeps _id and created_at stable
 // across re-imports, and leaves the stats/score fields to their owning jobs.
 func restaurantUpsertModel(r restaurant.Restaurant) (mongo.WriteModel, error) {
@@ -317,6 +286,9 @@ func restaurantUpsertModel(r restaurant.Restaurant) (mongo.WriteModel, error) {
 		// job writes.
 		"rating.source_avg": doc.Rating.SourceAvg,
 		"attributes":        doc.Attributes,
+		"attributes_raw":    doc.AttributesRaw,
+		"hours":             doc.Hours,
+		"relative_results":  doc.RelativeResults,
 		"snapshot_status":   doc.SnapshotStatus,
 		"observed_at":       doc.ObservedAt,
 		"source_url":        doc.SourceURL,

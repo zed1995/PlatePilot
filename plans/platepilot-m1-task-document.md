@@ -22,6 +22,22 @@
 M1 写入链路已实现，代码位于 `data-pipeline` 与 `shared/adapter/repository/mongo`。
 除特别说明外，全部任务已完成。
 
+**决策：`restaurant_documents` 合并进 `restaurants`（2026-09-29）**
+
+原设计把 `hours` / `attributes_raw` / `description` / `relative_results`
+拆到独立的 `restaurant_documents`。实际跑下来这条路有三个问题：文档数是主表的
+约 3 倍（23,908 家餐厅对应 73,105 份附属文档）、这些字段**只写不读**、而且读取时
+总要和餐厅一起 join。按 MongoDB「读在一起的写在一起」的原则改为内嵌：
+
+- `restaurants.hours`：`[]HoursEntry`，每项保留原始文本（如 `"11AM–10PM"`）便于展示
+- `restaurants.attributes_raw`：原始 MISC 对象，保留以便重跑清洗规则而无需重读 61MB 源文件
+- `restaurants.relative_results`：相似 POI id
+- `description` 本来就已是主字段，不再重复
+
+于是内容 collection 从 4 个减为 3 个（`restaurants` / `reviews` / `review_summaries`），
+`migrate` 共创建 5 个 collection（含 2 个审计表）。单文档体积仍在数 KB 量级，
+远低于 16MB 上限。
+
 Mongo adapter 有三层验证，默认无需 Atlas：
 
 1. **内存实现**：`shared/adapter/repository/memory` 提供端口级 mock，`go test ./...`
@@ -135,7 +151,7 @@ M1 直接建立在 M0 的双服务骨架上，启动 M1 前应确认以下 M0 �
 M1 只解决"数据底座"，不承载检索与 Agent 逻辑；它要交付一条**可反复运行的写入链路**：
 
 1. Go 服务能连接 MongoDB Atlas，握手、ping、连接池与超时可控。
-2. `restaurants`、`restaurant_documents`、`reviews`、`review_summaries` 四个内容 collection 有显式、可重复执行的创建与索引脚本。
+2. `restaurants`、`reviews`、`review_summaries` 三个内容 collection 有显式、可重复执行的创建与索引脚本（附属资料内嵌进 `restaurants`，见 §0.2 决策）。
 3. 能以流式方式导入 Meta 与 Review 原始 JSONL，产出批次统计。
 4. 清洗与归一化规则确定、可测试、可审计（category / price / hours / state / MISC）。
 5. 去重与幂等规则确定：重复导入同一批次不产生重复数据。
@@ -179,7 +195,7 @@ shared/port (RestaurantRepository, ReviewRepository, PipelineRepository ...)
 shared/adapter/repository/mongo (BSON 映射 + 索引 + upsert)  ← Mongo 类型只在此层
      │
      ▼
-MongoDB Atlas: restaurants / restaurant_documents / reviews / review_summaries / ingestion_*
+MongoDB Atlas: restaurants / reviews / review_summaries / ingestion_*
 ```
 
 依赖方向固定：`pipeline(curate)` → `shared/domain` → `shared/port` ← `shared/adapter/repository/mongo`。  
@@ -240,7 +256,6 @@ platepilot/
 | Collection | 用途 | 主键 / 唯一键 | 主要索引 |
 |---|---|---|---|
 | `restaurants` | 餐厅结构化主数据（每餐厅一文档） | `source_record_id`（= `gmap_id`）唯一 | `location` 2dsphere、筛选项复合 |
-| `restaurant_documents` | hours / attributes_raw / description 等附属资料 | `{restaurant_id, document_type}` 唯一 | `restaurant_id` |
 | `reviews` | 清洗后的评论 | `_id` = `review_id`（确定性哈希） | `{restaurant_id, reviewed_at}`、`text_hash` |
 | `review_summaries` | 预计算主题 / 情绪摘要 | `{restaurant_id, topic}` 唯一 | `restaurant_id` |
 
@@ -254,7 +269,7 @@ platepilot/
 | ID | 任务 | 交付物 | 依赖 | 工作量 | 验收摘要 |
 |---|---|---|---|---|---|
 | M1-01 | Atlas 连接 | Mongo Client、连接池、超时、健康检查 | M0-02 | S | 本地能连接 Atlas 并 ping 成功 |
-| M1-02 | Collection 定义 | `restaurants`、`restaurant_documents`、`reviews`、`review_summaries` | M1-01 | M | `migrate` 脚本可重复执行 |
+| M1-02 | Collection 定义 | `restaurants`、`reviews`、`review_summaries` | M1-01 | M | `migrate` 脚本可重复执行 |
 | M1-03 | 基础索引 | 唯一索引、时间索引、复合索引、2dsphere | M1-02 | M | 关键查询无全表扫描 |
 | M1-04 | Meta 流式导入 | gzip JSONL Reader + batch writer | M1-02 | L | 可导入有限样本并输出批次统计 |
 | M1-05 | Review 流式导入 | Review Reader、关联、批量写入 | M1-04 | L | 样本评论正确关联 `restaurant_id` |
@@ -556,14 +571,13 @@ go test ./...
 }
 ```
 
-- `restaurant_documents`：`{ restaurant_id, document_type, raw, normalized, observed_at, source_record_id }`，`document_type ∈ {hours, attributes_raw, description, relative_results, source_snapshot}`。
 - `reviews`：`{ _id: review_id, restaurant_id, rating, reviewed_at, text, language, text_hash, is_representative, topic_tags, source_observed_at }`。
 - `review_summaries`：`{ restaurant_id, topic, sentiment, positive_ratio, summary, evidence_count, valid_from, valid_to, generated_by, generated_at }`。
 
 **实现要点**
 
 - **幂等创建**：Mongo 会在首次写入时隐式建 collection，但 `migrate` 要显式创建以固定命名与校验规则；`CreateCollection` 的 `NamespaceExists` 视为成功。
-- `_id` 策略：`restaurants` 与 `restaurant_documents` 用 `idgen.NewUUID()`；`reviews._id` 用确定性 `review_id`（见 M1-07）；`review_summaries` 用 `{restaurant_id, topic}` 复合唯一键，可不显式 `_id`。
+- `_id` 策略：`restaurants` 用 `idgen.NewUUID()`；`reviews._id` 用确定性 `review_id`（见 M1-07）；`review_summaries` 用 `{restaurant_id, topic}` 复合唯一键，可不显式 `_id`。
 - **时间统一**：所有时间字段以 UTC BSON `date` 存储；文本时间（如 `hours` 里的 `"11AM-10PM"`）在规范化阶段转成分钟整数。
 - **不要**在 M1 创建 `knowledge_documents` / `user_memories`（M2/M4），但 `restaurants.metadata` 风格字段命名（`cuisine_tags` / `price.level` / `rating.source_avg`）要与 M2 向量过滤字段保持一致。
 - collection 校验规则（`$jsonSchema`）可选：M1 可先只建 collection + 索引，把校验留到后续；若加校验需保证可幂等更新（`collMod`）。
@@ -606,7 +620,6 @@ data-pipeline migrate            # 再次运行不报错、不重复创建
 | `restaurants` | `{is_active_for_demo: 1, cuisine_tags: 1, "price.level": 1, "rating.source_avg": -1}` | 复合 | 硬条件检索 |
 | `restaurants` | `{is_active_for_demo: 1, knowledge_score: -1}` | 复合 | 精选集与排序 |
 | `restaurants` | `{borough_guess: 1}` | 单字段 | 地区过滤 |
-| `restaurant_documents` | `{restaurant_id: 1, document_type: 1}` | unique | 每餐厅每类型一条 |
 | `reviews` | `{restaurant_id: 1, reviewed_at: -1}` | 复合 | 按餐厅取评论 |
 | `reviews` | `{restaurant_id: 1, is_representative: 1, rating: 1}` | 复合 | 代表评论选择 |
 | `reviews` | `{text_hash: 1}` | 单字段 | 去重辅助（非唯一） |
@@ -638,7 +651,7 @@ data-pipeline migrate --indexes-only     # 幂等，输出每个索引 existing/
 
 ### M1-04 Meta 流式导入
 
-**目标**：实现 Gzip JSONL 流式读取 Meta 数据，清洗后批量 upsert 到 `restaurants` / `restaurant_documents`，并输出批次统计。
+**目标**：实现 Gzip JSONL 流式读取 Meta 数据，清洗后批量 upsert 到 `restaurants`（附属资料内嵌），并输出批次统计。
 
 **交付物**
 
@@ -658,7 +671,7 @@ data-pipeline migrate --indexes-only     # 幂等，输出每个索引 existing/
 - **流式 + 有界**：默认全量，但 `--limit=N` 允许只读前 N 行用于开发与 CI；`--dry-run` 只统计不写库。
 - **餐饮筛选**（PRD Step 5）：M1-04 先做基础筛选（`category` 命中餐厅/咖啡馆/酒吧/面包店等白名单；坐标在 NYC bbox 内），精确的 `knowledge_score` 打分放到 M1-10。
 - **批量写入**：按 `--batch` 聚合成 `[]restaurant.Restaurant`，调 `RestaurantRepository.UpsertMany`；`BatchSize` 默认 1000。
-- **附属文档**：`hours` / `attributes_raw` / `description` / `relative_results` 写入 `restaurant_documents`，不要全塞进主文档。
+- **附属资料内嵌**：`hours`（含原始文本）/ `attributes_raw` / `relative_results` 与 `description` 一起写在 `restaurants` 文档上——它们永远和餐厅一起被读取，单独一张表只会多一次 join。
 - **行级失败不中断批次**：解析失败的记录计入拒绝数并写入 `ingestion_rejections`，继续处理后续行；只有写库失败才中止批次（并可重试）。
 - **进度日志**：每 N 行输出一次 `rows_read / written / rejected / elapsed`，日志字段含 `trace_id`、`stage=meta`。
 
@@ -742,7 +755,7 @@ data-pipeline import --stage=review --limit=200000
 |---|---|---|
 | `category[]` | `categories` / `cuisine_tags` | 保留原始类别；映射表给出 cuisine 标签；`Restaurant`/`Food` 等泛类别不产生 cuisine |
 | `price` | `price.raw` / `price.level` | `$`→1 … `$$$$`→4；含非 `$` 字符时 `level=nil` 并保留 `raw` |
-| `hours[][]` | `restaurant_documents(hours)` | 解析星期与时间 → 分钟；`is_closed` 标识闭店日；跨午夜 `close<open` 需 +1440 |
+| `hours[][]` | `restaurants.hours` | 解析星期与时间 → 分钟；`is_closed` 标识闭店日；跨午夜 `close<open` 需 +1440 |
 | `state` | `snapshot_status` | `Open`→`open`；`Closed`→`closed`；`Permanently closed`→`permanently_closed`；其它→`unknown` |
 | `MISC` | `attributes.*` | 主题映射到稳定字段；有值→`"true"`，明确否定→`"false"`，缺失→`"unknown"` |
 | `latitude/longitude` | `location` | GeoJSON `[lon, lat]`；越界/非数值→拒绝该记录 |
@@ -793,7 +806,6 @@ data-pipeline import --stage=review --limit=200000
 | 集合 | 幂等键 | 冲突策略 |
 |---|---|---|
 | `restaurants` | `{source_record_id: 1}` unique | upsert；同 `gmap_id` 取字段最完整版本 |
-| `restaurant_documents` | `{restaurant_id, document_type}` unique | upsert |
 | `reviews` | `_id = review_id`（确定性哈希） | upsert |
 | `review_summaries` | `{restaurant_id, topic}` unique | upsert |
 | `ingestion_batches` | `batch_id`（UUID） | 只插入；重跑产生新批次记录 |
@@ -1213,9 +1225,6 @@ restaurants
   ix_search_filters            { is_active_for_demo: 1, cuisine_tags: 1, "price.level": 1, "rating.source_avg": -1 }
   ix_active_score              { is_active_for_demo: 1, knowledge_score: -1 }
   ix_borough                   { borough_guess: 1 }
-
-restaurant_documents
-  uniq_restaurant_doctype      { restaurant_id: 1, document_type: 1 } unique
 
 reviews
   ix_restaurant_time           { restaurant_id: 1, reviewed_at: -1 }

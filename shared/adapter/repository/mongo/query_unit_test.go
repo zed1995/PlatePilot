@@ -60,6 +60,12 @@ func TestRestaurantUpsertModelKeepsIdentityAndOwnedFields(t *testing.T) {
 	if _, present := set["rating.source_avg"]; !present {
 		t.Error("$set must write rating.source_avg")
 	}
+	// The embedded payloads are written on the same document.
+	for _, required := range []string{"hours", "attributes_raw", "relative_results", "attributes"} {
+		if _, present := set[required]; !present {
+			t.Errorf("$set must write %q", required)
+		}
+	}
 	for _, forbidden := range []string{"rating", "rating.computed_avg", "rating.rating_count_for_computed_avg"} {
 		if _, present := set[forbidden]; present {
 			t.Errorf("$set must not write %q", forbidden)

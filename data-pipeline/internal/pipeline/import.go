@@ -177,7 +177,6 @@ func runMeta(ctx context.Context, stores Stores, opts ImportOptions) (review.Bat
 	}
 
 	batch := make([]restaurant.Restaurant, 0, opts.BatchSize)
-	docs := make([]restaurant.Document, 0, opts.BatchSize)
 	dedup := newDedupTracker(0)
 
 	flush := func() error {
@@ -192,13 +191,9 @@ func runMeta(ctx context.Context, stores Stores, opts ImportOptions) (review.Bat
 			if err != nil {
 				return err
 			}
-			if err := stores.Restaurants.UpsertDocuments(ctx, docs); err != nil {
-				return err
-			}
 			col.Written(written)
 		}
 		batch = batch[:0]
-		docs = docs[:0]
 		return nil
 	}
 
@@ -233,11 +228,10 @@ func runMeta(ctx context.Context, stores Stores, opts ImportOptions) (review.Bat
 			col.MissingField(field)
 		}
 		col.Accepted(1)
-		if dedup.Observe(result.Restaurant.SourceRecordID) {
+		if dedup.Observe(result.SourceRecordID) {
 			col.Deduped(1)
 		}
-		batch = append(batch, result.Restaurant)
-		docs = append(docs, result.Documents...)
+		batch = append(batch, result)
 		if len(batch) >= opts.BatchSize {
 			if err := retryFlush(ctx, flush); err != nil {
 				_ = col.Finish(context.WithoutCancel(ctx), review.StatusFailed, codeOf(err), time.Now().UTC())

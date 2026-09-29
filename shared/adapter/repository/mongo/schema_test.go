@@ -47,6 +47,12 @@ func TestRestaurantMappingRoundTrip(t *testing.T) {
 			TriStates:      map[string]string{"wheelchair_accessible": restaurant.TriStateTrue, "outdoor_seating": restaurant.TriStateUnknown},
 			AtmosphereTags: []string{"casual"},
 		},
+		AttributesRaw: map[string][]string{"Service options": {"Takeout", "Outdoor seating"}},
+		Hours: []restaurant.HoursEntry{
+			{Weekday: 1, OpenMinute: 660, CloseMinute: 1320, Raw: "11AM-10PM"},
+			{Weekday: 2, IsClosed: true, Raw: "Closed"},
+		},
+		RelativeResults: []string{"rel-1", "rel-2"},
 		SnapshotStatus:  restaurant.StatusOpen,
 		KnowledgeScore:  9.5,
 		IsActiveForDemo: true,
@@ -148,6 +154,35 @@ func TestClientConfigValidate(t *testing.T) {
 	withDefaults := (Config{URI: "mongodb://x"}).withDefaults()
 	if withDefaults.Database != DefaultDatabase || withDefaults.Timeout != DefaultTimeout {
 		t.Errorf("defaults not applied: %+v", withDefaults)
+	}
+}
+
+func TestSchemaMergesRestaurantDocumentsIntoRestaurants(t *testing.T) {
+	for _, name := range collectionNames() {
+		if name == "restaurant_documents" {
+			t.Error("restaurant_documents must be merged into restaurants, not created")
+		}
+	}
+	if got, want := len(collectionNames()), 5; got != want {
+		t.Errorf("collections = %d want %d: %v", got, want, collectionNames())
+	}
+	if _, present := indexSpecs()["restaurant_documents"]; present {
+		t.Error("restaurant_documents must not have indexes")
+	}
+
+	// The auxiliary payloads must survive the doc round trip.
+	in := restaurant.Restaurant{
+		ID:              "id-1",
+		SourceRecordID:  "gmap-1",
+		AttributesRaw:   map[string][]string{"Atmosphere": {"Casual"}},
+		Hours:           []restaurant.HoursEntry{{Weekday: 3, OpenMinute: 600, CloseMinute: 900, Raw: "10AM-3PM"}},
+		RelativeResults: []string{"rel-9"},
+	}
+	out := docToRestaurant(restaurantToDoc(in))
+	if !reflect.DeepEqual(in.AttributesRaw, out.AttributesRaw) ||
+		!reflect.DeepEqual(in.Hours, out.Hours) ||
+		!reflect.DeepEqual(in.RelativeResults, out.RelativeResults) {
+		t.Errorf("embedded payloads lost:\n in = %+v\nout = %+v", in, out)
 	}
 }
 

@@ -65,7 +65,7 @@
        -> Memory / Checkpoint / Guardrails
   -> MongoDB Atlas
        -> restaurants
-       -> restaurant_documents
+       -> restaurant_documents   # 已合并进 restaurants（PRD §4.4）
        -> reviews
        -> review_summaries
        -> knowledge_documents
@@ -226,7 +226,7 @@ PlatePilot/
 | ID | 任务 | 交付物 | 依赖 | 工作量 | 验收标准 |
 |---|---|---|---|---|---|
 | M1-01 | Atlas 连接 | Mongo Client、连接池、超时和健康检查 | M0-02 | S | 本地服务能连接 Atlas 并执行 ping |
-| M1-02 | Collection 定义 | `restaurants`、`restaurant_documents`、`reviews`、`review_summaries` | M1-01 | M | Collection 创建脚本可重复执行 |
+| M1-02 | Collection 定义 | `restaurants`、`reviews`、`review_summaries` | M1-01 | M | Collection 创建脚本可重复执行 |
 | M1-03 | 基础索引 | 唯一索引、时间索引、复合索引 | M1-02 | M | 关键查询无全表扫描 |
 | M1-04 | Meta 流式导入 | Go gzip JSONL Reader 和 batch writer | M1-02 | L | 可导入有限样本并输出批次统计 |
 | M1-05 | Review 流式导入 | Review Reader、关联、批量写入 | M1-04 | L | 可导入样本评论并正确关联 restaurant_id |

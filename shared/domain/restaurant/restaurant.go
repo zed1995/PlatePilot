@@ -18,37 +18,34 @@ const (
 	StatusUnknown           SnapshotStatus = "unknown"
 )
 
-// DocumentType enumerates the auxiliary restaurant payloads stored separately
-// from the main document.
-type DocumentType string
-
-const (
-	DocumentHours           DocumentType = "hours"
-	DocumentAttributesRaw   DocumentType = "attributes_raw"
-	DocumentDescription     DocumentType = "description"
-	DocumentRelativeResults DocumentType = "relative_results"
-	DocumentSourceSnapshot  DocumentType = "source_snapshot"
-)
-
 // SourceGoogleLocal2021 is the only content source in phase 1.
 const SourceGoogleLocal2021 = "google_local_2021"
 
 // Restaurant is the curated master document: one document per place.
 type Restaurant struct {
-	ID              string         `json:"restaurant_id"`
-	Source          string         `json:"source"`
-	SourceRecordID  string         `json:"source_record_id"`
-	Name            string         `json:"name"`
-	Address         string         `json:"address,omitempty"`
-	BoroughGuess    string         `json:"borough_guess,omitempty"`
-	Location        *GeoPoint      `json:"location,omitempty"`
-	Categories      []string       `json:"categories,omitempty"`
-	CuisineTags     []string       `json:"cuisine_tags,omitempty"`
-	Description     string         `json:"description,omitempty"`
-	Price           Price          `json:"price"`
-	Rating          Rating         `json:"rating"`
-	ReviewStats     ReviewStats    `json:"review_stats"`
-	Attributes      Attributes     `json:"attributes"`
+	ID             string      `json:"restaurant_id"`
+	Source         string      `json:"source"`
+	SourceRecordID string      `json:"source_record_id"`
+	Name           string      `json:"name"`
+	Address        string      `json:"address,omitempty"`
+	BoroughGuess   string      `json:"borough_guess,omitempty"`
+	Location       *GeoPoint   `json:"location,omitempty"`
+	Categories     []string    `json:"categories,omitempty"`
+	CuisineTags    []string    `json:"cuisine_tags,omitempty"`
+	Description    string      `json:"description,omitempty"`
+	Price          Price       `json:"price"`
+	Rating         Rating      `json:"rating"`
+	ReviewStats    ReviewStats `json:"review_stats"`
+	Attributes     Attributes  `json:"attributes"`
+	// AttributesRaw keeps the source MISC object so the curation rules can be
+	// re-applied without re-reading the 61MB meta file. It lives on the same
+	// document because it is only ever read together with the restaurant.
+	AttributesRaw map[string][]string `json:"attributes_raw,omitempty" bson:"attributes_raw,omitempty"`
+	// Hours is the normalised opening-hours matrix; each entry keeps its source
+	// text so the UI can show "11AM-10PM" verbatim.
+	Hours []HoursEntry `json:"hours,omitempty" bson:"hours,omitempty"`
+	// RelativeResults lists similar source POIs.
+	RelativeResults []string       `json:"relative_results,omitempty" bson:"relative_results,omitempty"`
 	SnapshotStatus  SnapshotStatus `json:"snapshot_status"`
 	KnowledgeScore  float64        `json:"knowledge_score"`
 	IsActiveForDemo bool           `json:"is_active_for_demo"`
@@ -113,23 +110,13 @@ const (
 	TriStateUnknown = "unknown"
 )
 
-// Document is an auxiliary restaurant payload that does not belong in the main
-// document (hours, raw attributes, description snapshot, ...).
-type Document struct {
-	RestaurantID   string       `json:"restaurant_id"`
-	DocumentType   DocumentType `json:"document_type"`
-	Raw            any          `json:"raw,omitempty"`
-	Normalized     any          `json:"normalized,omitempty"`
-	ObservedAt     time.Time    `json:"observed_at"`
-	SourceRecordID string       `json:"source_record_id"`
-}
-
 // HoursEntry is the normalised form of one opening-hours interval. OpenMinute
 // and CloseMinute are minutes after midnight; CloseMinute may exceed 1440 for
 // intervals that run past midnight.
 type HoursEntry struct {
-	Weekday     int  `json:"weekday" bson:"weekday"` // 0=Sunday .. 6=Saturday
-	OpenMinute  int  `json:"open_minute" bson:"open_minute"`
-	CloseMinute int  `json:"close_minute" bson:"close_minute"`
-	IsClosed    bool `json:"is_closed" bson:"is_closed"`
+	Weekday     int    `json:"weekday" bson:"weekday"` // 0=Sunday .. 6=Saturday
+	OpenMinute  int    `json:"open_minute" bson:"open_minute"`
+	CloseMinute int    `json:"close_minute" bson:"close_minute"`
+	IsClosed    bool   `json:"is_closed" bson:"is_closed"`
+	Raw         string `json:"raw,omitempty" bson:"raw,omitempty"`
 }

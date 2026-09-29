@@ -46,9 +46,9 @@ func parseInterval(weekday int, spec string) (restaurant.HoursEntry, bool) {
 	case value == "":
 		return restaurant.HoursEntry{}, false
 	case strings.Contains(lower, "closed"):
-		return restaurant.HoursEntry{Weekday: weekday, IsClosed: true}, true
+		return restaurant.HoursEntry{Weekday: weekday, IsClosed: true, Raw: value}, true
 	case strings.Contains(lower, "24 hours"), strings.Contains(lower, "open 24"):
-		return restaurant.HoursEntry{Weekday: weekday, OpenMinute: 0, CloseMinute: 1440}, true
+		return restaurant.HoursEntry{Weekday: weekday, OpenMinute: 0, CloseMinute: 1440, Raw: value}, true
 	}
 	openSpec, closeSpec, ok := splitRange(value)
 	if !ok {
@@ -65,7 +65,7 @@ func parseInterval(weekday int, spec string) (restaurant.HoursEntry, bool) {
 	if closeMinute <= openMinute {
 		closeMinute += 24 * 60 // interval runs past midnight
 	}
-	return restaurant.HoursEntry{Weekday: weekday, OpenMinute: openMinute, CloseMinute: closeMinute}, true
+	return restaurant.HoursEntry{Weekday: weekday, OpenMinute: openMinute, CloseMinute: closeMinute, Raw: value}, true
 }
 
 // splitRange splits "11AM–10PM" style ranges on en/em dash, " to ", or hyphen.

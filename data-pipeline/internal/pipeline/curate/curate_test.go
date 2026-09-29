@@ -121,10 +121,10 @@ func TestParseHours(t *testing.T) {
 	}
 	got := ParseHours(raw)
 	want := []restaurant.HoursEntry{
-		{Weekday: 1, OpenMinute: 660, CloseMinute: 1320},
-		{Weekday: 2, IsClosed: true},
-		{Weekday: 3, OpenMinute: 1320, CloseMinute: 1560},
-		{Weekday: 4, OpenMinute: 0, CloseMinute: 1440},
+		{Weekday: 1, OpenMinute: 660, CloseMinute: 1320, Raw: "11AM\u201310PM"},
+		{Weekday: 2, IsClosed: true, Raw: "Closed"},
+		{Weekday: 3, OpenMinute: 1320, CloseMinute: 1560, Raw: "10PM\u20132AM"},
+		{Weekday: 4, OpenMinute: 0, CloseMinute: 1440, Raw: "Open 24 hours"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("ParseHours = %#v want %#v", got, want)
@@ -219,30 +219,30 @@ func TestReviewIDIsDeterministic(t *testing.T) {
 
 func sampleMeta() raw.Meta {
 	return raw.Meta{
-		Name:         "Joe's Pizza",
-		Address:      ptr("7 Carmine St, New York, NY"),
-		GmapID:       "gmap-1",
-		Description:  ptr("Slice shop"),
-		Latitude:     ptr(40.730),
-		Longitude:    ptr(-74.002),
-		Category:     []string{"Pizza restaurant", "Restaurant"},
-		AvgRating:    ptr(4.5),
-		NumOfReviews: ptr(9998),
-		Price:        ptr("$$"),
-		Hours:        [][]string{{"Monday", "11AM\u201310PM"}},
-		MISC:         raw.MISC{"Service options": {"Outdoor seating"}},
-		State:        ptr("Open"),
-		URL:          "https://maps.example/x",
+		Name:            "Joe's Pizza",
+		Address:         ptr("7 Carmine St, New York, NY"),
+		GmapID:          "gmap-1",
+		Description:     ptr("Slice shop"),
+		Latitude:        ptr(40.730),
+		Longitude:       ptr(-74.002),
+		Category:        []string{"Pizza restaurant", "Restaurant"},
+		AvgRating:       ptr(4.5),
+		NumOfReviews:    ptr(9998),
+		Price:           ptr("$$"),
+		Hours:           [][]string{{"Monday", "11AM\u201310PM"}},
+		MISC:            raw.MISC{"Service options": {"Outdoor seating"}},
+		State:           ptr("Open"),
+		RelativeResults: []string{"rel-1", "rel-2"},
+		URL:             "https://maps.example/x",
 	}
 }
 
 func TestNormalizeMeta(t *testing.T) {
 	observed := time.Date(2021, 9, 1, 0, 0, 0, 0, time.UTC)
-	result, err := NormalizeMeta(sampleMeta(), "id-1", MetaOptions{ObservedAt: observed, ServiceArea: NYCServiceArea})
+	r, err := NormalizeMeta(sampleMeta(), "id-1", MetaOptions{ObservedAt: observed, ServiceArea: NYCServiceArea})
 	if err != nil {
 		t.Fatalf("NormalizeMeta: %v", err)
 	}
-	r := result.Restaurant
 	if r.ID != "id-1" || r.SourceRecordID != "gmap-1" || r.Name != "Joe's Pizza" {
 		t.Fatalf("identity = %+v", r)
 	}
@@ -261,9 +261,16 @@ func TestNormalizeMeta(t *testing.T) {
 	if !reflect.DeepEqual(r.CuisineTags, []string{"pizza", "italian"}) {
 		t.Errorf("cuisines = %v", r.CuisineTags)
 	}
-	// Hours, MISC, and description become auxiliary documents.
-	if len(result.Documents) != 3 {
-		t.Fatalf("documents = %d want 3 (hours, misc, description)", len(result.Documents))
+	// Hours, the raw MISC object, and relative results are embedded on the same
+	// document rather than split into a side collection.
+	if len(r.Hours) != 1 || r.Hours[0].OpenMinute != 660 || r.Hours[0].Raw == "" {
+		t.Errorf("hours not embedded: %+v", r.Hours)
+	}
+	if len(r.AttributesRaw["Service options"]) != 1 {
+		t.Errorf("raw attributes not embedded: %+v", r.AttributesRaw)
+	}
+	if len(r.RelativeResults) != 2 || r.RelativeResults[0] != "rel-1" {
+		t.Errorf("relative results not embedded: %+v", r.RelativeResults)
 	}
 }
 

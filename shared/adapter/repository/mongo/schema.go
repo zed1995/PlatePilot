@@ -18,7 +18,6 @@ import (
 // ingestion audit collections (M1-09).
 const (
 	CollectionRestaurants         = "restaurants"
-	CollectionRestaurantDocuments = "restaurant_documents"
 	CollectionReviews             = "reviews"
 	CollectionReviewSummaries     = "review_summaries"
 	CollectionIngestionBatches    = "ingestion_batches"
@@ -35,7 +34,6 @@ type CollectionStatus struct {
 func collectionNames() []string {
 	return []string{
 		CollectionRestaurants,
-		CollectionRestaurantDocuments,
 		CollectionReviews,
 		CollectionReviewSummaries,
 		CollectionIngestionBatches,
@@ -121,36 +119,30 @@ type attributesDoc struct {
 }
 
 type restaurantDoc struct {
-	ID              string         `bson:"_id"`
-	Source          string         `bson:"source"`
-	SourceRecordID  string         `bson:"source_record_id"`
-	Name            string         `bson:"name"`
-	Address         string         `bson:"address,omitempty"`
-	BoroughGuess    string         `bson:"borough_guess,omitempty"`
-	Location        *geoDoc        `bson:"location,omitempty"`
-	Categories      []string       `bson:"categories,omitempty"`
-	CuisineTags     []string       `bson:"cuisine_tags,omitempty"`
-	Description     string         `bson:"description,omitempty"`
-	Price           priceDoc       `bson:"price"`
-	Rating          ratingDoc      `bson:"rating"`
-	ReviewStats     reviewStatsDoc `bson:"review_stats"`
-	Attributes      attributesDoc  `bson:"attributes"`
-	SnapshotStatus  string         `bson:"snapshot_status"`
-	KnowledgeScore  float64        `bson:"knowledge_score"`
-	IsActiveForDemo bool           `bson:"is_active_for_demo"`
-	ObservedAt      time.Time      `bson:"observed_at"`
-	SourceURL       string         `bson:"source_url,omitempty"`
-	CreatedAt       time.Time      `bson:"created_at"`
-	UpdatedAt       time.Time      `bson:"updated_at"`
-}
-
-type restaurantDocumentDoc struct {
-	RestaurantID   string    `bson:"restaurant_id"`
-	DocumentType   string    `bson:"document_type"`
-	Raw            any       `bson:"raw,omitempty"`
-	Normalized     any       `bson:"normalized,omitempty"`
-	ObservedAt     time.Time `bson:"observed_at"`
-	SourceRecordID string    `bson:"source_record_id,omitempty"`
+	ID              string                  `bson:"_id"`
+	Source          string                  `bson:"source"`
+	SourceRecordID  string                  `bson:"source_record_id"`
+	Name            string                  `bson:"name"`
+	Address         string                  `bson:"address,omitempty"`
+	BoroughGuess    string                  `bson:"borough_guess,omitempty"`
+	Location        *geoDoc                 `bson:"location,omitempty"`
+	Categories      []string                `bson:"categories,omitempty"`
+	CuisineTags     []string                `bson:"cuisine_tags,omitempty"`
+	Description     string                  `bson:"description,omitempty"`
+	Price           priceDoc                `bson:"price"`
+	Rating          ratingDoc               `bson:"rating"`
+	ReviewStats     reviewStatsDoc          `bson:"review_stats"`
+	Attributes      attributesDoc           `bson:"attributes"`
+	AttributesRaw   map[string][]string     `bson:"attributes_raw,omitempty"`
+	Hours           []restaurant.HoursEntry `bson:"hours,omitempty"`
+	RelativeResults []string                `bson:"relative_results,omitempty"`
+	SnapshotStatus  string                  `bson:"snapshot_status"`
+	KnowledgeScore  float64                 `bson:"knowledge_score"`
+	IsActiveForDemo bool                    `bson:"is_active_for_demo"`
+	ObservedAt      time.Time               `bson:"observed_at"`
+	SourceURL       string                  `bson:"source_url,omitempty"`
+	CreatedAt       time.Time               `bson:"created_at"`
+	UpdatedAt       time.Time               `bson:"updated_at"`
 }
 
 type reviewDoc struct {
@@ -241,6 +233,9 @@ func restaurantToDoc(r restaurant.Restaurant) restaurantDoc {
 	if r.Location != nil {
 		d.Location = &geoDoc{Type: "Point", Coordinates: []float64{r.Location.Longitude, r.Location.Latitude}}
 	}
+	d.AttributesRaw = r.AttributesRaw
+	d.Hours = r.Hours
+	d.RelativeResults = r.RelativeResults
 	d.Attributes = attributesDoc{
 		TriStates:         r.Attributes.TriStates,
 		AtmosphereTags:    r.Attributes.AtmosphereTags,
@@ -276,6 +271,9 @@ func docToRestaurant(d restaurantDoc) restaurant.Restaurant {
 	if d.Location != nil && len(d.Location.Coordinates) == 2 {
 		r.Location = &restaurant.GeoPoint{Longitude: d.Location.Coordinates[0], Latitude: d.Location.Coordinates[1]}
 	}
+	r.AttributesRaw = d.AttributesRaw
+	r.Hours = d.Hours
+	r.RelativeResults = d.RelativeResults
 	r.Attributes = restaurant.Attributes{
 		TriStates:         d.Attributes.TriStates,
 		AtmosphereTags:    d.Attributes.AtmosphereTags,

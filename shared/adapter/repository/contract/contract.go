@@ -204,20 +204,6 @@ func runRestaurantStore(t *testing.T, s port.RestaurantStore) {
 		t.Errorf("meta re-import wiped computed rating: %+v", got.Rating)
 	}
 
-	docs := []restaurant.Document{{
-		RestaurantID:   "id-1",
-		DocumentType:   restaurant.DocumentHours,
-		Normalized:     []restaurant.HoursEntry{{Weekday: 1, OpenMinute: 660, CloseMinute: 1320}},
-		ObservedAt:     baseTime,
-		SourceRecordID: "gmap-1",
-	}}
-	if err := s.UpsertDocuments(ctx, docs); err != nil {
-		t.Fatalf("UpsertDocuments: %v", err)
-	}
-	// Upserting the same (restaurant, type) again must not create a duplicate.
-	if err := s.UpsertDocuments(ctx, docs); err != nil {
-		t.Fatalf("re-UpsertDocuments: %v", err)
-	}
 }
 
 func runReviewStore(t *testing.T, s port.ReviewStore) {

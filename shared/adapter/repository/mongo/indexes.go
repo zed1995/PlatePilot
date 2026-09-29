@@ -42,12 +42,6 @@ func indexSpecs() map[string][]mongo.IndexModel {
 			}),
 			idx("ix_borough", false, bson.D{{Key: "borough_guess", Value: 1}}),
 		},
-		CollectionRestaurantDocuments: {
-			idx("uniq_restaurant_doctype", true, bson.D{
-				{Key: "restaurant_id", Value: 1},
-				{Key: "document_type", Value: 1},
-			}),
-		},
 		CollectionReviews: {
 			idx("ix_restaurant_time", false, bson.D{
 				{Key: "restaurant_id", Value: 1},

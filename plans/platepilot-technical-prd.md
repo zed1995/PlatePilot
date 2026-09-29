@@ -294,7 +294,7 @@ Google Local Raw Data
        v
 MongoDB Atlas Content Collections
   restaurants
-  restaurant_documents
+  restaurant_documents   # 已合并进 restaurants（§4.4）
   reviews
   review_summaries
        |
@@ -324,7 +324,7 @@ Optional Mock Collections
 | Collection | 用途 | 主要索引 |
 |---|---|---|
 | `restaurants` | 餐厅结构化主数据 | `source_record_id` 唯一、地理索引、筛选项 |
-| `restaurant_documents` | 营业时间、属性和原始资料 | `restaurant_id`、`document_type` |
+| `restaurant_documents` | 营业时间、属性和原始资料（**已合并进 `restaurants`**，见 §4.4） | — |
 | `reviews` | 精选评论和必要元数据 | `restaurant_id + reviewed_at`、`text_hash` |
 | `review_summaries` | 预计算主题和情绪摘要 | `restaurant_id + topic` |
 | `knowledge_documents` | 可嵌入知识 chunk | `vector_index`、`restaurant_id + is_active` |
@@ -405,6 +405,13 @@ Optional Mock Collections
 - `raw_payload` 可选保存，用于审计和重新加工。
 
 ### 4.4 `restaurant_documents`
+
+> **决策更新（2026-09-29，M1 实现）**：本集合已**合并进 `restaurants`**。
+> 实测附属文档数量约为主表的 3 倍，且只写不读、读取时总要和餐厅一起 join；
+> 按 MongoDB「读在一起的写在一起」的原则改为内嵌：
+> `restaurants.hours`（`[]HoursEntry`，保留原始文本）、
+> `restaurants.attributes_raw`（原始 MISC）、`restaurants.relative_results`。
+> 下面的原始设计保留作为背景，不再是实现目标。
 
 用于保存不适合全部塞进主文档的字段：
 
@@ -1307,7 +1314,7 @@ HTTP 服务统一使用 CloudWeGo Hertz：
 
 - 流式读取 Meta 和 Review。
 - 完成去重、字段归一化和餐厅过滤。
-- 建立 `restaurants`、`restaurant_documents`、`reviews` 和 `review_summaries`。
+- 建立 `restaurants`（含内嵌附属资料）、`reviews` 和 `review_summaries`。
 - 导入一批精选餐厅。
 - 完成 MongoDB 查询接口和餐厅搜索 API。
 

@@ -18,15 +18,11 @@ import (
 type RestaurantStore struct {
 	mu       sync.RWMutex
 	bySource map[string]restaurant.Restaurant
-	docs     map[string]restaurant.Document
 }
 
 // NewRestaurantStore returns an empty in-memory restaurant store.
 func NewRestaurantStore() *RestaurantStore {
-	return &RestaurantStore{
-		bySource: make(map[string]restaurant.Restaurant),
-		docs:     make(map[string]restaurant.Document),
-	}
+	return &RestaurantStore{bySource: make(map[string]restaurant.Restaurant)}
 }
 
 // UpsertRestaurant inserts or replaces a restaurant keyed by source_record_id.
@@ -202,34 +198,6 @@ func (s *RestaurantStore) CountActiveForDemo(_ context.Context) (int64, error) {
 		}
 	}
 	return n, nil
-}
-
-// UpsertDocuments inserts or replaces auxiliary restaurant documents.
-func (s *RestaurantStore) UpsertDocuments(_ context.Context, docs []restaurant.Document) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, d := range docs {
-		if strings.TrimSpace(d.RestaurantID) == "" || strings.TrimSpace(string(d.DocumentType)) == "" {
-			return errs.New(errs.CodeInvalidArgument, "restaurant document requires restaurant_id and document_type")
-		}
-		s.docs[d.RestaurantID+"|"+string(d.DocumentType)] = d
-	}
-	return nil
-}
-
-// Documents returns the stored auxiliary documents for a restaurant. It is a
-// test helper, not part of the port.
-func (s *RestaurantStore) Documents(restaurantID string) []restaurant.Document {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	out := make([]restaurant.Document, 0)
-	for _, d := range s.docs {
-		if d.RestaurantID == restaurantID {
-			out = append(out, d)
-		}
-	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].DocumentType < out[j].DocumentType })
-	return out
 }
 
 func (s *RestaurantStore) sourceByIDLocked(id string) (string, restaurant.Restaurant, bool) {

@@ -24,12 +24,6 @@ const SourceReviewCountCap = 9998
 // place that is not a restaurant). It is counted separately from a rejection.
 var ErrFiltered = errors.New("record filtered out of the knowledge base")
 
-// MetaResult is one curated restaurant plus its auxiliary documents.
-type MetaResult struct {
-	Restaurant restaurant.Restaurant
-	Documents  []restaurant.Document
-}
-
 // MetaOptions controls Meta normalisation.
 type MetaOptions struct {
 	// ObservedAt is the data snapshot time stamped onto the curated place.
@@ -53,23 +47,23 @@ type ReviewOptions struct {
 //
 // It returns ErrFiltered for places outside the food scope and an *errs.Error
 // for records that are structurally invalid.
-func NormalizeMeta(m raw.Meta, id string, opts MetaOptions) (MetaResult, error) {
+func NormalizeMeta(m raw.Meta, id string, opts MetaOptions) (restaurant.Restaurant, error) {
 	observedAt := opts.ObservedAt
 	if strings.TrimSpace(m.GmapID) == "" {
-		return MetaResult{}, errs.New(errs.CodeInvalidArgument, "meta: gmap_id is required")
+		return restaurant.Restaurant{}, errs.New(errs.CodeInvalidArgument, "meta: gmap_id is required")
 	}
 	if !IsFoodPlace(m.Category) {
-		return MetaResult{}, ErrFiltered
+		return restaurant.Restaurant{}, ErrFiltered
 	}
 	if !ValidCoordinates(m.Latitude, m.Longitude) {
-		return MetaResult{}, errs.Newf(errs.CodeInvalidArgument, "meta %s: invalid coordinates", m.GmapID)
+		return restaurant.Restaurant{}, errs.Newf(errs.CodeInvalidArgument, "meta %s: invalid coordinates", m.GmapID)
 	}
 	if area := opts.ServiceArea; !area.IsZero() && !area.Contains(*m.Latitude, *m.Longitude) {
-		return MetaResult{}, ErrFiltered
+		return restaurant.Restaurant{}, ErrFiltered
 	}
 	name := strings.TrimSpace(m.Name)
 	if name == "" {
-		return MetaResult{}, errs.Newf(errs.CodeInvalidArgument, "meta %s: name is required", m.GmapID)
+		return restaurant.Restaurant{}, errs.Newf(errs.CodeInvalidArgument, "meta %s: name is required", m.GmapID)
 	}
 
 	r := restaurant.Restaurant{
@@ -100,7 +94,13 @@ func NormalizeMeta(m raw.Meta, id string, opts MetaOptions) (MetaResult, error) 
 		r.ReviewStats.SourceReviewCountCapped = *m.NumOfReviews >= SourceReviewCountCap
 	}
 
-	return MetaResult{Restaurant: r, Documents: metaDocuments(m, id, observedAt)}, nil
+	// The auxiliary payloads live on the same document: MongoDB's guidance is
+	// to store what is read together, and none of these is ever fetched
+	// separately from its restaurant.
+	r.AttributesRaw = map[string][]string(m.MISC)
+	r.Hours = ParseHours(m.Hours)
+	r.RelativeResults = m.RelativeResults
+	return r, nil
 }
 
 // NormalizeReview converts a raw review into a curated review for a restaurant.
@@ -163,40 +163,6 @@ func SnapshotStatus(state *string) restaurant.SnapshotStatus {
 	default:
 		return restaurant.StatusUnknown
 	}
-}
-
-func metaDocuments(m raw.Meta, id string, observedAt time.Time) []restaurant.Document {
-	var docs []restaurant.Document
-	base := func(docType restaurant.DocumentType) restaurant.Document {
-		return restaurant.Document{
-			RestaurantID:   id,
-			DocumentType:   docType,
-			ObservedAt:     observedAt,
-			SourceRecordID: m.GmapID,
-		}
-	}
-	if len(m.Hours) > 0 {
-		doc := base(restaurant.DocumentHours)
-		doc.Raw = m.Hours
-		doc.Normalized = ParseHours(m.Hours)
-		docs = append(docs, doc)
-	}
-	if len(m.MISC) > 0 {
-		doc := base(restaurant.DocumentAttributesRaw)
-		doc.Raw = map[string][]string(m.MISC)
-		docs = append(docs, doc)
-	}
-	if description := derefString(m.Description); description != "" {
-		doc := base(restaurant.DocumentDescription)
-		doc.Raw = description
-		docs = append(docs, doc)
-	}
-	if len(m.RelativeResults) > 0 {
-		doc := base(restaurant.DocumentRelativeResults)
-		doc.Raw = m.RelativeResults
-		docs = append(docs, doc)
-	}
-	return docs
 }
 
 func derefString(value *string) string {
