@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"time"
 
+	"go.mongodb.org/mongo-driver/bson"
+
 	"go.mongodb.org/mongo-driver/mongo"
 
 	"github.com/zed/platepilot/shared/domain/restaurant"
@@ -45,17 +47,34 @@ func collectionNames() []string {
 // idempotent: a collection that already exists is reported as existing.
 func (c *Client) EnsureSchema(ctx context.Context) ([]CollectionStatus, error) {
 	names := collectionNames()
+
+	// Decide existence from an explicit listing rather than from the error code
+	// of a failing create: the driver/server combination does not always report
+	// an existing collection consistently.
+	existing, err := c.db().ListCollectionNames(ctx, bson.M{"name": bson.M{"$in": names}})
+	if err != nil {
+		return nil, operationError("mongo: list collections", err)
+	}
+	present := make(map[string]bool, len(existing))
+	for _, name := range existing {
+		present[name] = true
+	}
+
 	out := make([]CollectionStatus, 0, len(names))
 	for _, name := range names {
-		err := c.db().CreateCollection(ctx, name)
-		switch {
-		case err == nil:
-			out = append(out, CollectionStatus{Name: name, Created: true})
-		case isNamespaceExists(err):
+		if present[name] {
 			out = append(out, CollectionStatus{Name: name, Created: false})
-		default:
+			continue
+		}
+		if err := c.db().CreateCollection(ctx, name); err != nil {
+			if isNamespaceExists(err) {
+				// Lost a race with another migrator; treat it as existing.
+				out = append(out, CollectionStatus{Name: name, Created: false})
+				continue
+			}
 			return out, operationError("mongo: create collection "+name, err)
 		}
+		out = append(out, CollectionStatus{Name: name, Created: true})
 	}
 	return out, nil
 }

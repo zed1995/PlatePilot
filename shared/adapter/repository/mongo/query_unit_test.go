@@ -52,6 +52,19 @@ func TestRestaurantUpsertModelKeepsIdentityAndOwnedFields(t *testing.T) {
 	if set["name"] != "Joe's Pizza" {
 		t.Errorf("$set missing name: %#v", set)
 	}
+	// The meta import owns only rating.source_avg. Writing the whole rating
+	// subdocument would clobber computed_avg, which the stats job owns.
+	if _, present := set["rating"]; present {
+		t.Error("$set must not replace the whole rating subdocument")
+	}
+	if _, present := set["rating.source_avg"]; !present {
+		t.Error("$set must write rating.source_avg")
+	}
+	for _, forbidden := range []string{"rating", "rating.computed_avg", "rating.rating_count_for_computed_avg"} {
+		if _, present := set[forbidden]; present {
+			t.Errorf("$set must not write %q", forbidden)
+		}
+	}
 	// Identity and the fields owned by other jobs must never be overwritten by
 	// a meta re-import.
 	for _, forbidden := range []string{"_id", "created_at", "review_stats", "knowledge_score", "is_active_for_demo"} {

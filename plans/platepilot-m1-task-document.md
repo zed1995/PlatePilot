@@ -20,8 +20,22 @@
 ### 0.2 实现状态（2026-09-29）
 
 M1 写入链路已实现，代码位于 `data-pipeline` 与 `shared/adapter/repository/mongo`。
-除特别说明外，全部任务已完成；Mongo 相关集成测试为**环境门控**，未配置
-`MONGO_URI` 时跳过，因此在没有 Atlas 的机器上只有内存实现参与契约测试。
+除特别说明外，全部任务已完成。
+
+Mongo adapter 有三层验证，默认无需 Atlas：
+
+1. **内存实现**：`shared/adapter/repository/memory` 提供端口级 mock，`go test ./...`
+   离线全绿，内存实现覆盖率约 90%。
+2. **离线单测**：`mongo/query_unit_test.go` 断言 adapter 生成的 filter / update /
+   aggregation 文档，无需服务器（覆盖率约 17%）。
+3. **memongo**：`make test-mongo` 会下载并启动一个真实的 `mongod`，
+   `TestMain` 把 `MONGO_URI` 指向它，于是同一套 Atlas 契约测试跑在真实服务器上
+   （覆盖率约 80%）。设 `MONGO_URI` 时改为使用真实集群。
+
+> memongo 在本次实现中确实发现了两个只在真实服务器上暴露的缺陷：
+> `EnsureSchema` 依赖 CreateCollection 错误码判断集合是否存在（第二次 migrate
+> 误报 created），以及 meta 导入整段 `$set` 了 `rating` 子文档，覆盖掉统计任务写入的
+> `rating.computed_avg`。两者已修复并补了回归测试。
 
 | 任务 | 状态 | 主要落地文件 |
 |---|---|---|

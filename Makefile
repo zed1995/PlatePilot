@@ -6,7 +6,7 @@ VERSION       ?= dev
 LDFLAGS       := -X main.version=$(VERSION)
 
 .PHONY: help build build-chat build-pipeline run-chat run-pipeline \
-        migrate import-sample test test-race vet cover lint clean
+        migrate import-sample test test-race test-mongo vet cover lint clean
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
@@ -40,6 +40,9 @@ test: ## Run unit tests for both services
 
 test-race: ## Run tests with the race detector
 	go test -race $(PKG)
+
+test-mongo: ## Run the Mongo adapter tests against an ephemeral memongo mongod
+	PLATEPILOT_MEMONGO=1 go test ./shared/adapter/repository/mongo/... -count=1 -v
 
 vet: ## Run go vet
 	go vet $(PKG)

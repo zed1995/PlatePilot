@@ -4,10 +4,12 @@ go 1.26
 
 require (
 	github.com/cloudwego/hertz v0.10.6
+	github.com/tryvium-travels/memongo v0.13.1
 	go.mongodb.org/mongo-driver v1.17.9
 )
 
 require (
+	github.com/acobaugh/osrelease v0.0.0-20181218015638-a93a0a55a249 // indirect
 	github.com/bytedance/gopkg v0.1.4 // indirect
 	github.com/bytedance/sonic v1.15.0 // indirect
 	github.com/bytedance/sonic/loader v0.5.0 // indirect
@@ -19,6 +21,7 @@ require (
 	github.com/klauspost/compress v1.16.7 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.9 // indirect
 	github.com/montanaflynn/stats v0.7.1 // indirect
+	github.com/spf13/afero v1.6.0 // indirect
 	github.com/tidwall/gjson v1.14.4 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.0 // indirect

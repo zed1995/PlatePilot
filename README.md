@@ -86,12 +86,38 @@ make test-race     # go test -race ./...
 make vet           # go vet ./...
 make build         # build both binaries
 make migrate       # ensure Atlas collections and indexes (needs MONGO_URI)
+make test-mongo    # Mongo adapter tests against an ephemeral memongo mongod
 make cover         # cross-package coverage
 make lint          # golangci-lint (if installed)
-
-# Atlas integration tests are env-gated and skip without a cluster:
-MONGO_URI=... go test ./shared/adapter/repository/mongo/... -run Atlas -v
 ```
+
+### Testing against MongoDB without Atlas
+
+The write ports have an in-memory implementation
+(`shared/adapter/repository/memory`) that both services and the tests use, so
+`go test ./...` is fast and offline. The Mongo adapter itself is covered by
+three layers:
+
+1. **Offline unit tests** — BSON mapping, index specs, and the generated filter/
+   update/aggregation documents (`query_unit_test.go`).
+2. **`memongo`** — a real `mongod` downloaded into a temp dir and started for the
+   test binary. `TestMain` points `MONGO_URI` at it, so the *same* Atlas-gated
+   contract suite runs against a real server:
+
+   ```bash
+   make test-mongo                                   # ~80% coverage of the adapter
+   PLATEPILOT_MEMONGO_VERSION=8.0.4 make test-mongo  # pin a different mongod
+   ```
+
+   It is opt-in so the default suite stays offline; the first run downloads a
+   mongod binary (override the cache with `MEMONGO_CACHE_PATH`).
+
+3. **A real cluster** — set `MONGO_URI` and the same tests use Atlas instead of
+   memongo:
+
+   ```bash
+   MONGO_URI=... go test ./shared/adapter/repository/mongo/... -run Atlas -v
+   ```
 
 ## Layout
 

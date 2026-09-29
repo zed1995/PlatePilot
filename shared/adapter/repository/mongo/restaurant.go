@@ -310,12 +310,15 @@ func restaurantUpsertModel(r restaurant.Restaurant) (mongo.WriteModel, error) {
 		"cuisine_tags":     doc.CuisineTags,
 		"description":      doc.Description,
 		"price":            doc.Price,
-		"rating":           doc.Rating,
-		"attributes":       doc.Attributes,
-		"snapshot_status":  doc.SnapshotStatus,
-		"observed_at":      doc.ObservedAt,
-		"source_url":       doc.SourceURL,
-		"updated_at":       doc.UpdatedAt,
+		// Only the source average is owned by the meta import. Writing the
+		// whole rating subdocument would clobber computed_avg, which the stats
+		// job writes.
+		"rating.source_avg": doc.Rating.SourceAvg,
+		"attributes":        doc.Attributes,
+		"snapshot_status":   doc.SnapshotStatus,
+		"observed_at":       doc.ObservedAt,
+		"source_url":        doc.SourceURL,
+		"updated_at":        doc.UpdatedAt,
 	}
 	unset := bson.M{}
 	if doc.Location != nil {
