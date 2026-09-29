@@ -64,7 +64,7 @@ func (s *PipelineStore) RecordRejections(ctx context.Context, items []review.Rej
 			SetReplacement(rejectionToDoc(item)).
 			SetUpsert(true))
 	}
-	ctx, cancel := s.client.withTimeout(ctx)
+	ctx, cancel := s.client.withWriteTimeout(ctx)
 	defer cancel()
 	_, err := s.rejections().BulkWrite(ctx, models, options.BulkWrite().SetOrdered(false))
 	return operationError("mongo: record rejections", err)

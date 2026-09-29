@@ -58,7 +58,19 @@ func (c LogConfig) Validate() []string {
 type MongoConfig struct {
 	URI      string
 	Database string
-	Timeout  time.Duration
+	// Timeout bounds a single point operation (ping, single-document read or
+	// write).
+	Timeout time.Duration
+	// WriteTimeout bounds a bulk write or aggregation. Remote clusters need a
+	// far larger budget here than a point read: a 1k-document upsert can take
+	// tens of seconds.
+	WriteTimeout time.Duration
+	// ConnectTimeout bounds the initial handshake.
+	ConnectTimeout time.Duration
+	// MaxPoolSize and MinPoolSize bound the connection pool. Zero means the
+	// driver default.
+	MaxPoolSize uint64
+	MinPoolSize uint64
 }
 
 // Enabled reports whether MongoDB has been configured.
@@ -75,6 +87,15 @@ func (c MongoConfig) Validate() []string {
 	}
 	if c.Timeout <= 0 {
 		problems = append(problems, fmt.Sprintf("MONGO_TIMEOUT: must be > 0 (got %s)", c.Timeout))
+	}
+	if c.WriteTimeout <= 0 {
+		problems = append(problems, fmt.Sprintf("MONGO_WRITE_TIMEOUT: must be > 0 (got %s)", c.WriteTimeout))
+	}
+	if c.ConnectTimeout <= 0 {
+		problems = append(problems, fmt.Sprintf("MONGO_CONNECT_TIMEOUT: must be > 0 (got %s)", c.ConnectTimeout))
+	}
+	if c.MinPoolSize > 0 && c.MaxPoolSize > 0 && c.MinPoolSize > c.MaxPoolSize {
+		problems = append(problems, fmt.Sprintf("MONGO_MIN_POOL_SIZE: must not exceed MONGO_MAX_POOL_SIZE (got %d > %d)", c.MinPoolSize, c.MaxPoolSize))
 	}
 	return problems
 }
@@ -231,9 +252,13 @@ func (l *Loader) Log() LogConfig {
 // Mongo loads the shared MongoDB config.
 func (l *Loader) Mongo() MongoConfig {
 	return MongoConfig{
-		URI:      l.String("MONGO_URI", ""),
-		Database: l.String("MONGO_DATABASE", "platepilot"),
-		Timeout:  l.Duration("MONGO_TIMEOUT", 10*time.Second),
+		URI:            l.String("MONGO_URI", ""),
+		Database:       l.String("MONGO_DATABASE", "platepilot"),
+		Timeout:        l.Duration("MONGO_TIMEOUT", 10*time.Second),
+		WriteTimeout:   l.Duration("MONGO_WRITE_TIMEOUT", 60*time.Second),
+		ConnectTimeout: l.Duration("MONGO_CONNECT_TIMEOUT", 10*time.Second),
+		MaxPoolSize:    uint64(max(l.Int("MONGO_MAX_POOL_SIZE", 0), 0)),
+		MinPoolSize:    uint64(max(l.Int("MONGO_MIN_POOL_SIZE", 0), 0)),
 	}
 }
 

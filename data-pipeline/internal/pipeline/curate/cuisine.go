@@ -5,35 +5,66 @@
 // reproducible.
 package curate
 
-import "strings"
+import (
+	"strings"
+	"unicode"
+)
 
 // foodPlaceMarkers are category substrings that make a place food-relevant.
 // A place must match at least one to enter the knowledge base.
 var foodPlaceMarkers = []string{
-	"restaurant", "cafe", "café", "coffee", "bakery", "bakeries", "bar", "diner",
+	"restaurant", "cafe", "café", "coffee", "bakery", "bakeries", "bar", "bars", "pubs", "diner",
 	"pizzeria", "pizza", "bistro", "eatery", "deli", "delicatessen", "pub",
 	"brewery", "brewing", "ice cream", "dessert", "tea house", "juice",
 	"sandwich", "burger", "hamburger", "sushi", "ramen", "noodle", "taco",
-	"mexican", "grill", "barbecue", "bbq", "buffet", "cafeteria", "donut",
+	"grill", "barbecue", "bbq", "buffet", "cafeteria", "donut",
 	"doughnut", "bagel", "crepe", "waffle", "steakhouse", "seafood", "breakfast",
 	"brunch", "food court", "food truck", "dim sum", "dumpling", "falafel",
 	"shawarma", "kebab", "poke", "bubble tea", "smoothie", "confectionery",
 }
 
 // IsFoodPlace reports whether any category marks the place as food-relevant.
+//
+// Matching is on whole words and phrases, not substrings: a naive Contains check
+// accepts "Barber shop" (via "bar"), "Public library" (via "pub"), and
+// "Delivery service" (via "deli"), which is how ~6.6k non-food places slipped
+// into a first full-corpus run.
 func IsFoodPlace(categories []string) bool {
 	for _, category := range categories {
-		lower := strings.ToLower(strings.TrimSpace(category))
-		if lower == "" {
+		normalized := normalizedWords(category)
+		if normalized == "" {
 			continue
 		}
 		for _, marker := range foodPlaceMarkers {
-			if strings.Contains(lower, marker) {
+			if strings.Contains(normalized, " "+marker+" ") {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+// normalizedWords lowercases a category and reduces it to space-separated
+// alphanumeric tokens, padded with a space at each end so callers can test
+// membership with " marker " and get whole-word semantics.
+func normalizedWords(value string) string {
+	var b strings.Builder
+	b.WriteByte(' ')
+	lastWasSpace := true
+	for _, r := range strings.ToLower(value) {
+		switch {
+		case unicode.IsLetter(r), unicode.IsDigit(r):
+			b.WriteRune(r)
+			lastWasSpace = false
+		case !lastWasSpace:
+			b.WriteByte(' ')
+			lastWasSpace = true
+		}
+	}
+	if !lastWasSpace {
+		b.WriteByte(' ')
+	}
+	return b.String()
 }
 
 // cuisineByCategory maps exact Google category names (lowercased) to cuisine

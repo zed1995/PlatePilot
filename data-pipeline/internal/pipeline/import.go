@@ -119,6 +119,37 @@ func auditStore(stores Stores, opts ImportOptions) port.PipelineStore {
 	return stores.Pipeline
 }
 
+// flushAttempts is how many times a bulk write is retried on a transient
+// provider error. The upserts are idempotent, so replaying a batch is safe.
+const flushAttempts = 4
+
+// retryFlush re-runs an idempotent flush on transient provider failures with a
+// linear backoff. Remote clusters drop long bulk writes far more often than a
+// local server does, and aborting a 30-minute import on one blip is worse than
+// replaying one batch.
+func retryFlush(ctx context.Context, flush func() error) error {
+	var err error
+	for attempt := 0; attempt < flushAttempts; attempt++ {
+		if err = flush(); err == nil {
+			return nil
+		}
+		switch errs.CodeOf(err) {
+		case errs.CodeProviderTimeout, errs.CodeProviderUnavailable:
+		default:
+			return err
+		}
+		if ctx.Err() != nil {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(time.Duration(attempt+1) * 3 * time.Second):
+		}
+	}
+	return err
+}
+
 func runMeta(ctx context.Context, stores Stores, opts ImportOptions) (review.BatchReport, error) {
 	path := filepath.Join(opts.DataDir, MetaFileName)
 	reader, err := raw.Open(path)
@@ -198,7 +229,7 @@ func runMeta(ctx context.Context, stores Stores, opts ImportOptions) (review.Bat
 		batch = append(batch, result.Restaurant)
 		docs = append(docs, result.Documents...)
 		if len(batch) >= opts.BatchSize {
-			if err := flush(); err != nil {
+			if err := retryFlush(ctx, flush); err != nil {
 				_ = col.Finish(context.WithoutCancel(ctx), review.StatusFailed, codeOf(err), time.Now().UTC())
 				return col.Report(), err
 			}
@@ -208,7 +239,7 @@ func runMeta(ctx context.Context, stores Stores, opts ImportOptions) (review.Bat
 		_ = col.Finish(context.WithoutCancel(ctx), review.StatusFailed, codeOf(err), time.Now().UTC())
 		return col.Report(), errs.Wrap(errs.CodeInternal, "read meta file", err)
 	}
-	if err := flush(); err != nil {
+	if err := retryFlush(ctx, flush); err != nil {
 		_ = col.Finish(context.WithoutCancel(ctx), review.StatusFailed, codeOf(err), time.Now().UTC())
 		return col.Report(), err
 	}
@@ -312,7 +343,7 @@ func runReview(ctx context.Context, stores Stores, opts ImportOptions) (review.B
 		}
 		batch = append(batch, pending{record: record, lineNo: reader.LineNo()})
 		if len(batch) >= opts.BatchSize {
-			if err := flush(); err != nil {
+			if err := retryFlush(ctx, flush); err != nil {
 				_ = col.Finish(context.WithoutCancel(ctx), review.StatusFailed, codeOf(err), time.Now().UTC())
 				return col.Report(), err
 			}
@@ -322,7 +353,7 @@ func runReview(ctx context.Context, stores Stores, opts ImportOptions) (review.B
 		_ = col.Finish(context.WithoutCancel(ctx), review.StatusFailed, codeOf(err), time.Now().UTC())
 		return col.Report(), errs.Wrap(errs.CodeInternal, "read review file", err)
 	}
-	if err := flush(); err != nil {
+	if err := retryFlush(ctx, flush); err != nil {
 		_ = col.Finish(context.WithoutCancel(ctx), review.StatusFailed, codeOf(err), time.Now().UTC())
 		return col.Report(), err
 	}

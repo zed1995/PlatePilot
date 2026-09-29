@@ -24,6 +24,8 @@ const (
 	DefaultTimeout                = 10 * time.Second
 	DefaultConnectTimeout         = 10 * time.Second
 	DefaultServerSelectionTimeout = 10 * time.Second
+	// DefaultWriteTimeout bounds bulk writes and aggregations.
+	DefaultWriteTimeout = 60 * time.Second
 )
 
 // Config is the resolved Atlas connection configuration.
@@ -34,6 +36,7 @@ type Config struct {
 	URI                    string
 	Database               string
 	Timeout                time.Duration
+	WriteTimeout           time.Duration
 	ConnectTimeout         time.Duration
 	ServerSelectionTimeout time.Duration
 	SocketTimeout          time.Duration
@@ -48,6 +51,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.Timeout <= 0 {
 		c.Timeout = DefaultTimeout
+	}
+	if c.WriteTimeout <= 0 {
+		c.WriteTimeout = DefaultWriteTimeout
 	}
 	if c.ConnectTimeout <= 0 {
 		c.ConnectTimeout = DefaultConnectTimeout
@@ -80,9 +86,13 @@ type Client struct {
 // ConfigFromMongo derives a Config from the shared Mongo configuration.
 func ConfigFromMongo(mc sharedcfg.MongoConfig) Config {
 	return Config{
-		URI:      mc.URI,
-		Database: mc.Database,
-		Timeout:  mc.Timeout,
+		URI:            mc.URI,
+		Database:       mc.Database,
+		Timeout:        mc.Timeout,
+		WriteTimeout:   mc.WriteTimeout,
+		ConnectTimeout: mc.ConnectTimeout,
+		MaxPoolSize:    mc.MaxPoolSize,
+		MinPoolSize:    mc.MinPoolSize,
 	}.withDefaults()
 }
 
@@ -154,4 +164,14 @@ func (c *Client) withTimeout(ctx context.Context) (context.Context, context.Canc
 		return context.WithCancel(ctx)
 	}
 	return context.WithTimeout(ctx, c.cfg.Timeout)
+}
+
+// withWriteTimeout derives the (larger) budget used by bulk writes and
+// aggregations, which cannot fit in a point-operation timeout on a remote
+// cluster.
+func (c *Client) withWriteTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	if c.cfg.WriteTimeout <= 0 {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(ctx, c.cfg.WriteTimeout)
 }

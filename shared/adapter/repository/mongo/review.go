@@ -40,7 +40,7 @@ func (s *ReviewStore) UpsertReviews(ctx context.Context, items []review.Review) 
 		}
 		models = append(models, model)
 	}
-	ctx, cancel := s.client.withTimeout(ctx)
+	ctx, cancel := s.client.withWriteTimeout(ctx)
 	defer cancel()
 	res, err := s.coll().BulkWrite(ctx, models, options.BulkWrite().SetOrdered(false))
 	if err != nil {
@@ -86,7 +86,7 @@ func (s *ReviewStore) CountByRestaurant(ctx context.Context, restaurantID string
 	if strings.TrimSpace(restaurantID) == "" {
 		return review.Counts{}, errs.New(errs.CodeInvalidArgument, "restaurant_id is required")
 	}
-	ctx, cancel := s.client.withTimeout(ctx)
+	ctx, cancel := s.client.withWriteTimeout(ctx)
 	defer cancel()
 	results, err := s.aggregateCounts(ctx, bson.M{"restaurant_id": restaurantID})
 	if err != nil {
@@ -104,7 +104,7 @@ func (s *ReviewStore) AggregateStats(ctx context.Context, restaurantIDs []string
 	if len(restaurantIDs) == 0 {
 		return out, nil
 	}
-	ctx, cancel := s.client.withTimeout(ctx)
+	ctx, cancel := s.client.withWriteTimeout(ctx)
 	defer cancel()
 	results, err := s.aggregateCounts(ctx, bson.M{"restaurant_id": bson.M{"$in": restaurantIDs}})
 	if err != nil {
@@ -118,7 +118,7 @@ func (s *ReviewStore) AggregateStats(ctx context.Context, restaurantIDs []string
 
 // RestaurantIDsWithReviews returns the distinct restaurant IDs that have reviews.
 func (s *ReviewStore) RestaurantIDsWithReviews(ctx context.Context) ([]string, error) {
-	ctx, cancel := s.client.withTimeout(ctx)
+	ctx, cancel := s.client.withWriteTimeout(ctx)
 	defer cancel()
 	values, err := s.coll().Distinct(ctx, "restaurant_id", bson.M{})
 	if err != nil {

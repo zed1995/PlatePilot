@@ -51,7 +51,11 @@ func (c *Client) EnsureSchema(ctx context.Context) ([]CollectionStatus, error) {
 	// Decide existence from an explicit listing rather than from the error code
 	// of a failing create: the driver/server combination does not always report
 	// an existing collection consistently.
-	existing, err := c.db().ListCollectionNames(ctx, bson.M{"name": bson.M{"$in": names}})
+	//
+	// The listing is unfiltered on purpose: Atlas rejects a `name: {$in: [...]}`
+	// filter with "can't get regex from filter doc not a regex", even though a
+	// community server accepts it.
+	existing, err := c.db().ListCollectionNames(ctx, bson.M{})
 	if err != nil {
 		return nil, operationError("mongo: list collections", err)
 	}

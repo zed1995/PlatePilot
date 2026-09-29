@@ -54,7 +54,7 @@ func (s *RestaurantStore) UpsertRestaurants(ctx context.Context, rs []restaurant
 		}
 		models = append(models, model)
 	}
-	ctx, cancel := s.client.withTimeout(ctx)
+	ctx, cancel := s.client.withWriteTimeout(ctx)
 	defer cancel()
 	res, err := s.coll().BulkWrite(ctx, models, options.BulkWrite().SetOrdered(false))
 	if err != nil {
@@ -99,7 +99,7 @@ func (s *RestaurantStore) ListRestaurants(ctx context.Context, limit int) ([]res
 	if limit > 0 {
 		findOpts.SetLimit(int64(limit))
 	}
-	ctx, cancel := s.client.withTimeout(ctx)
+	ctx, cancel := s.client.withWriteTimeout(ctx)
 	defer cancel()
 	cursor, err := s.coll().Find(ctx, bson.M{}, findOpts)
 	if err != nil {
@@ -126,7 +126,7 @@ func (s *RestaurantStore) MapSourceRecordIDs(ctx context.Context, sourceRecordID
 	if len(sourceRecordIDs) == 0 {
 		return out, nil
 	}
-	ctx, cancel := s.client.withTimeout(ctx)
+	ctx, cancel := s.client.withWriteTimeout(ctx)
 	defer cancel()
 	cursor, err := s.coll().Find(ctx,
 		bson.M{"source_record_id": bson.M{"$in": sourceRecordIDs}},
@@ -208,7 +208,7 @@ func (s *RestaurantStore) UpdateScores(ctx context.Context, scores map[string]fl
 			SetFilter(bson.M{"_id": id}).
 			SetUpdate(bson.M{"$set": f}))
 	}
-	ctx, cancel := s.client.withTimeout(ctx)
+	ctx, cancel := s.client.withWriteTimeout(ctx)
 	defer cancel()
 	if _, err := s.coll().BulkWrite(ctx, models, options.BulkWrite().SetOrdered(false)); err != nil {
 		return operationError("mongo: update scores", err)
@@ -225,7 +225,7 @@ func (s *RestaurantStore) SelectForDemo(ctx context.Context, limit int) ([]resta
 	if limit > 0 {
 		findOpts.SetLimit(int64(limit))
 	}
-	ctx, cancel := s.client.withTimeout(ctx)
+	ctx, cancel := s.client.withWriteTimeout(ctx)
 	defer cancel()
 	cursor, err := s.coll().Find(ctx, bson.M{"is_active_for_demo": true}, findOpts)
 	if err != nil {
@@ -249,7 +249,7 @@ func (s *RestaurantStore) SelectForDemo(ctx context.Context, limit int) ([]resta
 
 // CountActiveForDemo reports how many restaurants are active for the demo.
 func (s *RestaurantStore) CountActiveForDemo(ctx context.Context) (int64, error) {
-	ctx, cancel := s.client.withTimeout(ctx)
+	ctx, cancel := s.client.withWriteTimeout(ctx)
 	defer cancel()
 	n, err := s.coll().CountDocuments(ctx, bson.M{"is_active_for_demo": true})
 	if err != nil {
@@ -281,7 +281,7 @@ func (s *RestaurantStore) UpsertDocuments(ctx context.Context, docs []restaurant
 			SetUpdate(bson.M{"$set": payload}).
 			SetUpsert(true))
 	}
-	ctx, cancel := s.client.withTimeout(ctx)
+	ctx, cancel := s.client.withWriteTimeout(ctx)
 	defer cancel()
 	if _, err := s.client.collection(CollectionRestaurantDocuments).BulkWrite(ctx, models, options.BulkWrite().SetOrdered(false)); err != nil {
 		return operationError("mongo: upsert restaurant documents", err)

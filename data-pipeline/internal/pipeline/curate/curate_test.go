@@ -35,6 +35,45 @@ func TestIsFoodPlace(t *testing.T) {
 	}
 }
 
+// Regression: substring matching wrongly accepted barbers, libraries, and
+// couriers because "bar", "pub", and "deli" are substrings of longer words.
+func TestIsFoodPlaceRejectsSubstringFalsePositives(t *testing.T) {
+	falsePositives := map[string][]string{
+		"Barber shop":                  {"Barber shop"},
+		"Hair salon + Barber":          {"Hair salon", "Barber shop", "Beauty salon"},
+		"Public library":               {"Public library"},
+		"Public swimming pool":         {"Public swimming pool"},
+		"Shipping and mailing service": {"Shipping and mailing service", "Freight forwarding service"},
+		"Flower delivery":              {"Florist", "Flower delivery", "Flower designer"},
+		"Publisher":                    {"Newspaper publisher"},
+		"Cosmetics store":              {"Beauty supply store", "Cosmetics store"},
+	}
+	for name, categories := range falsePositives {
+		if IsFoodPlace(categories) {
+			t.Errorf("IsFoodPlace(%v) = true for %s; want false", categories, name)
+		}
+	}
+
+	// Genuine food places must still pass, including the plural bar form.
+	truePositives := [][]string{
+		{"Barber shop", "Pizza restaurant"},
+		{"Bar"},
+		{"Bars"},
+		{"Cocktail bar"},
+		{"Pub"},
+		{"Cafe"},
+		{"Café"},
+		{"Ice cream shop"},
+		{"Coffee shop"},
+		{"Fast food restaurant"},
+	}
+	for _, categories := range truePositives {
+		if !IsFoodPlace(categories) {
+			t.Errorf("IsFoodPlace(%v) = false, want true", categories)
+		}
+	}
+}
+
 func TestCuisineTags(t *testing.T) {
 	got := CuisineTags([]string{"Pizza restaurant", "Italian restaurant", "Restaurant"})
 	want := []string{"pizza", "italian"}
