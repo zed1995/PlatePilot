@@ -1,0 +1,52 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.local
+*.secret
+
+# Local data and generated datasets
+data/raw/
+data/private/
+data/processed/
+data/exports/
+*.gz
+*.duckdb
+*.parquet
+*.sqlite
+*.sqlite3
+*.db
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Go
+bin/
+dist/
+tmp/
+*.test
+*.out
+coverage.out
+
+# Logs and runtime files
+*.log
+logs/
+run/
+*.pid
+
+# macOS and editors
+.DS_Store
+._*
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local development scripts
+scripts/

@@ -1,0 +1,516 @@
+[
+  {
+    "restaurant_id": "0x89c25856265dceff:0x1e8167222d4fd3db",
+    "name": "Ellen's Stardust Diner",
+    "address": "Ellen's Stardust Diner, 1650 Broadway, New York, NY 10019",
+    "geo": {
+      "lat": 40.7618723,
+      "lon": -73.98343559999999
+    },
+    "categories": [
+      "Diner",
+      "American restaurant",
+      "Restaurant"
+    ],
+    "cuisine": "American",
+    "price_level": 2,
+    "price_raw": "$$",
+    "avg_rating": 4.4,
+    "review_count": 9998,
+    "hours": [
+      {
+        "day": "Sun",
+        "open": 660,
+        "close": 1320
+      },
+      {
+        "day": "Mon",
+        "open": null,
+        "close": null
+      },
+      {
+        "day": "Tue",
+        "open": null,
+        "close": null
+      },
+      {
+        "day": "Wed",
+        "open": null,
+        "close": null
+      },
+      {
+        "day": "Thu",
+        "open": 960,
+        "close": 1320
+      },
+      {
+        "day": "Fri",
+        "open": 960,
+        "close": 1320
+      },
+      {
+        "day": "Sat",
+        "open": 660,
+        "close": 1320
+      }
+    ],
+    "attributes": {
+      "accepts_reservations": false,
+      "wheelchair_accessible": true,
+      "high_chairs": true,
+      "good_for_kids": true,
+      "good_for_groups": true,
+      "outdoor_seating": false,
+      "takeout": true,
+      "delivery": true,
+      "dine_in": true,
+      "atmosphere": [
+        "Casual",
+        "Cozy",
+        "Historic"
+      ],
+      "popular_for": [
+        "Breakfast",
+        "Lunch",
+        "Dinner",
+        "Solo dining"
+      ]
+    },
+    "description": "Multi-level '50s-themed diner with singing servers & an extensive menu of American classics.",
+    "open_status": null,
+    "provenance": {
+      "source": "google_local_2021",
+      "source_record_id": "0x89c25856265dceff:0x1e8167222d4fd3db",
+      "source_url": "https://www.google.com/maps/place//data=!4m2!3m1!1s0x89c25856265dceff:0x1e8167222d4fd3db?authuser=-1&hl=en&gl=us",
+      "observed_at": "2021-09",
+      "license": "cite-only (UCSD McAuley lab)",
+      "note": "Google Maps snapshot up to Sep 2021; verify freshness at query time"
+    },
+    "sample_reviews": [
+      {
+        "rating": 5,
+        "time": "2020-12-31T14:37:57.346000Z",
+        "text": "My friends and I came to the restaurant on the last night before they shut down this month. We had the most amazing experience. We felt like we got a true Broadway experience, which we didn’t expect to have upon going to NYC amidst this pandemic. Not only were the waiters on top of their game, but the food was DELICIOUS!! Wow! I will rave about this cafe for a long time."
+      },
+      {
+        "rating": 5,
+        "time": "2021-01-26T16:55:26.620000Z",
+        "text": "This restaurant is awesome. The service is great and the waiters do a great spectacle. Regarding the food, I really liked it, even if I'm not a big fan of American food, everything was tasty. You have to wait some time outside because it's quite popular, but it is really worth it!"
+      },
+      {
+        "rating": 5,
+        "time": "2021-03-03T14:16:08.693000Z",
+        "text": "This place is awesome! I queued in the snow at -1 degrees for 40 minutes minimum and it was well worth the wait, the food was amazing and the entertainment was just off the charts. It was such a fun idea and any musical theatre lover must go here."
+      }
+    ]
+  },
+  {
+    "restaurant_id": "0x89c25854faa8d447:0x100a2b0d8c445c5f",
+    "name": "Carmine's Italian Restaurant - Times Square",
+    "address": "Carmine's Italian Restaurant - Times Square, 200 W 44th St, New York, NY 10036",
+    "geo": {
+      "lat": 40.757498,
+      "lon": -73.986654
+    },
+    "categories": [
+      "Italian restaurant",
+      "Caterer",
+      "Delivery service",
+      "Family restaurant",
+      "Restaurant"
+    ],
+    "cuisine": "Italian",
+    "price_level": 2,
+    "price_raw": "$$",
+    "avg_rating": 4.5,
+    "review_count": 9998,
+    "hours": [
+      {
+        "day": "Sat",
+        "open": 720,
+        "close": 1320
+      },
+      {
+        "day": "Sun",
+        "open": 720,
+        "close": 1320
+      },
+      {
+        "day": "Mon",
+        "open": 720,
+        "close": 1320
+      },
+      {
+        "day": "Tue",
+        "open": 720,
+        "close": 1320
+      },
+      {
+        "day": "Wed",
+        "open": 720,
+        "close": 1320
+      },
+      {
+        "day": "Thu",
+        "open": 720,
+        "close": 1320
+      },
+      {
+        "day": "Fri",
+        "open": 720,
+        "close": 1320
+      }
+    ],
+    "attributes": {
+      "accepts_reservations": true,
+      "wheelchair_accessible": true,
+      "high_chairs": true,
+      "good_for_kids": true,
+      "good_for_groups": true,
+      "outdoor_seating": false,
+      "takeout": true,
+      "delivery": true,
+      "dine_in": true,
+      "atmosphere": [
+        "Casual",
+        "Cozy",
+        "Historic"
+      ],
+      "popular_for": [
+        "Lunch",
+        "Dinner"
+      ]
+    },
+    "description": "Bustling restaurant with enormous portions of traditional Italian dishes served family style.",
+    "open_status": null,
+    "provenance": {
+      "source": "google_local_2021",
+      "source_record_id": "0x89c25854faa8d447:0x100a2b0d8c445c5f",
+      "source_url": "https://www.google.com/maps/place//data=!4m2!3m1!1s0x89c25854faa8d447:0x100a2b0d8c445c5f?authuser=-1&hl=en&gl=us",
+      "observed_at": "2021-09",
+      "license": "cite-only (UCSD McAuley lab)",
+      "note": "Google Maps snapshot up to Sep 2021; verify freshness at query time"
+    },
+    "sample_reviews": [
+      {
+        "rating": 5,
+        "time": "2021-04-05T20:44:45.022000Z",
+        "text": "The food was well-prepared and delicious. This location exudes an intense sense of calm that everyone will appreciate. It's a fantastic experience! This restaurant comes highly recommended from me."
+      },
+      {
+        "rating": 5,
+        "time": "2021-03-13T06:16:33.673000Z",
+        "text": "After spending a whole day at the Metropolitan Museum and starving, we stumble across this lovely restaurant. I just love the classical Italian decor and the family portion that was served. I also love the black & white photos from the old times that are hung on the walls. The food was really good as well. and Good food and nice people😀"
+      },
+      {
+        "rating": 3,
+        "time": "2019-07-14T00:53:20.035000Z",
+        "text": "We came, we saw, we ate, we had the experience and now I can check it off my list. It was good but I definitely expected more. Definitely paid for the name and the hype.\nReservations are a must!!! The place is busy so don’t expect a quiet dinner. The staff was nice but I think they were stretched a little thin. The food portions were the only thing that impressed me. Good family style hearty portions - that’s about it!!! Again for the money we paid I expected a lot more."
+      }
+    ]
+  },
+  {
+    "restaurant_id": "0x89c258f86feb1ed1:0x6c2c3c20a0a0e151",
+    "name": "The Halal Guys",
+    "address": "The Halal Guys, 24-08 40th Ave, Queens, NY 11101",
+    "geo": {
+      "lat": 40.753554199999996,
+      "lon": -73.9386227
+    },
+    "categories": [
+      "Halal restaurant"
+    ],
+    "cuisine": "Halal",
+    "price_level": 1,
+    "price_raw": "$",
+    "avg_rating": 4.4,
+    "review_count": 9715,
+    "hours": [
+      {
+        "day": "Thu",
+        "open": 660,
+        "close": 1410
+      },
+      {
+        "day": "Fri",
+        "open": 660,
+        "close": 1440
+      },
+      {
+        "day": "Sat",
+        "open": 660,
+        "close": 1440
+      },
+      {
+        "day": "Sun",
+        "open": 660,
+        "close": 1410
+      },
+      {
+        "day": "Mon",
+        "open": 660,
+        "close": 1410
+      },
+      {
+        "day": "Tue",
+        "open": 660,
+        "close": 1410
+      },
+      {
+        "day": "Wed",
+        "open": 660,
+        "close": 1410
+      }
+    ],
+    "attributes": {
+      "accepts_reservations": false,
+      "wheelchair_accessible": true,
+      "high_chairs": false,
+      "good_for_kids": true,
+      "good_for_groups": true,
+      "outdoor_seating": false,
+      "takeout": true,
+      "delivery": true,
+      "dine_in": true,
+      "atmosphere": [
+        "Casual"
+      ],
+      "popular_for": [
+        "Lunch",
+        "Dinner",
+        "Solo dining"
+      ]
+    },
+    "description": null,
+    "open_status": null,
+    "provenance": {
+      "source": "google_local_2021",
+      "source_record_id": "0x89c258f86feb1ed1:0x6c2c3c20a0a0e151",
+      "source_url": "https://www.google.com/maps/place//data=!4m2!3m1!1s0x89c258f86feb1ed1:0x6c2c3c20a0a0e151?authuser=-1&hl=en&gl=us",
+      "observed_at": "2021-09",
+      "license": "cite-only (UCSD McAuley lab)",
+      "note": "Google Maps snapshot up to Sep 2021; verify freshness at query time"
+    },
+    "sample_reviews": [
+      {
+        "rating": 5,
+        "time": "2021-02-05T23:13:15.923000Z",
+        "text": "Love going to the original stand every time I visit NYC. The best gyros I've ever had. Don't forget to add the special white sauce to your platter. Every time I go there's always a long line but it moves quickly. I Still can't believe these guys have been there for so many years. They serve the best food."
+      },
+      {
+        "rating": 1,
+        "time": "2021-04-09T21:04:11.105000Z",
+        "text": "The employee here is extremely impolite. Our friends and i walked into pick up our doordash order which was sitting across the table when we arrived.\n\nHowever, there were few customers being waited without being informed of any reasons. And when we asked to hand over our food, the employee ignored it numerous times and eventually just responded ‘1 sec’ even though our food was already sitting there. After 20+ min, we inquired again why he wasnt handing over our food and he simply responded ‘i sa"
+      },
+      {
+        "rating": 4,
+        "time": "2021-01-15T19:16:18.484000Z",
+        "text": "The outdoor patio seating has nice views of the surrounding bay. We came here on a Monday Autumn morning for brunch and a few people paddle boarding in the calm waters beside us. We ordered the breakfast enchiladas and the fried chicken and French toast. The enchiladas were good. It was topped with a generous heap of guacamole and sour cream over three enchiladas. As for the fried chicken...OMG! It was so juicy and tender and the crispy coating was unlike anything I've ever had! Definitely order"
+      }
+    ]
+  },
+  {
+    "restaurant_id": "0x89c259ab3c1ef289:0x3b67a41175949f55",
+    "name": "Joe's Pizza",
+    "address": "Joe's Pizza, 1435 Broadway, New York, NY 10018",
+    "geo": {
+      "lat": 40.7546287,
+      "lon": -73.9869994
+    },
+    "categories": [
+      "Pizza restaurant",
+      "Pizza delivery",
+      "Restaurant"
+    ],
+    "cuisine": "Pizza",
+    "price_level": 1,
+    "price_raw": "$",
+    "avg_rating": 4.5,
+    "review_count": 9632,
+    "hours": [
+      {
+        "day": "Sun",
+        "open": 600,
+        "close": 1620
+      },
+      {
+        "day": "Mon",
+        "open": 600,
+        "close": 1620
+      },
+      {
+        "day": "Tue",
+        "open": 600,
+        "close": 1620
+      },
+      {
+        "day": "Wed",
+        "open": 600,
+        "close": 1620
+      },
+      {
+        "day": "Thu",
+        "open": 600,
+        "close": 1680
+      },
+      {
+        "day": "Fri",
+        "open": 600,
+        "close": 1680
+      },
+      {
+        "day": "Sat",
+        "open": 600,
+        "close": 1680
+      }
+    ],
+    "attributes": {
+      "accepts_reservations": false,
+      "wheelchair_accessible": true,
+      "high_chairs": false,
+      "good_for_kids": true,
+      "good_for_groups": false,
+      "outdoor_seating": false,
+      "takeout": true,
+      "delivery": true,
+      "dine_in": true,
+      "atmosphere": [
+        "Casual"
+      ],
+      "popular_for": [
+        "Lunch",
+        "Dinner",
+        "Solo dining"
+      ]
+    },
+    "description": "Modern outpost of a longtime counter-serve pizza joint prepping New York–style slices & pies.",
+    "open_status": "Open ⋅ Closes 3AM",
+    "provenance": {
+      "source": "google_local_2021",
+      "source_record_id": "0x89c259ab3c1ef289:0x3b67a41175949f55",
+      "source_url": "https://www.google.com/maps/place//data=!4m2!3m1!1s0x89c259ab3c1ef289:0x3b67a41175949f55?authuser=-1&hl=en&gl",
+      "observed_at": "2021-09",
+      "license": "cite-only (UCSD McAuley lab)",
+      "note": "Google Maps snapshot up to Sep 2021; verify freshness at query time"
+    },
+    "sample_reviews": [
+      {
+        "rating": 5,
+        "time": "2021-05-07T21:07:03.114000Z",
+        "text": "Amazing pizzas… if you are in New York then you have to stop by the iconic Joe’s Pizza… I loved the cheese slice so much that I took one more… simple loved each and every bite of it… I have posted some videos and images hope it helps you in some way… do try it it is absolutely worth it"
+      },
+      {
+        "rating": 5,
+        "time": "2021-05-11T07:55:08.171000Z",
+        "text": "Must try! This is the best pizza I ever had. No seriously. We went twice in one day. Once for lunch and once for a midnight snack. Our favorite is the pepperoni (can't go wrong with a classic) and the Supreme. I didn't like the spinach too much but you might! The pizza comes out pippin hot and there's a nice crunch every bite you take. While you eat, check out the photos of celebrities that visited. It was really fun seeing who we can name off on the wall. Joe's pizza is also featured in a few m"
+      },
+      {
+        "rating": 5,
+        "time": "2021-05-05T18:46:25.585000Z",
+        "text": "During our recent visit, my husband and I had dinner here. I ordered the chicken pesto pasta, but there was no chicken or pesto in it. It was awesome. The pizza was excellent, probably the best I've ever tasted. They also have a welcoming team who can greet customers with a smile. This is a location I would recommend to everyone."
+      }
+    ]
+  },
+  {
+    "restaurant_id": "0x89c2585492286ae9:0x4dfa6d9f277ea7de",
+    "name": "Los Tacos No.1",
+    "address": "Los Tacos No.1, 229 W 43rd St, New York, NY 10036",
+    "geo": {
+      "lat": 40.7573133,
+      "lon": -73.98740649999999
+    },
+    "categories": [
+      "Taco restaurant",
+      "Mexican restaurant",
+      "Mexican torta restaurant"
+    ],
+    "cuisine": "Taco",
+    "price_level": 1,
+    "price_raw": "$",
+    "avg_rating": 4.8,
+    "review_count": 5512,
+    "hours": [
+      {
+        "day": "Mon",
+        "open": 660,
+        "close": 1320
+      },
+      {
+        "day": "Tue",
+        "open": 660,
+        "close": 1320
+      },
+      {
+        "day": "Wed",
+        "open": 660,
+        "close": 1320
+      },
+      {
+        "day": "Thu",
+        "open": 660,
+        "close": 1320
+      },
+      {
+        "day": "Fri",
+        "open": 660,
+        "close": 1320
+      },
+      {
+        "day": "Sat",
+        "open": 660,
+        "close": 1320
+      },
+      {
+        "day": "Sun",
+        "open": 660,
+        "close": 1260
+      }
+    ],
+    "attributes": {
+      "accepts_reservations": false,
+      "wheelchair_accessible": true,
+      "high_chairs": false,
+      "good_for_kids": false,
+      "good_for_groups": true,
+      "outdoor_seating": false,
+      "takeout": true,
+      "delivery": true,
+      "dine_in": true,
+      "atmosphere": [
+        "Casual"
+      ],
+      "popular_for": [
+        "Lunch",
+        "Dinner",
+        "Solo dining"
+      ]
+    },
+    "description": "Bustling spot for tacos & other Mex bites with aguas frescas in a street-style setup (no seating).",
+    "open_status": null,
+    "provenance": {
+      "source": "google_local_2021",
+      "source_record_id": "0x89c2585492286ae9:0x4dfa6d9f277ea7de",
+      "source_url": "https://www.google.com/maps/place//data=!4m2!3m1!1s0x89c2585492286ae9:0x4dfa6d9f277ea7de?authuser=-1&hl=en&gl=us",
+      "observed_at": "2021-09",
+      "license": "cite-only (UCSD McAuley lab)",
+      "note": "Google Maps snapshot up to Sep 2021; verify freshness at query time"
+    },
+    "sample_reviews": [
+      {
+        "rating": 5,
+        "time": "2021-04-14T16:31:17.382000Z",
+        "text": "Delicious tacos. Love the adobado (pork) taco in particular. Always a line but it's definitely worth it. Great that you can choose between a flour and corn tortilla. Highly recommend getting it with all the fixings. Definitely a favorite and go to place whenever I'm in Chelsea."
+      },
+      {
+        "rating": 5,
+        "time": "2021-02-22T18:47:42.921000Z",
+        "text": "Authentic dining experience. You know when everyone who works there speaks the native tongue, that is it going to be authentically made. We tried each taco and they were all so good. The cactus taco was surprisingly delicious and our favorite was the chicken taco."
+      },
+      {
+        "rating": 5,
+        "time": "2021-04-13T04:20:43.763000Z",
+        "text": "Some of the best tacos you’ll find in the city. Quick and cheap. A great dinner before or after a show."
+      }
+    ]
+  }
+]
