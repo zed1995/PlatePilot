@@ -140,6 +140,7 @@ func runMeta(ctx context.Context, stores Stores, opts ImportOptions) (review.Bat
 
 	batch := make([]restaurant.Restaurant, 0, opts.BatchSize)
 	docs := make([]restaurant.Document, 0, opts.BatchSize)
+	dedup := newDedupTracker(0)
 
 	flush := func() error {
 		if len(batch) == 0 {
@@ -191,6 +192,9 @@ func runMeta(ctx context.Context, stores Stores, opts ImportOptions) (review.Bat
 			col.MissingField(field)
 		}
 		col.Accepted(1)
+		if dedup.Observe(result.Restaurant.SourceRecordID) {
+			col.Deduped(1)
+		}
 		batch = append(batch, result.Restaurant)
 		docs = append(docs, result.Documents...)
 		if len(batch) >= opts.BatchSize {
@@ -241,6 +245,7 @@ func runReview(ctx context.Context, stores Stores, opts ImportOptions) (review.B
 		lineNo int64
 	}
 	batch := make([]pending, 0, opts.BatchSize)
+	dedup := newDedupTracker(0)
 	reviewOpts := curate.ReviewOptions{MinTextChars: opts.MinTextChars, ObservedAt: observedAt}
 
 	flush := func() error {
@@ -272,6 +277,9 @@ func runReview(ctx context.Context, stores Stores, opts ImportOptions) (review.B
 				continue
 			}
 			col.Accepted(1)
+			if dedup.Observe(normalized.ID) {
+				col.Deduped(1)
+			}
 			curated = append(curated, normalized)
 		}
 		if !opts.DryRun && len(curated) > 0 {

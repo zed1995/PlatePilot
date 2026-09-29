@@ -64,9 +64,15 @@ func (s *RestaurantStore) upsertLocked(r restaurant.Restaurant) {
 		if !existing.CreatedAt.IsZero() {
 			r.CreatedAt = existing.CreatedAt
 		}
-		// review_stats, knowledge_score and is_active_for_demo are owned by the
-		// stats and scoring jobs, so a meta re-import must not reset them.
-		r.ReviewStats = existing.ReviewStats
+		// The sampled counts, score, and active flag are owned by the stats and
+		// scoring jobs and must survive a meta re-import. The source review count
+		// is owned by the meta import, so it comes from the incoming record.
+		r.ReviewStats.StoredReviewCount = existing.ReviewStats.StoredReviewCount
+		r.ReviewStats.TextReviewCount = existing.ReviewStats.TextReviewCount
+		r.ReviewStats.RepresentativeReviewCount = existing.ReviewStats.RepresentativeReviewCount
+		r.ReviewStats.EmbeddedReviewCount = existing.ReviewStats.EmbeddedReviewCount
+		r.ReviewStats.LastReviewedAt = existing.ReviewStats.LastReviewedAt
+		r.ReviewStats.StatsUpdatedAt = existing.ReviewStats.StatsUpdatedAt
 		r.KnowledgeScore = existing.KnowledgeScore
 		r.IsActiveForDemo = existing.IsActiveForDemo
 		r.Rating.ComputedAvg = existing.Rating.ComputedAvg

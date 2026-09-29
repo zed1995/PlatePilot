@@ -51,6 +51,10 @@ func restaurantFixture(id, sourceRecordID, name string, createdAt time.Time) res
 		ObservedAt:     baseTime,
 		CreatedAt:      createdAt,
 		UpdatedAt:      createdAt,
+		ReviewStats: restaurant.ReviewStats{
+			SourceReviewCount:       9998,
+			SourceReviewCountCapped: true,
+		},
 	}
 }
 
@@ -67,6 +71,10 @@ func runRestaurantStore(t *testing.T, s port.RestaurantStore) {
 	}
 	if got.ID != "id-1" || got.Name != "Joe's Pizza" {
 		t.Fatalf("stored = %+v", got)
+	}
+	// The source review count comes from Meta and must survive the insert.
+	if got.ReviewStats.SourceReviewCount != 9998 || !got.ReviewStats.SourceReviewCountCapped {
+		t.Errorf("source review stats not persisted on insert: %+v", got.ReviewStats)
 	}
 
 	// Re-import proposes a new ID and a new creation time; both must be ignored
@@ -185,6 +193,9 @@ func runRestaurantStore(t *testing.T, s port.RestaurantStore) {
 	got, _ = s.GetBySourceRecordID(ctx, "gmap-1")
 	if got.ReviewStats.StoredReviewCount != 7 {
 		t.Errorf("meta re-import wiped review_stats: %+v", got.ReviewStats)
+	}
+	if got.ReviewStats.SourceReviewCount != 9998 {
+		t.Errorf("meta re-import dropped the source review count: %+v", got.ReviewStats)
 	}
 	if got.KnowledgeScore != 9.5 || !got.IsActiveForDemo {
 		t.Errorf("meta re-import wiped score/flag: score=%v active=%v", got.KnowledgeScore, got.IsActiveForDemo)

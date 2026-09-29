@@ -32,10 +32,26 @@ Mongo adapter 有三层验证，默认无需 Atlas：
    `TestMain` 把 `MONGO_URI` 指向它，于是同一套 Atlas 契约测试跑在真实服务器上
    （覆盖率约 80%）。设 `MONGO_URI` 时改为使用真实集群。
 
-> memongo 在本次实现中确实发现了两个只在真实服务器上暴露的缺陷：
-> `EnsureSchema` 依赖 CreateCollection 错误码判断集合是否存在（第二次 migrate
-> 误报 created），以及 meta 导入整段 `$set` 了 `rating` 子文档，覆盖掉统计任务写入的
-> `rating.computed_avg`。两者已修复并补了回归测试。
+> 真实服务器验证一共暴露了**五个**只在实跑时才出现的缺陷，全部已修复并补了回归测试：
+>
+> 1. `EnsureSchema` 依赖 CreateCollection 错误码判断集合是否存在，第二次 `migrate`
+>    误报 created —— 改为先 `ListCollectionNames`。
+> 2. meta 导入整段 `$set` 了 `rating` 子文档，覆盖统计任务写入的 `rating.computed_avg`
+>    —— 改为只写 `rating.source_avg`。
+> 3. meta 导入把 `review_stats` 整段放进 `$setOnInsert` 且写的是**空结构**，
+>    导致 `source_review_count` / `source_review_count_capped` 永远为 0
+>    （3748 家餐厅无一命中）—— 改为 `$set` 写入 Meta 拥有的 source 字段，
+>    `$setOnInsert` 只初始化采样计数字段。这是本次最严重的一个数据丢失缺陷。
+> 4. `written` 指标把 MatchedCount 与 ModifiedCount 相加，命中且被修改的文档被
+>    重复计数（二次导入 3937 条记录报出 7873）—— 改为 `upserted + matched`。
+> 5. `deduped` 恒为 0，从未统计输入流中的重复记录 —— 新增有界的 in-run
+>    dedup tracker（按 `source_record_id` / `review_id`），超过上限时降级为下界，
+>    不影响"不产生重复文档"的正确性。
+>
+> 修好后再跑真实数据：meta `accepted=3937 / written=3937 / deduped=189`，
+> review `accepted=26910 / written=26910 / deduped=4169`，落库
+> `restaurants=3748`（distinct `source_record_id` 同为 3748）、`reviews=22741`，
+> 二次导入所有计数完全不变。
 
 | 任务 | 状态 | 主要落地文件 |
 |---|---|---|

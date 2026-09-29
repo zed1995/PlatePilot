@@ -60,7 +60,9 @@ func (s *RestaurantStore) UpsertRestaurants(ctx context.Context, rs []restaurant
 	if err != nil {
 		return 0, operationError("mongo: bulk upsert restaurants", err)
 	}
-	return int(res.UpsertedCount + res.ModifiedCount + res.MatchedCount), nil
+	// A matched-and-modified document appears in both MatchedCount and
+	// ModifiedCount; documents touched is upserted + matched, counted once.
+	return int(res.UpsertedCount + res.MatchedCount), nil
 }
 
 // GetBySourceRecordID returns the curated restaurant for a gmap_id.
@@ -319,6 +321,10 @@ func restaurantUpsertModel(r restaurant.Restaurant) (mongo.WriteModel, error) {
 		"observed_at":       doc.ObservedAt,
 		"source_url":        doc.SourceURL,
 		"updated_at":        doc.UpdatedAt,
+		// The source review count is owned by the meta import, so it is carried
+		// on updates too; the sampled counts stay with the stats job.
+		"review_stats.source_review_count":        doc.ReviewStats.SourceReviewCount,
+		"review_stats.source_review_count_capped": doc.ReviewStats.SourceReviewCountCapped,
 	}
 	unset := bson.M{}
 	if doc.Location != nil {
@@ -330,11 +336,17 @@ func restaurantUpsertModel(r restaurant.Restaurant) (mongo.WriteModel, error) {
 	update := bson.M{
 		"$set": set,
 		"$setOnInsert": bson.M{
-			"_id":                doc.ID,
-			"created_at":         doc.CreatedAt,
-			"review_stats":       reviewStatsDoc{},
-			"knowledge_score":    0.0,
-			"is_active_for_demo": false,
+			"_id":        doc.ID,
+			"created_at": doc.CreatedAt,
+			// Only the sampled counts are initialised here; they belong to the
+			// stats job and must never be reset by a meta re-import.
+			"review_stats.stored_review_count":         0,
+			"review_stats.text_review_count":           0,
+			"review_stats.representative_review_count": 0,
+			"review_stats.embedded_review_count":       0,
+			"review_stats.stats_updated_at":            doc.ReviewStats.StatsUpdatedAt,
+			"knowledge_score":                          0.0,
+			"is_active_for_demo":                       false,
 		},
 	}
 	if len(unset) > 0 {

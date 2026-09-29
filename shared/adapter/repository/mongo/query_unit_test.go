@@ -72,15 +72,32 @@ func TestRestaurantUpsertModelKeepsIdentityAndOwnedFields(t *testing.T) {
 			t.Errorf("$set must not overwrite %q", forbidden)
 		}
 	}
+	// The source review count is owned by the meta import and must be written.
+	if _, present := set["review_stats.source_review_count"]; !present {
+		t.Error("$set must write review_stats.source_review_count from Meta")
+	}
 
 	onInsert, ok := update["$setOnInsert"].(bson.M)
 	if !ok {
 		t.Fatalf("$setOnInsert = %#v", update["$setOnInsert"])
 	}
-	for _, required := range []string{"_id", "created_at", "review_stats", "knowledge_score", "is_active_for_demo"} {
+	for _, required := range []string{"_id", "created_at", "knowledge_score", "is_active_for_demo"} {
 		if _, present := onInsert[required]; !present {
 			t.Errorf("$setOnInsert must initialise %q", required)
 		}
+	}
+	for _, required := range []string{
+		"review_stats.stored_review_count",
+		"review_stats.text_review_count",
+		"review_stats.representative_review_count",
+		"review_stats.embedded_review_count",
+	} {
+		if _, present := onInsert[required]; !present {
+			t.Errorf("$setOnInsert must initialise %q", required)
+		}
+	}
+	if _, present := onInsert["review_stats"]; present {
+		t.Error("$setOnInsert must not write a whole review_stats subdocument (it would drop the source count)")
 	}
 	if onInsert["_id"] != "id-1" {
 		t.Errorf("$setOnInsert _id = %v", onInsert["_id"])

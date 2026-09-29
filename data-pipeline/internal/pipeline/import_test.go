@@ -216,3 +216,35 @@ func TestRunImportRejectsUnknownStage(t *testing.T) {
 		t.Fatal("unknown stage should fail")
 	}
 }
+
+func TestRunImportCountsDuplicateRecords(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	row := `{"gmap_id":"gmap-1","name":"Joe's Pizza","address":"7 Carmine St","latitude":40.73,"longitude":-74.002,"category":["Pizza restaurant"],"avg_rating":4.5,"num_of_reviews":100,"state":"Open"}`
+	reviewLine := `{"gmap_id":"gmap-1","user_id":"u1","time":1614600000000,"rating":5,"text":"Great pizza and very fast service, would return."}`
+	writeGzJSONL(t, filepath.Join(dir, pipeline.MetaFileName), []string{row, row})
+	writeGzJSONL(t, filepath.Join(dir, pipeline.ReviewFileName), []string{reviewLine, reviewLine})
+
+	stores, restaurants, reviews, _ := memoryStores()
+	opts := pipeline.ImportOptions{Stage: review.StageAll, DataDir: dir, BatchSize: 10, MinTextChars: 20}
+	reports, err := pipeline.RunImport(ctx, stores, opts)
+	if err != nil {
+		t.Fatalf("RunImport: %v", err)
+	}
+	if reports[0].Deduped != 1 || reports[0].Accepted != 2 {
+		t.Errorf("meta dedup: deduped=%d accepted=%d want 1/2", reports[0].Deduped, reports[0].Accepted)
+	}
+	if reports[1].Deduped != 1 || reports[1].Accepted != 2 {
+		t.Errorf("review dedup: deduped=%d accepted=%d want 1/2", reports[1].Deduped, reports[1].Accepted)
+	}
+
+	// Duplicates collapse to a single document each.
+	all, _ := restaurants.ListRestaurants(ctx, 0)
+	if len(all) != 1 {
+		t.Errorf("restaurants = %d want 1", len(all))
+	}
+	counts, _ := reviews.CountByRestaurant(ctx, all[0].ID)
+	if counts.StoredCount != 1 {
+		t.Errorf("reviews = %d want 1", counts.StoredCount)
+	}
+}

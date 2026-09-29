@@ -46,7 +46,8 @@ func (s *ReviewStore) UpsertReviews(ctx context.Context, items []review.Review) 
 	if err != nil {
 		return 0, operationError("mongo: bulk upsert reviews", err)
 	}
-	return int(res.UpsertedCount + res.ModifiedCount + res.MatchedCount), nil
+	// See RestaurantStore.UpsertRestaurants: count documents touched once.
+	return int(res.UpsertedCount + res.MatchedCount), nil
 }
 
 // ListByRestaurant returns a restaurant's reviews, newest first.
