@@ -1048,7 +1048,7 @@ reservation_id
 |---|---|---|
 | 语言 | Go 1.26+ | 数据处理、后端、Agent 和评测 |
 | 包管理 | Go Modules | 依赖和构建 |
-| API | CloudWeGo Hertz + `hz` | REST、路由、中间件和 IDL 代码生成 |
+| API | CloudWeGo Hertz | REST、路由、中间件和统一错误响应 |
 | SSE | `hertz-contrib/sse` | 文本、节点、工具和引用流式事件 |
 | 数据模型 | Go struct + JSON Schema | 工具输入输出和 API 校验 |
 | 数据库访问 | `go.mongodb.org/mongo-driver/v2` | MongoDB Atlas 官方 Go Driver |
@@ -1184,12 +1184,28 @@ qwen3-embedding:0.6b
 
 Atlas Vector Search 的索引维度固定为 `1024`，并把 `embedding_model`、`embedding_dimensions` 和版本写入 `knowledge_documents`，避免模型切换后混用旧向量。
 
+### 8.6 服务划分
+
+仓库是一个 Go module，包含两个可独立构建、运行和部署的进程，外加一份共享库，并预留前端位置：
+
+```text
+data-pipeline/    数据生产：批处理 CLI，负责写入链路（raw → curated → knowledge → embedding）
+chat-service/     聊天服务：常驻 HTTP / SSE，负责读取链路（检索 → 证据 → Agent → 回答）
+shared/           共享库：领域 DTO、端口接口、适配器、配置原语、日志与测试工具
+web/              预留前端（M6-06）
+```
+
+- 两个服务互不 import，只通过 `shared/` 共享代码。
+- 写入与读取严格分离，但共享同一套领域 DTO 与端口接口，避免数据语义漂移。
+- `shared/domain` 仍不依赖 Mongo、Eino、Hertz 或任何厂商 SDK。
+- 本地开发可分别启动：`make run-chat`（默认 `:8080`）与 `make run-pipeline`。
+
 ## 9. API 框架约定
 
 HTTP 服务统一使用 CloudWeGo Hertz：
 
 - 路由和处理器使用 Hertz。
-- API 合约优先使用 `hz` 的 Thrift/Protobuf IDL 生成，不把 chi/oapi-codegen 作为默认方案。
+- API 合约以手写的 Hertz 路由 + Go 请求/响应结构体为唯一事实来源。
 - 请求参数使用 Hertz binding 和 validation。
 - 通用中间件包括 request ID、recovery、CORS、认证上下文、限流和 OpenTelemetry。
 - SSE 使用 `hertz-contrib/sse`。

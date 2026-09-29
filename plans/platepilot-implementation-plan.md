@@ -47,8 +47,10 @@
 
 ## 3. 架构边界
 
+代码分为**两个可独立运行的进程 + 一份共享库**（详见 §3.2）：数据生产负责写入链路，聊天服务负责读取与对话链路。
+
 ```text
-Go API / SSE
+[chat-service] HTTP / SSE
   -> Eino Agent Runtime
        -> Tool Registry
        -> ChatProvider
@@ -84,12 +86,39 @@ Go API / SSE
 - 所有检索结果必须带来源和快照时间。
 - Agent 状态必须持久化，不能只存在 Eino 内存中。
 - 所有写工具必须可审计、可幂等。
+- 两个服务（数据生产、聊天服务）互不 import，只通过 `shared/` 共享代码。
+
+### 3.2 服务划分（两个可独立运行的进程）
+
+仓库按**两个服务 + 一份共享库**组织：同一个 Go module，但可以独立构建、运行和部署，并预留前端位置。
+
+```text
+PlatePilot/
+├── data-pipeline/      # 服务一：数据生产（批处理 CLI）
+├── chat-service/       # 服务二：聊天服务（HTTP / SSE）
+├── shared/             # 两个服务共享的领域、端口、适配器与工具
+└── web/                # 预留前端项目
+```
+
+| 目录 | 形态 | 负责 | 主要里程碑 |
+|---|---|---|---|
+| `data-pipeline` | 批处理 CLI（`import` / `build-documents` / `embed`） | 写入链路：raw → curated → knowledge → embedding | M1、M2 |
+| `chat-service` | 常驻 HTTP / SSE 服务 | 读取链路：检索 → 证据 → Agent → 回答 | M3、M4、M5 |
+| `shared` | 库（无 `main`） | 领域 DTO、端口接口、适配器、配置原语、日志、测试工具 | 贯穿全部 |
+| `web` | 前端（未来） | 聊天界面、候选卡片、引用与 trace 展示 | M6 |
+
+补充原则：
+
+- 写入（`data-pipeline`）与读取（`chat-service`）严格分离，通过 `shared/domain` 与 Atlas 达成一致的语义。
+- 共享库不依赖任一服务的 `internal/`；服务可以依赖共享库，反之不行。
+- `shared/domain` 仍然遵守 §3.1 的纯净性约束：不依赖 Mongo、Eino、Hertz 或厂商 SDK。
+- 常见的可运行命令：`make run-chat`、`make run-pipeline`、`make build`。
 
 ## 4. 里程碑总览
 
 | 里程碑 | 目标 | 主要产出 | 退出条件 |
 |---|---|---|---|
-| M0 | 工程基础 | Go 骨架、配置、接口、测试基线 | 服务可启动，接口和测试骨架完整 |
+| M0 | 工程基础 | 双服务 Go 骨架（data-pipeline / chat-service）、共享库、配置、接口、测试基线 | 两个服务可独立启动，接口和测试骨架完整 |
 | M1 | Atlas 数据底座 | Collection、导入器、统计聚合 | Meta/Review 可稳定导入 Atlas |
 | M2 | Embedding 与文档 | Qwen Adapter、文档构建器、向量写入 | 5,000 家样本餐厅可向量检索 |
 | M3 | 两级检索 | 餐厅召回、佐证召回、融合与引用 | 能返回候选餐厅和证据 |
@@ -188,7 +217,7 @@ Go API / SSE
 | M0-04 | 领域 DTO | Chat、Tool、Search、Evidence、Memory DTO | M0-01 | M | 领域包不依赖 Mongo、Eino、具体 Chat API、Ollama |
 | M0-05 | Provider 接口 | ChatProvider、EmbeddingProvider、RerankProvider | M0-04 | M | Mock Provider 可用于测试 |
 | M0-06 | Repository 接口 | Restaurant、Knowledge、Conversation、Memory、Run Repository | M0-04 | M | 接口可由 Mongo 和内存实现 |
-| M0-07 | Hertz HTTP/API 骨架 | Hertz Router、`hz` IDL、健康检查和错误响应 | M0-01 | S | `/healthz` 和统一错误响应可用 |
+| M0-07 | Hertz HTTP/API 骨架 | Hertz Router、健康检查和统一错误响应 | M0-01 | S | `/healthz` 和统一错误响应可用 |
 | M0-07A | Hertz 中间件与验证 | binding、validation、recovery、request ID、CORS | M0-07 | M | 非法请求返回统一错误，request ID 可贯穿 trace |
 | M0-08 | 测试基线 | `go test`、接口 Mock、测试夹具 | M0-04 | M | 核心 DTO 和 Provider 有单元测试 |
 
