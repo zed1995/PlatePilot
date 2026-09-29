@@ -34,16 +34,11 @@ func (s *ReviewStore) UpsertReviews(ctx context.Context, items []review.Review) 
 	}
 	models := make([]mongo.WriteModel, 0, len(items))
 	for _, r := range items {
-		if strings.TrimSpace(r.ID) == "" {
-			return 0, errs.New(errs.CodeInvalidArgument, "review_id is required")
+		model, err := reviewUpsertModel(r)
+		if err != nil {
+			return 0, err
 		}
-		if strings.TrimSpace(r.RestaurantID) == "" {
-			return 0, errs.New(errs.CodeInvalidArgument, "restaurant_id is required")
-		}
-		models = append(models, mongo.NewUpdateOneModel().
-			SetFilter(bson.M{"_id": r.ID}).
-			SetUpdate(bson.M{"$set": reviewToDoc(r)}).
-			SetUpsert(true))
+		models = append(models, model)
 	}
 	ctx, cancel := s.client.withTimeout(ctx)
 	defer cancel()
@@ -137,6 +132,22 @@ func (s *ReviewStore) RestaurantIDsWithReviews(ctx context.Context) ([]string, e
 	return out, nil
 }
 
+// reviewUpsertModel builds the idempotent upsert for one curated review. The
+// deterministic review id is the _id, so re-importing the same review updates
+// rather than duplicates it.
+func reviewUpsertModel(r review.Review) (mongo.WriteModel, error) {
+	if strings.TrimSpace(r.ID) == "" {
+		return nil, errs.New(errs.CodeInvalidArgument, "review_id is required")
+	}
+	if strings.TrimSpace(r.RestaurantID) == "" {
+		return nil, errs.New(errs.CodeInvalidArgument, "restaurant_id is required")
+	}
+	return mongo.NewUpdateOneModel().
+		SetFilter(bson.M{"_id": r.ID}).
+		SetUpdate(bson.M{"$set": reviewToDoc(r)}).
+		SetUpsert(true), nil
+}
+
 type countsAggResult struct {
 	RestaurantID   string     `bson:"_id"`
 	Stored         int64      `bson:"stored"`
@@ -148,19 +159,7 @@ type countsAggResult struct {
 }
 
 func (s *ReviewStore) aggregateCounts(ctx context.Context, match bson.M) (map[string]review.Counts, error) {
-	pipeline := bson.A{
-		bson.M{"$match": match},
-		bson.M{"$group": bson.M{
-			"_id":            "$restaurant_id",
-			"stored":         bson.M{"$sum": 1},
-			"text":           bson.M{"$sum": bson.M{"$cond": bson.A{bson.M{"$ne": bson.A{"$text", ""}}, 1, 0}}},
-			"representative": bson.M{"$sum": bson.M{"$cond": bson.A{bson.M{"$eq": bson.A{"$is_representative", true}}, 1, 0}}},
-			"avg":            bson.M{"$avg": "$rating"},
-			"last":           bson.M{"$max": "$reviewed_at"},
-			"ratings":        bson.M{"$push": "$rating"},
-		}},
-	}
-	cursor, err := s.coll().Aggregate(ctx, pipeline)
+	cursor, err := s.coll().Aggregate(ctx, countsPipeline(match))
 	if err != nil {
 		return nil, operationError("mongo: aggregate review stats", err)
 	}
@@ -189,6 +188,23 @@ func (s *ReviewStore) aggregateCounts(ctx context.Context, match bson.M) (map[st
 		return nil, operationError("mongo: iterate review stats", err)
 	}
 	return out, nil
+}
+
+// countsPipeline builds the review rollup aggregation. It is a pure function so
+// the grouping semantics can be asserted without a server.
+func countsPipeline(match bson.M) bson.A {
+	return bson.A{
+		bson.M{"$match": match},
+		bson.M{"$group": bson.M{
+			"_id":            "$restaurant_id",
+			"stored":         bson.M{"$sum": 1},
+			"text":           bson.M{"$sum": bson.M{"$cond": bson.A{bson.M{"$ne": bson.A{"$text", ""}}, 1, 0}}},
+			"representative": bson.M{"$sum": bson.M{"$cond": bson.A{bson.M{"$eq": bson.A{"$is_representative", true}}, 1, 0}}},
+			"avg":            bson.M{"$avg": "$rating"},
+			"last":           bson.M{"$max": "$reviewed_at"},
+			"ratings":        bson.M{"$push": "$rating"},
+		}},
+	}
 }
 
 func emptyCounts() review.Counts {
