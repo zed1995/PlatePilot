@@ -30,6 +30,15 @@ type MetaResult struct {
 	Documents  []restaurant.Document
 }
 
+// MetaOptions controls Meta normalisation.
+type MetaOptions struct {
+	// ObservedAt is the data snapshot time stamped onto the curated place.
+	ObservedAt time.Time
+	// ServiceArea limits ingestion to a bounding box. The zero value disables
+	// the geographic filter.
+	ServiceArea ServiceArea
+}
+
 // ReviewOptions controls review normalisation.
 type ReviewOptions struct {
 	// MinTextChars is the shortest scrubbed text considered usable evidence.
@@ -44,7 +53,8 @@ type ReviewOptions struct {
 //
 // It returns ErrFiltered for places outside the food scope and an *errs.Error
 // for records that are structurally invalid.
-func NormalizeMeta(m raw.Meta, id string, observedAt time.Time) (MetaResult, error) {
+func NormalizeMeta(m raw.Meta, id string, opts MetaOptions) (MetaResult, error) {
+	observedAt := opts.ObservedAt
 	if strings.TrimSpace(m.GmapID) == "" {
 		return MetaResult{}, errs.New(errs.CodeInvalidArgument, "meta: gmap_id is required")
 	}
@@ -53,6 +63,9 @@ func NormalizeMeta(m raw.Meta, id string, observedAt time.Time) (MetaResult, err
 	}
 	if !ValidCoordinates(m.Latitude, m.Longitude) {
 		return MetaResult{}, errs.Newf(errs.CodeInvalidArgument, "meta %s: invalid coordinates", m.GmapID)
+	}
+	if area := opts.ServiceArea; !area.IsZero() && !area.Contains(*m.Latitude, *m.Longitude) {
+		return MetaResult{}, ErrFiltered
 	}
 	name := strings.TrimSpace(m.Name)
 	if name == "" {

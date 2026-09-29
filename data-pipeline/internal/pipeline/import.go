@@ -44,6 +44,8 @@ type ImportOptions struct {
 	DryRun       bool
 	MinTextChars int
 	DemoTarget   int
+	// ServiceArea is "south,west,north,east". Empty uses the NYC default.
+	ServiceArea  string
 	SkipFileHash bool
 }
 
@@ -67,6 +69,7 @@ func DefaultImportOptions(cfg config.Config) ImportOptions {
 		DataDir:      cfg.Pipeline.DataDir,
 		MinTextChars: minChars,
 		DemoTarget:   demoTarget,
+		ServiceArea:  cfg.Pipeline.ServiceArea,
 	}
 }
 
@@ -151,6 +154,10 @@ func retryFlush(ctx context.Context, flush func() error) error {
 }
 
 func runMeta(ctx context.Context, stores Stores, opts ImportOptions) (review.BatchReport, error) {
+	area, err := curate.ParseServiceArea(opts.ServiceArea)
+	if err != nil {
+		return review.BatchReport{}, errs.Wrap(errs.CodeInvalidArgument, "invalid service area", err)
+	}
 	path := filepath.Join(opts.DataDir, MetaFileName)
 	reader, err := raw.Open(path)
 	if err != nil {
@@ -210,7 +217,10 @@ func runMeta(ctx context.Context, stores Stores, opts ImportOptions) (review.Bat
 			col.Reject(review.StageMeta, reader.LineNo(), "decode_error", "")
 			continue
 		}
-		result, err := curate.NormalizeMeta(record, idgen.NewUUID(), observedAt)
+		result, err := curate.NormalizeMeta(record, idgen.NewUUID(), curate.MetaOptions{
+			ObservedAt:  observedAt,
+			ServiceArea: area,
+		})
 		switch {
 		case errors.Is(err, curate.ErrFiltered):
 			col.Filtered()

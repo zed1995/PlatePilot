@@ -49,6 +49,7 @@ Import flags:
   --dry-run                             parse and count without writing
   --min-review-chars=N                  minimum usable review text length
   --demo-target=N                       target number of demo restaurants
+  --bbox=S,W,N,E                        ingestion bounding box (default NYC)
 `
 
 func main() {
@@ -172,6 +173,7 @@ func runImport(ctx context.Context, cfg config.Config, args []string) error {
 	fs.BoolVar(&opts.DryRun, "dry-run", false, "parse and count without writing")
 	fs.IntVar(&opts.MinTextChars, "min-review-chars", opts.MinTextChars, "minimum usable review text length")
 	fs.IntVar(&opts.DemoTarget, "demo-target", opts.DemoTarget, "target number of demo restaurants")
+	fs.StringVar(&opts.ServiceArea, "bbox", opts.ServiceArea, "ingestion bounding box as south,west,north,east")
 	fs.BoolVar(&opts.SkipFileHash, "skip-file-hash", false, "skip computing the source file SHA-256")
 	if err := fs.Parse(args); err != nil {
 		return err

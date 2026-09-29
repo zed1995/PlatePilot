@@ -238,7 +238,7 @@ func sampleMeta() raw.Meta {
 
 func TestNormalizeMeta(t *testing.T) {
 	observed := time.Date(2021, 9, 1, 0, 0, 0, 0, time.UTC)
-	result, err := NormalizeMeta(sampleMeta(), "id-1", observed)
+	result, err := NormalizeMeta(sampleMeta(), "id-1", MetaOptions{ObservedAt: observed, ServiceArea: NYCServiceArea})
 	if err != nil {
 		t.Fatalf("NormalizeMeta: %v", err)
 	}
@@ -272,26 +272,73 @@ func TestNormalizeMetaFilterAndReject(t *testing.T) {
 
 	notFood := sampleMeta()
 	notFood.Category = []string{"Museum"}
-	if _, err := NormalizeMeta(notFood, "id", observed); !errors.Is(err, ErrFiltered) {
+	if _, err := NormalizeMeta(notFood, "id", MetaOptions{ObservedAt: observed, ServiceArea: NYCServiceArea}); !errors.Is(err, ErrFiltered) {
 		t.Errorf("non-food want ErrFiltered, got %v", err)
 	}
 
 	noGmap := sampleMeta()
 	noGmap.GmapID = ""
-	if _, err := NormalizeMeta(noGmap, "id", observed); err == nil {
+	if _, err := NormalizeMeta(noGmap, "id", MetaOptions{ObservedAt: observed, ServiceArea: NYCServiceArea}); err == nil {
 		t.Error("missing gmap_id should be rejected")
 	}
 
 	badCoords := sampleMeta()
 	badCoords.Latitude = nil
-	if _, err := NormalizeMeta(badCoords, "id", observed); err == nil {
+	if _, err := NormalizeMeta(badCoords, "id", MetaOptions{ObservedAt: observed, ServiceArea: NYCServiceArea}); err == nil {
 		t.Error("missing coordinates should be rejected")
 	}
 
 	noName := sampleMeta()
 	noName.Name = "  "
-	if _, err := NormalizeMeta(noName, "id", observed); err == nil {
+	if _, err := NormalizeMeta(noName, "id", MetaOptions{ObservedAt: observed, ServiceArea: NYCServiceArea}); err == nil {
 		t.Error("missing name should be rejected")
+	}
+}
+
+func TestNormalizeMetaFiltersOutsideServiceArea(t *testing.T) {
+	observed := time.Date(2021, 9, 1, 0, 0, 0, 0, time.UTC)
+	opts := MetaOptions{ObservedAt: observed, ServiceArea: NYCServiceArea}
+
+	inside := sampleMeta()
+	if _, err := NormalizeMeta(inside, "id", opts); err != nil {
+		t.Fatalf("NYC place should be accepted: %v", err)
+	}
+
+	for name, coords := range map[string][2]float64{
+		"los_angeles": {34.05, -118.24},
+		"chicago":     {41.88, -87.63},
+		"miami":       {25.76, -80.19},
+	} {
+		outside := sampleMeta()
+		outside.Latitude = &coords[0]
+		outside.Longitude = &coords[1]
+		if _, err := NormalizeMeta(outside, "id", opts); !errors.Is(err, ErrFiltered) {
+			t.Errorf("%s place want ErrFiltered, got %v", name, err)
+		}
+	}
+
+	// A zero area disables the filter.
+	unscoped := sampleMeta()
+	unscoped.Latitude = ptr(34.05)
+	unscoped.Longitude = ptr(-118.24)
+	if _, err := NormalizeMeta(unscoped, "id", MetaOptions{ObservedAt: observed}); err != nil {
+		t.Errorf("zero area should disable filtering, got %v", err)
+	}
+}
+
+func TestParseServiceArea(t *testing.T) {
+	area, err := ParseServiceArea("")
+	if err != nil || area != NYCServiceArea {
+		t.Fatalf("empty should default to NYC: %v %+v", err, area)
+	}
+	area, err = ParseServiceArea("40.0,-74.5,41.0,-73.0")
+	if err != nil || !area.Contains(40.5, -74.0) || area.Contains(39.0, -74.0) {
+		t.Fatalf("parse: %v %+v", err, area)
+	}
+	for _, bad := range []string{"1,2,3", "a,b,c,d", "41,,-74,40,-73"} {
+		if _, err := ParseServiceArea(bad); err == nil {
+			t.Errorf("ParseServiceArea(%q) should fail", bad)
+		}
 	}
 }
 

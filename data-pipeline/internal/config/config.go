@@ -22,6 +22,9 @@ const DefaultDataDir = "data/raw/google_local"
 const (
 	DefaultMinReviewChars = 20
 	DefaultDemoTarget     = 3000
+	// DefaultServiceArea is the NYC five-borough bounding box,
+	// "south,west,north,east". The shipped meta file is US-wide.
+	DefaultServiceArea = "40.49,-74.26,40.93,-73.68"
 )
 
 // Config is the fully resolved data-pipeline configuration.
@@ -46,6 +49,10 @@ type PipelineConfig struct {
 	// DemoTarget is the target number of demo restaurants (clamped to
 	// [2000, 5000] when selecting).
 	DemoTarget int
+	// ServiceArea is the ingestion bounding box as "south,west,north,east".
+	// The source file is US-wide, so this is what keeps the corpus local.
+	// Empty means the default NYC box.
+	ServiceArea string
 }
 
 // Load reads configuration from the environment, layering .env underneath when
@@ -67,6 +74,7 @@ func Load() (Config, error) {
 			Workers:        l.Int("PIPELINE_WORKERS", 4),
 			MinReviewChars: l.Int("PIPELINE_MIN_REVIEW_CHARS", DefaultMinReviewChars),
 			DemoTarget:     l.Int("PIPELINE_DEMO_TARGET", DefaultDemoTarget),
+			ServiceArea:    l.String("PIPELINE_BBOX", DefaultServiceArea),
 		},
 	}
 	if err := l.Err(); err != nil {
@@ -132,5 +140,6 @@ func (c Config) Summary() map[string]any {
 		"pipeline_workers":          c.Pipeline.Workers,
 		"pipeline_min_review_chars": c.Pipeline.MinReviewChars,
 		"pipeline_demo_target":      c.Pipeline.DemoTarget,
+		"pipeline_service_area":     c.Pipeline.ServiceArea,
 	}
 }
