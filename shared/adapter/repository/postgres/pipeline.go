@@ -29,8 +29,11 @@ const batchInsertSQL = `
 INSERT INTO ingestion_batches (
 	stage, curation_version, source_file, source_sha256, boundary_version,
 	started_at, duration_ms, rows_read, accepted, written, deduped, filtered,
-	rejected, unmatched, missing_fields, status, error_code
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+	rejected, unmatched, missing_fields, status, error_code,
+	documents_built, documents_embedded, documents_rejected,
+	embedding_model, embedding_dimensions, reject_reasons
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
+	$18, $19, $20, $21, $22, $23)
 ON CONFLICT DO NOTHING
 RETURNING id`
 
@@ -49,16 +52,36 @@ UPDATE ingestion_batches SET
 	status        = $12,
 	error_code    = $13,
 	source_sha256 = COALESCE($14, source_sha256),
-	boundary_version = COALESCE($15, boundary_version)
+	boundary_version = COALESCE($15, boundary_version),
+	documents_built = COALESCE($16, documents_built),
+	documents_embedded = COALESCE($17, documents_embedded),
+	documents_rejected = COALESCE($18, documents_rejected),
+	embedding_model = COALESCE($19, embedding_model),
+	embedding_dimensions = COALESCE($20, embedding_dimensions),
+	reject_reasons = COALESCE($21, reject_reasons)
 WHERE id = $1`
 
 // batchArgs maps a report onto the ingestion_batches row. The boundary version
 // is carried on the report itself rather than passed in, so the audit record
 // always states which geometry release produced the borough labels.
-func batchArgs(r review.BatchReport) ([]any, []byte, error) {
+// batchJSON holds the two jsonb columns a report may carry, already encoded.
+// They are encoded once here because both the insert and the update need them
+// and a report is written twice per run.
+type batchJSON struct {
+	missing    []byte
+	rejections any
+}
+
+func batchArgs(r review.BatchReport) ([]any, batchJSON, error) {
 	missing, err := marshalOrNil(r.MissingFields)
 	if err != nil {
-		return nil, nil, err
+		return nil, batchJSON{}, err
+	}
+	// Reject reasons stay NULL rather than an empty object when the stage did
+	// not run a quality gate, so the column answers "was anything checked".
+	reasons, err := marshalOrNilOrNil(r.RejectReasons)
+	if err != nil {
+		return nil, batchJSON{}, err
 	}
 	// r.BatchID is not sent: the identity column assigns it.
 	return []any{
@@ -66,7 +89,9 @@ func batchArgs(r review.BatchReport) ([]any, []byte, error) {
 		nullString(r.SourceFile), nullString(r.SourceSHA256), nullString(r.BoundaryVersion),
 		r.StartedAt, r.DurationMS, r.RowsRead, r.Accepted, r.Written, r.Deduped,
 		r.Filtered, r.Rejected, r.Unmatched, missing, r.Status, nullString(r.ErrorCode),
-	}, missing, nil
+		r.DocumentsBuilt, r.DocumentsEmbedded, r.DocumentsRejected,
+		nullString(r.EmbeddingModel), r.EmbeddingDimensions, reasons,
+	}, batchJSON{missing: missing, rejections: reasons}, nil
 }
 
 // StartBatch records that an import stage has begun and returns its new id.
@@ -88,14 +113,19 @@ func (s *PipelineStore) StartBatch(ctx context.Context, r review.BatchReport) (i
 func (s *PipelineStore) FinishBatch(ctx context.Context, r review.BatchReport) error {
 	ctx, cancel := s.client.withTimeout(ctx)
 	defer cancel()
-	_, missing, err := batchArgs(r)
+	_, encoded, err := batchArgs(r)
 	if err != nil {
 		return err
 	}
+	// Every argument after the first is positional, and the statement uses
+	// COALESCE for the optional ones so a report that does not carry an M2
+	// value leaves the running row's value alone rather than clearing it.
 	tag, err := s.client.pool.Exec(ctx, batchUpdateSQL,
 		r.BatchID, r.FinishedAt, r.DurationMS, r.RowsRead, r.Accepted, r.Written,
-		r.Deduped, r.Filtered, r.Rejected, r.Unmatched, missing, r.Status,
-		nullString(r.ErrorCode), nullString(r.SourceSHA256), nullString(r.BoundaryVersion))
+		r.Deduped, r.Filtered, r.Rejected, r.Unmatched, encoded.missing, r.Status,
+		nullString(r.ErrorCode), nullString(r.SourceSHA256), nullString(r.BoundaryVersion),
+		r.DocumentsBuilt, r.DocumentsEmbedded, r.DocumentsRejected,
+		nullString(r.EmbeddingModel), r.EmbeddingDimensions, encoded.rejections)
 	if err != nil {
 		return operationError("postgres: finish batch", err)
 	}
@@ -175,6 +205,8 @@ func (s *PipelineStore) scanBatch(row *batchRow, rows pgx.Rows) error {
 		&row.BoundaryVersion, &row.StartedAt, &row.FinishedAt, &row.DurationMS,
 		&row.RowsRead, &row.Accepted, &row.Written, &row.Deduped, &row.Filtered,
 		&row.Rejected, &row.Unmatched, &row.MissingFields, &row.Status, &row.ErrorCode,
+		&row.DocumentsBuilt, &row.DocumentsEmbedded, &row.DocumentsRejected,
+		&row.EmbeddingModel, &row.EmbeddingDimensions, &row.RejectReasons,
 	); err != nil {
 		return operationError("postgres: scan batch", err)
 	}
@@ -193,6 +225,8 @@ func (s *PipelineStore) BatchDetail(ctx context.Context, batchID int64) (review.
 		&batch.BoundaryVersion, &batch.StartedAt, &batch.FinishedAt, &batch.DurationMS,
 		&batch.RowsRead, &batch.Accepted, &batch.Written, &batch.Deduped, &batch.Filtered,
 		&batch.Rejected, &batch.Unmatched, &batch.MissingFields, &batch.Status, &batch.ErrorCode,
+		&batch.DocumentsBuilt, &batch.DocumentsEmbedded, &batch.DocumentsRejected,
+		&batch.EmbeddingModel, &batch.EmbeddingDimensions, &batch.RejectReasons,
 	)
 	if err != nil {
 		if pgErrNoRows(err) {

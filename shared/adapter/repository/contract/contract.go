@@ -40,9 +40,13 @@ func Run(t *testing.T, newStores Factory) {
 
 var baseTime = time.Date(2021, 9, 1, 0, 0, 0, 0, time.UTC)
 
-// restaurantFixture builds a source-derived restaurant. It deliberately leaves
-// ID zero: the store assigns it, exactly as the database identity column does.
-func restaurantFixture(sourceRecordID, name string, createdAt time.Time) restaurant.Restaurant {
+// RestaurantFixture builds a source-derived restaurant with ID zero, for tests
+// outside this package that need the same shape.
+//
+// It is exported so the Postgres index tests can seed through the real store
+// methods with rows identical to the ones the contract exercises; a hand-rolled
+// fixture could differ in a column the partial index predicates read.
+func RestaurantFixture(sourceRecordID, name string, createdAt time.Time) restaurant.Restaurant {
 	price := 2
 	avg := 4.5
 	return restaurant.Restaurant{
@@ -67,7 +71,7 @@ func restaurantFixture(sourceRecordID, name string, createdAt time.Time) restaur
 func runRestaurantStore(t *testing.T, s port.RestaurantStore) {
 	ctx := context.Background()
 
-	first := restaurantFixture("gmap-1", "Joe's Pizza", baseTime)
+	first := RestaurantFixture("gmap-1", "Joe's Pizza", baseTime)
 	if err := s.UpsertRestaurant(ctx, first); err != nil {
 		t.Fatalf("UpsertRestaurant: %v", err)
 	}
@@ -89,7 +93,7 @@ func runRestaurantStore(t *testing.T, s port.RestaurantStore) {
 	// restaurant_id, so a new value would orphan the whole review corpus. The
 	// creation time is ignored for the same reason.
 	later := baseTime.Add(48 * time.Hour)
-	update := restaurantFixture("gmap-1", "Joe's Pizza Updated", later)
+	update := RestaurantFixture("gmap-1", "Joe's Pizza Updated", later)
 	if err := s.UpsertRestaurant(ctx, update); err != nil {
 		t.Fatalf("re-UpsertRestaurant: %v", err)
 	}
@@ -112,8 +116,8 @@ func runRestaurantStore(t *testing.T, s port.RestaurantStore) {
 	}
 
 	written, err := s.UpsertRestaurants(ctx, []restaurant.Restaurant{
-		restaurantFixture("gmap-a", "A", baseTime),
-		restaurantFixture("gmap-b", "B", baseTime),
+		RestaurantFixture("gmap-a", "A", baseTime),
+		RestaurantFixture("gmap-b", "B", baseTime),
 	})
 	if err != nil {
 		t.Fatalf("UpsertRestaurants: %v", err)
@@ -190,6 +194,27 @@ func runRestaurantStore(t *testing.T, s port.RestaurantStore) {
 		t.Errorf("UpdateReviewStats missing want ErrNotFound, got %v", err)
 	}
 
+	// The narrow setter must leave the other rollup columns exactly as the wide
+	// update left them. The embedding stage depends on that: it only ever knows
+	// about embedded_review_count, and a setter that reset the rest would erase
+	// whatever the stats stage computed.
+	if err := s.UpdateEmbeddedReviewCount(ctx, id1, 4); err != nil {
+		t.Fatalf("UpdateEmbeddedReviewCount: %v", err)
+	}
+	got, _ = s.GetBySourceRecordID(ctx, "gmap-1")
+	if got.ReviewStats.EmbeddedReviewCount != 4 {
+		t.Errorf("embedded_review_count = %d, want 4", got.ReviewStats.EmbeddedReviewCount)
+	}
+	if got.ReviewStats.StoredReviewCount != 7 || got.ReviewStats.TextReviewCount != 5 {
+		t.Errorf("narrow update clobbered the other rollups: %+v", got.ReviewStats)
+	}
+	if got.Rating.ComputedAvg == nil || *got.Rating.ComputedAvg != 4.42 {
+		t.Errorf("narrow update clobbered the computed rating: %+v", got.Rating)
+	}
+	if err := s.UpdateEmbeddedReviewCount(ctx, 987654321, 4); !errors.Is(err, errs.ErrNotFound) {
+		t.Errorf("UpdateEmbeddedReviewCount missing want ErrNotFound, got %v", err)
+	}
+
 	if err := s.UpdateScores(ctx, map[int64]float64{id1: 9.5, idA: 3.0}, map[int64]bool{id1: true}); err != nil {
 		t.Fatalf("UpdateScores: %v", err)
 	}
@@ -212,7 +237,7 @@ func runRestaurantStore(t *testing.T, s port.RestaurantStore) {
 	}
 
 	// Re-running the meta import must not wipe what the stats/score jobs wrote.
-	if err := s.UpsertRestaurant(ctx, restaurantFixture("gmap-1", "Joe's Pizza Re-imported", later)); err != nil {
+	if err := s.UpsertRestaurant(ctx, RestaurantFixture("gmap-1", "Joe's Pizza Re-imported", later)); err != nil {
 		t.Fatalf("re-import after stats: %v", err)
 	}
 	got, _ = s.GetBySourceRecordID(ctx, "gmap-1")
@@ -243,8 +268,8 @@ func runReviewStore(t *testing.T, stores Stores) {
 	// after its restaurant joined.
 	seeded := map[string]int64{}
 	for _, r := range []restaurant.Restaurant{
-		restaurantFixture("gmap-r1", "R1", baseTime),
-		restaurantFixture("gmap-r2", "R2", baseTime),
+		RestaurantFixture("gmap-r1", "R1", baseTime),
+		RestaurantFixture("gmap-r2", "R2", baseTime),
 	} {
 		if err := stores.Restaurants.UpsertRestaurant(ctx, r); err != nil {
 			t.Fatalf("seed restaurant %s: %v", r.SourceRecordID, err)
@@ -392,6 +417,14 @@ func runPipelineStore(t *testing.T, s port.PipelineStore) {
 		t.Errorf("counters shifted into the wrong columns: %+v", batches[0])
 	}
 
+	// A stage that reports no M2 counters must read back as null, not zero: an
+	// import batch that never touched a vector is not a run that embedded none.
+	if batches[0].DocumentsBuilt != nil || batches[0].DocumentsEmbedded != nil ||
+		batches[0].DocumentsRejected != nil || batches[0].EmbeddingModel != "" ||
+		batches[0].EmbeddingDimensions != nil || batches[0].RejectReasons != nil {
+		t.Errorf("M1 batch reported M2 values it never set: %+v", batches[0])
+	}
+
 	got, gotRej, err := s.BatchDetail(ctx, batchID)
 	if err != nil {
 		t.Fatalf("BatchDetail: %v", err)
@@ -406,6 +439,93 @@ func runPipelineStore(t *testing.T, s port.PipelineStore) {
 	if _, _, err := s.BatchDetail(ctx, 987654321); !errors.Is(err, errs.ErrNotFound) {
 		t.Errorf("BatchDetail missing want ErrNotFound, got %v", err)
 	}
+
+	runEmbeddingStageReport(t, s)
+}
+
+// runEmbeddingStageReport covers the M2 batch columns end to end: the values a
+// document or embedding run records have to survive the same positional update
+// that the M1 columns go through, and a second run of the same stage must not
+// leave the previous run's values behind.
+func runEmbeddingStageReport(t *testing.T, s port.PipelineStore) {
+	ctx := context.Background()
+
+	built, embedded, rejected := int64(12), int64(9), int64(3)
+	dimensions := 1024
+	report := review.BatchReport{
+		Stage:               review.StageEmbedding,
+		StartedAt:           baseTime.Add(2 * time.Hour),
+		Status:              review.StatusRunning,
+		DocumentsBuilt:      &built,
+		DocumentsEmbedded:   &embedded,
+		DocumentsRejected:   &rejected,
+		EmbeddingModel:      "test-model",
+		EmbeddingDimensions: &dimensions,
+		RejectReasons:       map[string]int64{"embedding_zero_vector": 2, "embedding_duplicate": 1},
+	}
+	batchID, err := s.StartBatch(ctx, report)
+	if err != nil {
+		t.Fatalf("StartBatch (embedding): %v", err)
+	}
+	report.BatchID = batchID
+	report.Status = review.StatusSucceeded
+	report.FinishedAt = baseTime.Add(2*time.Hour + 30*time.Second)
+	report.DurationMS = 30_000
+	if err := s.FinishBatch(ctx, report); err != nil {
+		t.Fatalf("FinishBatch (embedding): %v", err)
+	}
+
+	got, _, err := s.BatchDetail(ctx, batchID)
+	if err != nil {
+		t.Fatalf("BatchDetail (embedding): %v", err)
+	}
+	if got.DocumentsBuilt == nil || *got.DocumentsBuilt != built {
+		t.Errorf("documents_built = %v want %d", got.DocumentsBuilt, built)
+	}
+	if got.DocumentsEmbedded == nil || *got.DocumentsEmbedded != embedded {
+		t.Errorf("documents_embedded = %v want %d", got.DocumentsEmbedded, embedded)
+	}
+	if got.DocumentsRejected == nil || *got.DocumentsRejected != rejected {
+		t.Errorf("documents_rejected = %v want %d", got.DocumentsRejected, rejected)
+	}
+	if got.EmbeddingModel != "test-model" {
+		t.Errorf("embedding_model = %q want %q", got.EmbeddingModel, "test-model")
+	}
+	if got.EmbeddingDimensions == nil || *got.EmbeddingDimensions != dimensions {
+		t.Errorf("embedding_dimensions = %v want %d", got.EmbeddingDimensions, dimensions)
+	}
+	if got.RejectReasons["embedding_zero_vector"] != 2 || got.RejectReasons["embedding_duplicate"] != 1 {
+		t.Errorf("reject_reasons = %+v, want zero_vector=2 duplicate=1", got.RejectReasons)
+	}
+
+	// A second stage that reports no quality counts must clear the previous
+	// stage's map rather than inherit it, otherwise the report answers for a
+	// check that this run never performed.
+	plain := review.BatchReport{
+		Stage:     review.StageDocuments,
+		StartedAt: baseTime.Add(3 * time.Hour),
+		Status:    review.StatusRunning,
+	}
+	secondID, err := s.StartBatch(ctx, plain)
+	if err != nil {
+		t.Fatalf("StartBatch (documents): %v", err)
+	}
+	plain.BatchID = secondID
+	plain.Status = review.StatusSucceeded
+	plain.FinishedAt = baseTime.Add(3*time.Hour + time.Second)
+	if err := s.FinishBatch(ctx, plain); err != nil {
+		t.Fatalf("FinishBatch (documents): %v", err)
+	}
+	second, _, err := s.BatchDetail(ctx, secondID)
+	if err != nil {
+		t.Fatalf("BatchDetail (documents): %v", err)
+	}
+	if second.RejectReasons != nil {
+		t.Errorf("reject_reasons = %+v, want nil for a stage with no quality gate", second.RejectReasons)
+	}
+	if second.DocumentsBuilt != nil {
+		t.Errorf("documents_built = %v, want nil for a stage that reported none", second.DocumentsBuilt)
+	}
 }
 
 // runReviewKnowledgeMethods covers the M2 additions to ReviewStore: the
@@ -413,7 +533,7 @@ func runPipelineStore(t *testing.T, s port.PipelineStore) {
 func runReviewKnowledgeMethods(t *testing.T, stores Stores) {
 	ctx := context.Background()
 
-	parent := restaurantFixture("review-knowledge", "Review Knowledge", baseTime)
+	parent := RestaurantFixture("review-knowledge", "Review Knowledge", baseTime)
 	if err := stores.Restaurants.UpsertRestaurant(ctx, parent); err != nil {
 		t.Fatalf("UpsertRestaurant: %v", err)
 	}
@@ -565,7 +685,7 @@ func runKnowledgeStore(t *testing.T, stores Stores) {
 
 	// knowledge_documents.restaurant_id is a foreign key, so the suite needs a
 	// real parent row before it can assert anything about documents.
-	parent := restaurantFixture("contract-parent", "Contract Parent", baseTime)
+	parent := RestaurantFixture("contract-parent", "Contract Parent", baseTime)
 	if err := stores.Restaurants.UpsertRestaurant(ctx, parent); err != nil {
 		t.Fatalf("UpsertRestaurant: %v", err)
 	}
@@ -672,14 +792,32 @@ func runKnowledgeStore(t *testing.T, stores Stores) {
 		t.Errorf("versions present = %v, want three distinct", seen)
 	}
 
-	// PendingDocuments only reports live documents without a vector, which is
-	// what makes an embedding re-run a safe no-op.
+	// PendingDocuments reports every document without a vector, live or not.
+	//
+	// The live flag cannot be part of the predicate: documents are inserted
+	// inactive and only go live once vectored, so requiring is_active would
+	// select a state the table's CHECK constraint makes impossible and the
+	// embedding stage would never see its own work.
 	pending, err := s.PendingDocuments(ctx, 100)
 	if err != nil {
 		t.Fatalf("PendingDocuments: %v", err)
 	}
-	if len(pending) != 0 {
-		t.Errorf("pending = %d, want 0 (nothing is active yet)", len(pending))
+	if len(pending) == 0 {
+		t.Error("pending = 0, want the unvectored documents")
+	}
+	for _, doc := range pending {
+		if len(doc.Embedding) != 0 {
+			t.Errorf("document %d reported as pending but already has a vector", doc.DocumentID)
+		}
+	}
+	// A zero limit is "return nothing", not "return everything": the caller
+	// pages with an explicit size, and a zero would look like a finished run.
+	none, err := s.PendingDocuments(ctx, 0)
+	if err != nil {
+		t.Fatalf("PendingDocuments(0): %v", err)
+	}
+	if len(none) != 0 {
+		t.Errorf("PendingDocuments(0) = %d documents, want none", len(none))
 	}
 
 	// A document cannot be activated before it has a vector: the table check
@@ -715,9 +853,15 @@ func runKnowledgeStore(t *testing.T, stores Stores) {
 	if _, err := s.ActivateDocuments(ctx, []int64{newestID}, true); err != nil {
 		t.Fatalf("ActivateDocuments(true) after embedding: %v", err)
 	}
+	// A vectored document leaves the pending set whether or not it is live,
+	// which is what makes an embedding re-run a safe no-op.
 	pending, _ = s.PendingDocuments(ctx, 100)
-	if len(pending) != 0 {
-		t.Errorf("pending after embedding = %d, want 0", len(pending))
+	pendingIDs := map[int64]bool{}
+	for _, doc := range pending {
+		pendingIDs[doc.DocumentID] = true
+	}
+	if pendingIDs[newestID] {
+		t.Error("a vectored document is still reported as pending")
 	}
 
 	models, err := s.DistinctEmbeddingModels(ctx)
@@ -752,4 +896,641 @@ func runKnowledgeStore(t *testing.T, stores Stores) {
 	if _, err := s.UpsertDocuments(ctx, []evidence.KnowledgeDocument{noHash}); err == nil {
 		t.Error("UpsertDocuments accepted a document with no content hash")
 	}
+
+	runSameGroupBatch(t, stores, restaurantID)
+	runEmbeddedReviewCounts(t, stores, restaurantID)
+	runVectoredDocumentIDs(t, stores, restaurantID)
+	runSupersession(t, stores, restaurantID)
+	runModelChange(t, stores, restaurantID)
+	runVectorSearch(t, stores, restaurantID)
+}
+
+// runVectoredDocumentIDs pins the filter the activation step depends on.
+//
+// The embedding stage must not activate a document the quality gate refused:
+// it has no vector, and both this store and the table's CHECK refuse to make it
+// live. The stage therefore asks which of a page's documents actually received
+// one, and this is that answer.
+func runVectoredDocumentIDs(t *testing.T, stores Stores, restaurantID int64) {
+	ctx := context.Background()
+	s := stores.Knowledge
+
+	pending := knowledgeDoc(restaurantID, evidence.DocTypeRestaurantProfile,
+		evidence.ScopeRestaurant, "hash-vec-1", "vectored")
+	unvectored := knowledgeDoc(restaurantID, evidence.DocTypeRestaurantHours,
+		evidence.ScopeRestaurant, "hash-vec-2", "not vectored")
+	if _, err := s.UpsertDocuments(ctx, []evidence.KnowledgeDocument{pending, unvectored}); err != nil {
+		t.Fatalf("UpsertDocuments: %v", err)
+	}
+	stored, err := s.ListByRestaurant(ctx, restaurantID, evidence.ScopeRestaurant)
+	if err != nil {
+		t.Fatalf("ListByRestaurant: %v", err)
+	}
+	byHash := map[string]int64{}
+	for _, doc := range stored {
+		byHash[doc.ContentHash] = doc.DocumentID
+	}
+	withVector, withoutVector := byHash["hash-vec-1"], byHash["hash-vec-2"]
+	if withVector == 0 || withoutVector == 0 {
+		t.Fatalf("fixtures were not stored: %v", byHash)
+	}
+
+	// Nothing has a vector yet.
+	got, err := s.VectoredDocumentIDs(ctx, []int64{withVector, withoutVector})
+	if err != nil {
+		t.Fatalf("VectoredDocumentIDs: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("VectoredDocumentIDs = %v, want none before any vector is written", got)
+	}
+
+	vec := make([]float32, knowledgeVectorDimensions)
+	vec[1] = 1
+	if _, err := s.SetEmbedding(ctx, []int64{withVector}, [][]float32{vec}, "test-model", knowledgeVectorDimensions); err != nil {
+		t.Fatalf("SetEmbedding: %v", err)
+	}
+
+	got, err = s.VectoredDocumentIDs(ctx, []int64{withVector, withoutVector})
+	if err != nil {
+		t.Fatalf("VectoredDocumentIDs: %v", err)
+	}
+	if len(got) != 1 || got[0] != withVector {
+		t.Errorf("VectoredDocumentIDs = %v, want only the vectored document %d", got, withVector)
+	}
+	// An id the store does not know is skipped rather than reported.
+	got, err = s.VectoredDocumentIDs(ctx, []int64{987654321})
+	if err != nil {
+		t.Fatalf("VectoredDocumentIDs (unknown id): %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("VectoredDocumentIDs = %v, want none for an unknown id", got)
+	}
+}
+
+// runSameGroupBatch pins the version rule for documents that arrive together.
+//
+// The plan states that (restaurant_id, scope, doc_type) to document is 1:N —
+// one restaurant can produce several evidence chunks of the same doc type in a
+// single build. That makes a batch the unit where the version number is
+// assigned, and the assignment has to see the other rows of its own batch.
+//
+// A per-row "max(version) + 1" read from the table cannot see rows that have
+// not been inserted yet, so every document in the batch would be handed the
+// same number. Nothing rejects that: the column has no uniqueness constraint,
+// and the documents are distinct rows with distinct content hashes, so the
+// idempotency key does not catch it either. The damage surfaces later, as a
+// group whose version numbers are not a sequence — which is exactly the
+// condition Gate B's version-hygiene query looks for.
+func runSameGroupBatch(t *testing.T, stores Stores, restaurantID int64) {
+	ctx := context.Background()
+	s := stores.Knowledge
+
+	docs := []evidence.KnowledgeDocument{
+		knowledgeDoc(restaurantID, evidence.DocTypeRestaurantHours, evidence.ScopeEvidence,
+			"same-group-hash-1", "monday to friday, opens at seven"),
+		knowledgeDoc(restaurantID, evidence.DocTypeRestaurantHours, evidence.ScopeEvidence,
+			"same-group-hash-2", "saturday and sunday, opens at nine"),
+		knowledgeDoc(restaurantID, evidence.DocTypeRestaurantHours, evidence.ScopeEvidence,
+			"same-group-hash-3", "closed on public holidays"),
+	}
+	result, err := s.UpsertDocuments(ctx, docs)
+	if err != nil {
+		t.Fatalf("UpsertDocuments (same group batch): %v", err)
+	}
+	if result.Inserted != len(docs) {
+		t.Fatalf("inserted %d of %d documents in one batch", result.Inserted, len(docs))
+	}
+
+	stored, err := s.ListByRestaurant(ctx, restaurantID, evidence.ScopeEvidence)
+	if err != nil {
+		t.Fatalf("ListByRestaurant: %v", err)
+	}
+	seen := make(map[int]bool, len(docs))
+	versions := make([]int, 0, len(docs))
+	for _, doc := range stored {
+		if doc.DocType != evidence.DocTypeRestaurantHours {
+			continue
+		}
+		if seen[doc.Version] {
+			t.Errorf("version %d was handed to two documents of the same group in one batch; "+
+				"versions = %v", doc.Version, versions)
+		}
+		seen[doc.Version] = true
+		versions = append(versions, doc.Version)
+	}
+	// The group may already hold documents from an earlier subtest, so the
+	// count is not this batch's size. What has to hold is that the three just
+	// written are present and that the whole group has no reused number.
+	if len(versions) < len(docs) {
+		t.Fatalf("stored %d hours documents, want at least the %d just written",
+			len(versions), len(docs))
+	}
+	// The sequence has to start above whatever the group already used, so the
+	// batch continues the history rather than restarting it.
+	for _, v := range versions {
+		if v < 1 {
+			t.Errorf("version %d is not positive", v)
+		}
+	}
+}
+
+// runSupersession pins the rule that a rebuilt document retires the one it
+// replaces, and only then.
+//
+// The failure this guards against is silent: if the old version is never
+// deactivated, both versions stay live, retrieval returns whichever the index
+// happens to rank first, and the citation a user sees may quote text the
+// pipeline has already replaced.
+func runSupersession(t *testing.T, stores Stores, restaurantID int64) {
+	ctx := context.Background()
+	s := stores.Knowledge
+
+	// Two versions of the same fact, same group, different content. The group
+	// is a doc type no other section of the suite uses, so the assertions below
+	// are about these two rows and not about a leftover from elsewhere.
+	first := knowledgeDoc(restaurantID, evidence.DocTypeRestaurantAttributes,
+		evidence.ScopeEvidence, "hash-sup-v1", "open 9 to 5")
+	second := knowledgeDoc(restaurantID, evidence.DocTypeRestaurantAttributes,
+		evidence.ScopeEvidence, "hash-sup-v2", "open 11 to 9")
+	if _, err := s.UpsertDocuments(ctx, []evidence.KnowledgeDocument{first, second}); err != nil {
+		t.Fatalf("UpsertDocuments (supersession): %v", err)
+	}
+
+	stored, err := s.ListByRestaurant(ctx, restaurantID, evidence.ScopeEvidence)
+	if err != nil {
+		t.Fatalf("ListByRestaurant: %v", err)
+	}
+	byHash := map[string]int64{}
+	versionOf := map[string]int{}
+	for _, doc := range stored {
+		byHash[doc.ContentHash] = doc.DocumentID
+		versionOf[doc.ContentHash] = doc.Version
+	}
+	v1, v2 := byHash["hash-sup-v1"], byHash["hash-sup-v2"]
+	if v1 == 0 || v2 == 0 {
+		t.Fatalf("supersession fixtures were not stored: %v", byHash)
+	}
+	// The two must be different versions of one group, not two groups.
+	if versionOf["hash-sup-v1"] == versionOf["hash-sup-v2"] {
+		t.Errorf("both versions report version %d", versionOf["hash-sup-v1"])
+	}
+
+	// Nothing is live yet, so nothing is superseded.
+	superseded, err := s.SupersededDocumentIDs(ctx, []int64{v2})
+	if err != nil {
+		t.Fatalf("SupersededDocumentIDs: %v", err)
+	}
+	if len(superseded) != 0 {
+		t.Errorf("superseded = %v, want none while no version is live", superseded)
+	}
+
+	// Vector only the new one, exactly as the embedding stage would.
+	vec := make([]float32, knowledgeVectorDimensions)
+	vec[3] = 1
+	if _, err := s.SetEmbedding(ctx, []int64{v2}, [][]float32{vec}, "test-model", knowledgeVectorDimensions); err != nil {
+		t.Fatalf("SetEmbedding: %v", err)
+	}
+	if _, err := s.ActivateDocuments(ctx, []int64{v2}, true); err != nil {
+		t.Fatalf("ActivateDocuments: %v", err)
+	}
+
+	// The new version being live is not enough: the old one is only displaced
+	// once its group is identified, which is what SupersededDocumentIDs answers.
+	superseded, err = s.SupersededDocumentIDs(ctx, []int64{v2})
+	if err != nil {
+		t.Fatalf("SupersededDocumentIDs (after activation): %v", err)
+	}
+	// v1 has no vector and so is not live, so it is not displaced. The
+	// important assertion is that v2 itself is never in its own superseded set.
+	for _, id := range superseded {
+		if id == v2 {
+			t.Error("a document was reported as superseded by itself")
+		}
+	}
+
+	// Now the realistic case: both versions are live, which is what a rebuild
+	// that skipped deactivation would leave behind. The new one must displace
+	// the old one. The old version needs a vector to go live at all — that is
+	// the schema refusing a recallable document it cannot rank.
+	oldVec := make([]float32, knowledgeVectorDimensions)
+	oldVec[5] = 1
+	if _, err := s.SetEmbedding(ctx, []int64{v1}, [][]float32{oldVec}, "test-model", knowledgeVectorDimensions); err != nil {
+		t.Fatalf("SetEmbedding (v1): %v", err)
+	}
+	if _, err := s.ActivateDocuments(ctx, []int64{v1}, true); err != nil {
+		t.Fatalf("ActivateDocuments (v1): %v", err)
+	}
+	superseded, err = s.SupersededDocumentIDs(ctx, []int64{v2})
+	if err != nil {
+		t.Fatalf("SupersededDocumentIDs (both live): %v", err)
+	}
+
+	// The caller never passes one row at a time. The embedding stage hands over
+	// a whole page, and a page routinely holds several rows of one group — the
+	// three opening-hours chunks of a restaurant, or these two versions once
+	// both are pending. Everything the caller listed is being switched on, so
+	// none of it may be reported as displaced; only a live row the caller did
+	// *not* list is an older version left behind.
+	//
+	// Excluding merely "a different document_id" returned the caller's own
+	// siblings here, and activatePage deactivates whatever comes back — so the
+	// stage would switch on a page and immediately switch off part of it.
+	wholePage, err := s.SupersededDocumentIDs(ctx, []int64{v1, v2})
+	if err != nil {
+		t.Fatalf("SupersededDocumentIDs (whole page): %v", err)
+	}
+	for _, id := range wholePage {
+		if id == v1 || id == v2 {
+			t.Errorf("SupersededDocumentIDs returned %d, which the caller itself listed; "+
+				"a page's own rows are being switched on, not displaced", id)
+		}
+	}
+	found := false
+	for _, id := range superseded {
+		if id == v1 {
+			found = true
+		}
+		if id == v2 {
+			t.Error("the new version displaced itself")
+		}
+	}
+	if !found {
+		t.Errorf("superseded = %v, want it to contain the older live version %d", superseded, v1)
+	}
+	if _, err := s.ActivateDocuments(ctx, superseded, false); err != nil {
+		t.Fatalf("ActivateDocuments(false): %v", err)
+	}
+
+	// After the switch exactly one version of the group is live.
+	stored, _ = s.ListByRestaurant(ctx, restaurantID, evidence.ScopeEvidence)
+	live := 0
+	for _, doc := range stored {
+		if doc.DocType == evidence.DocTypeRestaurantAttributes && doc.IsActive {
+			live++
+			if doc.ContentHash != "hash-sup-v2" {
+				t.Errorf("live version is %q, want the newer one", doc.ContentHash)
+			}
+		}
+	}
+	if live != 1 {
+		t.Errorf("live versions of the group = %d, want exactly 1", live)
+	}
+	// Superseded rows are retained, not deleted: a citation issued against the
+	// old text still has to resolve.
+	if _, err := s.ListByRestaurant(ctx, restaurantID, evidence.ScopeEvidence); err != nil {
+		t.Fatalf("ListByRestaurant after switch: %v", err)
+	}
+}
+
+// runModelChange pins how a model switch is applied without mixing models.
+//
+// Two rules, both easy to get backwards. The inventory that triggers the guard
+// counts only live documents, so a superseded model cannot block later runs
+// forever; and retiring a model keeps its rows and their vectors, because a
+// citation issued before the switch has to keep resolving.
+func runModelChange(t *testing.T, stores Stores, restaurantID int64) {
+	ctx := context.Background()
+	s := stores.Knowledge
+
+	first := knowledgeDoc(restaurantID, evidence.DocTypeRestaurantProfile,
+		evidence.ScopeRestaurant, "hash-model-v1", "the original profile")
+	if _, err := s.UpsertDocuments(ctx, []evidence.KnowledgeDocument{first}); err != nil {
+		t.Fatalf("UpsertDocuments: %v", err)
+	}
+	stored, err := s.ListByRestaurant(ctx, restaurantID, evidence.ScopeRestaurant)
+	if err != nil {
+		t.Fatalf("ListByRestaurant: %v", err)
+	}
+	var oldID int64
+	for _, doc := range stored {
+		if doc.ContentHash == "hash-model-v1" {
+			oldID = doc.DocumentID
+		}
+	}
+	if oldID == 0 {
+		t.Fatal("the model-change fixture was not stored")
+	}
+	vec := make([]float32, knowledgeVectorDimensions)
+	vec[2] = 1
+	if _, err := s.SetEmbedding(ctx, []int64{oldID}, [][]float32{vec}, "old-model", knowledgeVectorDimensions); err != nil {
+		t.Fatalf("SetEmbedding: %v", err)
+	}
+	if _, err := s.ActivateDocuments(ctx, []int64{oldID}, true); err != nil {
+		t.Fatalf("ActivateDocuments: %v", err)
+	}
+
+	// The live old model is what the guard sees.
+	models, err := s.DistinctEmbeddingModels(ctx)
+	if err != nil {
+		t.Fatalf("DistinctEmbeddingModels: %v", err)
+	}
+	if !hasModel(models, "old-model") {
+		t.Errorf("models = %+v, want it to include the live old-model document", models)
+	}
+
+	// Retirement is global, not per restaurant: a model switch replaces the
+	// whole index, not one restaurant's documents. Earlier sections left live
+	// documents behind, so the expected count is every live document that
+	// disagrees with the incoming model.
+	models, err = s.DistinctEmbeddingModels(ctx)
+	if err != nil {
+		t.Fatalf("DistinctEmbeddingModels: %v", err)
+	}
+	wantRetired := 0
+	for _, info := range models {
+		if info.Model != "new-model" || info.Dimensions != knowledgeVectorDimensions {
+			wantRetired += info.Documents
+		}
+	}
+	retired, err := s.DeactivateStaleModels(ctx, "new-model", knowledgeVectorDimensions)
+	if err != nil {
+		t.Fatalf("DeactivateStaleModels: %v", err)
+	}
+	if retired != wantRetired {
+		t.Errorf("retired %d documents, want %d", retired, wantRetired)
+	}
+	stored, _ = s.ListByRestaurant(ctx, restaurantID, evidence.ScopeRestaurant)
+	for _, doc := range stored {
+		if doc.DocumentID != oldID {
+			continue
+		}
+		if doc.IsActive {
+			t.Error("the retired document is still live")
+		}
+		if len(doc.Embedding) == 0 {
+			t.Error("the retired document lost its vector")
+		}
+	}
+
+	// The inventory must no longer mention it. This is the rule that stops a
+	// superseded model from blocking every future run.
+	models, err = s.DistinctEmbeddingModels(ctx)
+	if err != nil {
+		t.Fatalf("DistinctEmbeddingModels (after retire): %v", err)
+	}
+	if hasModel(models, "old-model") {
+		t.Errorf("models = %+v, want the retired model gone from the live inventory", models)
+	}
+
+	// Retiring again is a no-op rather than an error.
+	again, err := s.DeactivateStaleModels(ctx, "new-model", knowledgeVectorDimensions)
+	if err != nil {
+		t.Fatalf("DeactivateStaleModels (repeat): %v", err)
+	}
+	if again != 0 {
+		t.Errorf("a repeated retirement changed %d rows, want 0", again)
+	}
+}
+
+// hasModel reports whether the inventory lists the given model.
+func hasModel(models []port.EmbeddingModelInfo, name string) bool {
+	for _, info := range models {
+		if info.Model == name {
+			return true
+		}
+	}
+	return false
+}
+
+// runVectorSearch pins the retrieval guarantees M2-07 exists to prove.
+//
+// The rules are: results never cross a scope boundary, inactive and unembedded
+// documents never appear, the ranking is by ascending distance, and top_k is
+// honoured. The scope rule is the one that matters most — a search that leaked
+// a restaurant profile into evidence results would let a fact document outrank
+// the quote a caller meant to retrieve, and nothing downstream could tell.
+func runVectorSearch(t *testing.T, stores Stores, restaurantID int64) {
+	ctx := context.Background()
+	s := stores.Knowledge
+
+	// One document per scope, with vectors pointing in clearly different
+	// directions so the ranking is not a tie.
+	profile := knowledgeDoc(restaurantID, evidence.DocTypeRestaurantProfile,
+		evidence.ScopeRestaurant, "hash-vs-profile", "a quiet diner")
+	profile.Metadata["borough"] = "manhattan"
+	quote := knowledgeDoc(restaurantID, evidence.DocTypeRestaurantRepresentativeReviews,
+		evidence.ScopeEvidence, "hash-vs-evidence", "the burger was excellent")
+	quote.Metadata["borough"] = "brooklyn"
+	if _, err := s.UpsertDocuments(ctx, []evidence.KnowledgeDocument{profile, quote}); err != nil {
+		t.Fatalf("UpsertDocuments: %v", err)
+	}
+
+	// ListByRestaurant filters on one scope, so the two fixtures are read
+	// separately and merged into one id lookup.
+	byHash := map[string]int64{}
+	for _, scope := range []evidence.RetrievalScope{evidence.ScopeRestaurant, evidence.ScopeEvidence} {
+		docs, err := s.ListByRestaurant(ctx, restaurantID, scope)
+		if err != nil {
+			t.Fatalf("ListByRestaurant(%s): %v", scope, err)
+		}
+		for _, doc := range docs {
+			byHash[doc.ContentHash] = doc.DocumentID
+		}
+	}
+	if byHash["hash-vs-profile"] == 0 || byHash["hash-vs-evidence"] == 0 {
+		t.Fatalf("vector search fixtures were not stored: %v", byHash)
+	}
+	// One vector points along the first axis, the other along the last, so a
+	// query built from the first must rank the profile strictly first.
+	profileVec := make([]float32, knowledgeVectorDimensions)
+	profileVec[0] = 1
+	quoteVec := make([]float32, knowledgeVectorDimensions)
+	quoteVec[knowledgeVectorDimensions-1] = 1
+	ids := []int64{byHash["hash-vs-profile"], byHash["hash-vs-evidence"]}
+	if _, err := s.SetEmbedding(ctx, ids,
+		[][]float32{profileVec, quoteVec}, "test-model", knowledgeVectorDimensions); err != nil {
+		t.Fatalf("SetEmbedding: %v", err)
+	}
+	if _, err := s.ActivateDocuments(ctx, ids, true); err != nil {
+		t.Fatalf("ActivateDocuments: %v", err)
+	}
+
+	// A scope is mandatory. Defaulting it would let a caller that forgot to
+	// filter receive both kinds of document with no error.
+	if _, err := s.VectorSearch(ctx, "", profileVec, 10, port.VectorFilter{}); err == nil {
+		t.Error("VectorSearch accepted an empty scope")
+	}
+	if _, err := s.VectorSearch(ctx, evidence.ScopeEvidence, nil, 10, port.VectorFilter{}); err == nil {
+		t.Error("VectorSearch accepted an empty query vector")
+	}
+	if _, err := s.VectorSearch(ctx, evidence.ScopeEvidence, profileVec, 0, port.VectorFilter{}); err == nil {
+		t.Error("VectorSearch accepted a non-positive top_k")
+	}
+
+	// Earlier sections of the suite left their own documents in the same
+	// restaurant, so the assertions below identify the two documents by id
+	// rather than assuming the store holds nothing else.
+	for _, scope := range []evidence.RetrievalScope{evidence.ScopeRestaurant, evidence.ScopeEvidence} {
+		// Each scope is queried with its own document's vector, so the exact
+		// match must come back with distance 0 and rank first.
+		own := byHash[hashForScope(scope)]
+		queryVec := profileVec
+		if scope == evidence.ScopeEvidence {
+			queryVec = quoteVec
+		}
+		hits, err := s.VectorSearch(ctx, scope, queryVec, 100, port.VectorFilter{})
+		if err != nil {
+			t.Fatalf("VectorSearch(%s): %v", scope, err)
+		}
+		seen := 0
+		for _, hit := range hits {
+			// The scope guarantee is the load-bearing one: nothing from the
+			// other scope may appear, whatever its distance.
+			if hit.Scope != scope {
+				t.Errorf("scope %s returned a %s document (%d)", scope, hit.Scope, hit.DocumentID)
+			}
+			if !hit.IsActive {
+				t.Errorf("an inactive document was returned: %d", hit.DocumentID)
+			}
+			if hit.DocumentID == own {
+				seen++
+			}
+		}
+		if seen != 1 {
+			t.Errorf("scope %s returned its own document %d times, want once (of %d hits)",
+				scope, seen, len(hits))
+		}
+		// A query identical to a document's own vector has cosine distance 0,
+		// and nothing is closer than 0, so it must rank first in its scope.
+		if len(hits) > 0 && hits[0].DocumentID != own {
+			t.Errorf("scope %s ranked document %d first, want the exact match %d",
+				scope, hits[0].DocumentID, own)
+		}
+		if len(hits) > 0 && hits[0].Distance > 1e-6 {
+			t.Errorf("self-match distance = %v, want ~0", hits[0].Distance)
+		}
+	}
+
+	// The borough filter has to actually filter, not merely be accepted.
+	hits, err := s.VectorSearch(ctx, evidence.ScopeEvidence, profileVec, 100,
+		port.VectorFilter{Borough: "manhattan"})
+	if err != nil {
+		t.Fatalf("VectorSearch (wrong borough): %v", err)
+	}
+	if len(hits) != 0 {
+		t.Errorf("a brooklyn document was returned for a manhattan query: %+v", hits)
+	}
+	hits, err = s.VectorSearch(ctx, evidence.ScopeEvidence, quoteVec, 100,
+		port.VectorFilter{Borough: "brooklyn"})
+	if err != nil {
+		t.Fatalf("VectorSearch (right borough): %v", err)
+	}
+	if len(hits) != 1 || hits[0].DocumentID != byHash["hash-vs-evidence"] {
+		t.Errorf("matching borough returned %d hits, want only the brooklyn document", len(hits))
+	}
+
+	// top_k bounds the result set.
+	many, err := s.VectorSearch(ctx, evidence.ScopeRestaurant, profileVec, 1, port.VectorFilter{})
+	if err != nil {
+		t.Fatalf("VectorSearch (top_k=1): %v", err)
+	}
+	if len(many) > 1 {
+		t.Errorf("top_k=1 returned %d hits", len(many))
+	}
+
+	// An inactive document must vanish from results even though it still has a
+	// vector: superseded versions keep their embeddings.
+	if _, err := s.ActivateDocuments(ctx, []int64{byHash["hash-vs-evidence"]}, false); err != nil {
+		t.Fatalf("ActivateDocuments(false): %v", err)
+	}
+	hits, err = s.VectorSearch(ctx, evidence.ScopeEvidence, quoteVec, 100,
+		port.VectorFilter{Borough: "brooklyn"})
+	if err != nil {
+		t.Fatalf("VectorSearch after deactivation: %v", err)
+	}
+	if len(hits) != 0 {
+		t.Errorf("an inactive document was still returned: %+v", hits)
+	}
+}
+
+// hashForScope is the content hash of the vector-search fixture in one scope.
+func hashForScope(scope evidence.RetrievalScope) string {
+	if scope == evidence.ScopeRestaurant {
+		return "hash-vs-profile"
+	}
+	return "hash-vs-evidence"
+}
+
+// runEmbeddedReviewCounts pins the aggregation the embedding stage writes back
+// into restaurants.embedded_review_count.
+//
+// The three cases that can silently produce a wrong number are all covered: a
+// document that was never vectored, a document of the wrong type that carries a
+// representative count for some other reason, and a document with no count key
+// at all.
+func runEmbeddedReviewCounts(t *testing.T, stores Stores, restaurantID int64) {
+	ctx := context.Background()
+	s := stores.Knowledge
+
+	// Nothing embedded yet: an absent entry, not a zero. The write-back treats
+	// the two differently, and a map that reported zero would let it erase a
+	// count a previous run legitimately produced.
+	counts, err := s.EmbeddedReviewCounts(ctx)
+	if err != nil {
+		t.Fatalf("EmbeddedReviewCounts: %v", err)
+	}
+	if _, present := counts[restaurantID]; present {
+		t.Errorf("counts = %+v, want no entry before anything is embedded", counts)
+	}
+
+	// The representative document is the only one whose quoted reviews are
+	// reachable, so it is the only one that carries the count.
+	representative := knowledgeDoc(restaurantID,
+		evidence.DocTypeRestaurantRepresentativeReviews, evidence.ScopeEvidence,
+		"hash-rep", "great food")
+	representative.Metadata["representative_count"] = 7
+	if _, err := s.UpsertDocuments(ctx, []evidence.KnowledgeDocument{representative}); err != nil {
+		t.Fatalf("UpsertDocuments (representative): %v", err)
+	}
+	repDocs, err := s.ListByRestaurant(ctx, restaurantID, evidence.ScopeEvidence)
+	if err != nil {
+		t.Fatalf("ListByRestaurant: %v", err)
+	}
+	var repID int64
+	for _, doc := range repDocs {
+		if doc.DocType == evidence.DocTypeRestaurantRepresentativeReviews {
+			repID = doc.DocumentID
+		}
+	}
+	if repID == 0 {
+		t.Fatal("representative document was not stored")
+	}
+
+	// A document with a vector but no count key must not contribute. Counting
+	// it would attribute reviews it never quoted.
+	counted := knowledgeDoc(restaurantID, evidence.DocTypeRestaurantReviewSummary,
+		evidence.ScopeEvidence, "hash-sum", "summary text")
+	if _, err := s.UpsertDocuments(ctx, []evidence.KnowledgeDocument{counted}); err != nil {
+		t.Fatalf("UpsertDocuments (summary): %v", err)
+	}
+	sumDocs, _ := s.ListByRestaurant(ctx, restaurantID, evidence.ScopeEvidence)
+	var ids []int64
+	var vectors [][]float32
+	for _, doc := range sumDocs {
+		ids = append(ids, doc.DocumentID)
+		vectors = append(vectors, unitVector(doc.DocumentID))
+	}
+	if _, err := s.SetEmbedding(ctx, ids, vectors, "test-model", knowledgeVectorDimensions); err != nil {
+		t.Fatalf("SetEmbedding: %v", err)
+	}
+	// A vector alone does not make a document reachable: an inactive row is
+	// excluded from every partial index, so it must not be counted either.
+	if _, err := s.ActivateDocuments(ctx, ids, true); err != nil {
+		t.Fatalf("ActivateDocuments: %v", err)
+	}
+
+	counts, err = s.EmbeddedReviewCounts(ctx)
+	if err != nil {
+		t.Fatalf("EmbeddedReviewCounts: %v", err)
+	}
+	if counts[restaurantID] != 7 {
+		t.Errorf("counts[%d] = %d, want 7", restaurantID, counts[restaurantID])
+	}
+}
+
+// unitVector builds a distinct, non-zero vector of the contract width.
+func unitVector(seed int64) []float32 {
+	out := make([]float32, knowledgeVectorDimensions)
+	out[seed%knowledgeVectorDimensions] = 1
+	return out
 }

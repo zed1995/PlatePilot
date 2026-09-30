@@ -69,6 +69,7 @@ func TestLoaderCompositeDefaults(t *testing.T) {
 	for _, key := range []string{
 		"APP_ENV", "LOG_LEVEL", "POSTGRES_DSN", "POSTGRES_DATABASE",
 		"EMBEDDING_PROVIDER", "EMBEDDING_MODEL", "EMBEDDING_DIMENSIONS",
+		"EMBEDDING_MAX_BATCH",
 	} {
 		t.Setenv(key, "")
 		os.Unsetenv(key)
@@ -93,8 +94,11 @@ func TestLoaderCompositeDefaults(t *testing.T) {
 	if got := l.Embedding().Dimensions; got != 1024 {
 		t.Errorf("EMBEDDING_DIMENSIONS default = %d", got)
 	}
-	if got := l.Timeout().Request; got != 15*time.Second {
-		t.Errorf("REQUEST_TIMEOUT default = %s", got)
+	if got := l.Embedding().BatchSize(); got != DefaultMaxBatch {
+		t.Errorf("EMBEDDING_MAX_BATCH default = %d, want %d", got, DefaultMaxBatch)
+	}
+	if got := l.Timeout().Request; got != DefaultRequestTimeout {
+		t.Errorf("REQUEST_TIMEOUT default = %s, want %s", got, DefaultRequestTimeout)
 	}
 }
 
@@ -210,5 +214,83 @@ func TestRedactPostgresURL(t *testing.T) {
 	}
 	if !strings.Contains(got, "localhost:55432") {
 		t.Errorf("host should be preserved: %q", got)
+	}
+}
+
+func TestEmbeddingMaxBatch(t *testing.T) {
+	t.Setenv("EMBEDDING_MAX_BATCH", "128")
+	l := NewLoader()
+	if got := l.Embedding().MaxBatch; got != 128 {
+		t.Errorf("MaxBatch = %d, want 128", got)
+	}
+	if got := l.Embedding().BatchSize(); got != 128 {
+		t.Errorf("BatchSize = %d, want 128", got)
+	}
+	if problems := l.Embedding().Validate(); len(problems) != 0 {
+		t.Errorf("valid EMBEDDING_MAX_BATCH reported problems: %v", problems)
+	}
+}
+
+// Zero is the "unset" sentinel, so it must resolve to the default rather than
+// produce a zero-sized batch that would loop forever.
+func TestEmbeddingBatchSizeFallsBackToDefault(t *testing.T) {
+	if got := (EmbeddingConfig{}).BatchSize(); got != DefaultMaxBatch {
+		t.Errorf("unset BatchSize = %d, want %d", got, DefaultMaxBatch)
+	}
+	if got := (EmbeddingConfig{MaxBatch: 0}).BatchSize(); got != DefaultMaxBatch {
+		t.Errorf("zero BatchSize = %d, want %d", got, DefaultMaxBatch)
+	}
+}
+
+func TestEmbeddingMaxBatchOutOfRange(t *testing.T) {
+	base := EmbeddingConfig{Provider: ProviderFake, Model: "m", Dimensions: 8}
+	for _, bad := range []int{-1, maxEmbedBatch + 1} {
+		cfg := base
+		cfg.MaxBatch = bad
+		problems := cfg.Validate()
+		if len(problems) != 1 {
+			t.Errorf("MaxBatch=%d reported %d problems, want 1: %v", bad, len(problems), problems)
+			continue
+		}
+		if !strings.Contains(problems[0], "EMBEDDING_MAX_BATCH") {
+			t.Errorf("MaxBatch=%d problem %q should name EMBEDDING_MAX_BATCH", bad, problems[0])
+		}
+	}
+}
+
+// The bound is checked for the fake provider too: a local dry run is exactly
+// where someone pastes a runaway value, and a run that dies there looks like a
+// pipeline bug rather than a typo.
+func TestEmbeddingMaxBatchValidatedForFakeProvider(t *testing.T) {
+	cfg := EmbeddingConfig{Provider: ProviderFake, Model: "m", Dimensions: 8, MaxBatch: -3}
+	if problems := cfg.Validate(); len(problems) == 0 {
+		t.Error("negative EMBEDDING_MAX_BATCH accepted for the fake provider")
+	}
+}
+
+// A bad value must be reported, not swallowed into the default.
+func TestLoaderRecordsBadMaxBatch(t *testing.T) {
+	t.Setenv("EMBEDDING_MAX_BATCH", "many")
+	l := NewLoader()
+	if got := l.Embedding().BatchSize(); got != DefaultMaxBatch {
+		t.Errorf("unparseable EMBEDDING_MAX_BATCH = %d, want the default %d", got, DefaultMaxBatch)
+	}
+	if err := l.Err(); err == nil {
+		t.Error("unparseable EMBEDDING_MAX_BATCH was not reported")
+	} else if !strings.Contains(err.Error(), "EMBEDDING_MAX_BATCH") {
+		t.Errorf("error %q should name EMBEDDING_MAX_BATCH", err.Error())
+	}
+}
+
+// The default has to cover the heaviest document the pipeline actually
+// produces. Measured on the local model, a batch of 32 representative-review
+// chunks (the longest documents in the corpus) takes 52s, so a default below
+// that fails on real data while still passing on the short profile documents.
+// See E.32.
+func TestDefaultRequestTimeoutCoversTheHeaviestBatch(t *testing.T) {
+	const measuredWorstCaseSeconds = 52
+	if DefaultRequestTimeout < measuredWorstCaseSeconds*time.Second {
+		t.Errorf("default request timeout = %s, below the %ds worst-case batch",
+			DefaultRequestTimeout, measuredWorstCaseSeconds)
 	}
 }

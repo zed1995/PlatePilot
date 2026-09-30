@@ -173,6 +173,21 @@ func (s *RestaurantStore) UpdateReviewStats(_ context.Context, restaurantID int6
 	return nil
 }
 
+// UpdateEmbeddedReviewCount writes only the embedded review count, mirroring
+// the narrow Postgres statement rather than the full UpdateReviewStats.
+func (s *RestaurantStore) UpdateEmbeddedReviewCount(_ context.Context, restaurantID int64, count int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key, r, ok := s.sourceByIDLocked(restaurantID)
+	if !ok {
+		return errs.Newf(errs.CodeNotFound, "restaurant %d not found", restaurantID)
+	}
+	r.ReviewStats.EmbeddedReviewCount = count
+	r.UpdatedAt = time.Now().UTC()
+	s.bySource[key] = r
+	return nil
+}
+
 // UpdateScores writes knowledge_score and is_active_for_demo for a batch.
 func (s *RestaurantStore) UpdateScores(_ context.Context, scores map[int64]float64, active map[int64]bool) error {
 	s.mu.Lock()

@@ -376,6 +376,31 @@ func (s *RestaurantStore) UpdateReviewStats(
 	return nil
 }
 
+// UpdateEmbeddedReviewCount writes only the embedded_review_count column.
+//
+// The narrow update is deliberate. UpdateReviewStats rewrites all seven rollup
+// columns, so using it from the embedding stage would mean reading the other
+// six back first and writing them again — and any column that changed in
+// between would be silently reverted.
+func (s *RestaurantStore) UpdateEmbeddedReviewCount(
+	ctx context.Context,
+	restaurantID int64,
+	count int,
+) error {
+	ctx, cancel := s.client.withTimeout(ctx)
+	defer cancel()
+	tag, err := s.client.pool.Exec(ctx,
+		`UPDATE restaurants SET embedded_review_count = $2, updated_at = now() WHERE id = $1`,
+		restaurantID, count)
+	if err != nil {
+		return operationError("postgres: update embedded review count", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return errs.Newf(errs.CodeNotFound, "postgres: no restaurant with id %d", restaurantID)
+	}
+	return nil
+}
+
 // UpdateScores writes knowledge_score and is_active_for_demo for a batch.
 //
 // The two maps are independent: a restaurant may be scored without being

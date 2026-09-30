@@ -23,9 +23,9 @@ import (
 // content fingerprint that happens to be unique.
 //
 // The digest is taken over normalised text, so a document that only differs in
-// line endings or trailing spaces does not churn a new version. The
-// normalisation rule is curate.NormalizeText, the same one reviews use: a
-// second rule here would make the same text hash differently in two stages.
+// line endings or trailing spaces does not churn a new version. The rule is
+// deliberately narrower than the one reviews use — see normalizeForHash for
+// why sharing that rule would be wrong here.
 func ContentHash(scope evidence.RetrievalScope, docType evidence.DocType, restaurantID int64, content string) string {
 	h := curate.HashNormalized(normalizeForHash(content))
 
@@ -43,10 +43,44 @@ func ContentHash(scope evidence.RetrievalScope, docType evidence.DocType, restau
 	return curate.HashNormalized(b.String())
 }
 
-// normalizeForHash applies the narrow normalisation described on
-// ContentHash. It delegates to the shared rule rather than reimplementing it.
+// normalizeForHash applies the narrow normalisation the plan specifies, and
+// nothing else.
+//
+// It is deliberately not curate.NormalizeText, which is the reviews rule and
+// collapses every whitespace run into a single space. That is the right rule
+// for de-duplicating free-form review text, where "the same words" is exactly
+// what makes two reviews duplicates. It is the wrong rule for a document: a
+// knowledge document's line structure carries its meaning, so flattening it
+// makes two documents whose wording is identical but whose layout differs hash
+// the same. Since content_hash is half the idempotency key, that is a
+// document being silently swallowed as one that was already stored.
+//
+// The four steps below are the whole rule:
+//
+//  1. CRLF and lone CR become LF;
+//  2. trailing whitespace is dropped from each line;
+//  3. three or more consecutive newlines become two, so paragraphs survive
+//     while a stray extra blank line does not churn a version;
+//  4. leading and trailing whitespace is trimmed.
+//
+// Case, punctuation, and full-width characters are left alone on purpose:
+// normalising them would mask a real change in the text.
 func normalizeForHash(content string) string {
-	return curate.NormalizeText(content)
+	text := strings.ReplaceAll(content, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		lines[i] = strings.TrimRight(line, " \t\v\f")
+	}
+	text = strings.Join(lines, "\n")
+
+	// A run of n+1 newlines is n blank lines. Three blank lines is four
+	// newlines, which is what the rule collapses to two blank lines.
+	for strings.Contains(text, "\n\n\n\n") {
+		text = strings.ReplaceAll(text, "\n\n\n\n", "\n\n\n")
+	}
+	return strings.TrimSpace(text)
 }
 
 // DocumentKey is the idempotency key for one document row: the same

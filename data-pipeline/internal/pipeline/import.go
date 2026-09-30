@@ -37,6 +37,9 @@ type Stores struct {
 	Restaurants port.RestaurantStore
 	Reviews     port.ReviewStore
 	Pipeline    port.PipelineStore
+	// Knowledge is the M2 write side for retrieval documents. It is nil until
+	// M2 wires it, and the import stages never touch it.
+	Knowledge port.KnowledgeStore
 }
 
 // ImportOptions controls one import invocation.

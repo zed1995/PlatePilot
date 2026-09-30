@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -50,6 +51,22 @@ func identityOf(doc evidence.KnowledgeDocument) identity {
 		docType:      doc.DocType,
 		contentHash:  doc.ContentHash,
 	}
+}
+
+// group is the unit that exactly one version may be live for: the same
+// restaurant, scope, and document type.
+//
+// It is deliberately not identity. The idempotency key includes the content
+// hash, so two versions of the same fact are two identities in one group —
+// which is exactly the distinction supersession has to make.
+type group struct {
+	restaurantID int64
+	scope        evidence.RetrievalScope
+	docType      evidence.DocType
+}
+
+func groupOf(doc evidence.KnowledgeDocument) group {
+	return group{restaurantID: doc.RestaurantID, scope: doc.Scope, docType: doc.DocType}
 }
 
 // UpsertDocuments inserts new versions and skips documents already present.
@@ -114,7 +131,11 @@ func (s *KnowledgeStore) nextVersionFor(key identity) int {
 	return max + 1
 }
 
-// PendingDocuments returns active documents with no vector, oldest id first.
+// PendingDocuments returns documents with no vector, oldest id first.
+//
+// The live flag is deliberately not part of the predicate: documents are
+// inserted inactive and only go live once vectored, so requiring is_active
+// would select a state the table's CHECK constraint makes impossible.
 func (s *KnowledgeStore) PendingDocuments(_ context.Context, limit int) ([]evidence.KnowledgeDocument, error) {
 	if limit <= 0 {
 		return []evidence.KnowledgeDocument{}, nil
@@ -124,7 +145,7 @@ func (s *KnowledgeStore) PendingDocuments(_ context.Context, limit int) ([]evide
 
 	out := make([]evidence.KnowledgeDocument, 0, len(s.byID))
 	for _, doc := range s.byID {
-		if doc.IsActive && len(doc.Embedding) == 0 {
+		if len(doc.Embedding) == 0 {
 			out = append(out, doc)
 		}
 	}
@@ -249,8 +270,8 @@ func (s *KnowledgeStore) ListByRestaurant(
 	return out, nil
 }
 
-// DistinctEmbeddingModels reports which models are present among documents
-// that already have a vector.
+// DistinctEmbeddingModels reports which models produced the documents that are
+// currently live and vectored.
 func (s *KnowledgeStore) DistinctEmbeddingModels(_ context.Context) ([]port.EmbeddingModelInfo, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -259,9 +280,11 @@ func (s *KnowledgeStore) DistinctEmbeddingModels(_ context.Context) ([]port.Embe
 		model      string
 		dimensions int
 	}
+	// Only live documents count. A superseded model still has its rows, and
+	// counting it would make every later run refuse to start.
 	counts := make(map[key]int)
 	for _, doc := range s.byID {
-		if len(doc.Embedding) == 0 || doc.EmbeddingModel == "" {
+		if !doc.IsActive || len(doc.Embedding) == 0 || doc.EmbeddingModel == "" {
 			continue
 		}
 		counts[key{doc.EmbeddingModel, doc.EmbeddingDimensions}]++
@@ -278,4 +301,204 @@ func (s *KnowledgeStore) DistinctEmbeddingModels(_ context.Context) ([]port.Embe
 		return out[i].Dimensions < out[j].Dimensions
 	})
 	return out, nil
+}
+
+// EmbeddedReviewCounts returns the per-restaurant review count reachable
+// through a vector, mirroring the Postgres query's key handling.
+func (s *KnowledgeStore) EmbeddedReviewCounts(_ context.Context) (map[int64]int, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make(map[int64]int, 16)
+	for _, doc := range s.byID {
+		if !doc.IsActive || len(doc.Embedding) == 0 {
+			continue
+		}
+		if doc.DocType != evidence.DocTypeRestaurantRepresentativeReviews {
+			continue
+		}
+		count, ok := doc.Metadata["representative_count"]
+		if !ok {
+			continue
+		}
+		number, ok := count.(int)
+		if !ok {
+			continue
+		}
+		out[doc.RestaurantID] = number
+	}
+	return out, nil
+}
+
+// VectorSearch ranks vectored documents in one scope by cosine distance.
+//
+// The distance is computed here rather than approximated so the mock and the
+// database agree on ordering: a test that passes against memory and fails
+// against Postgres is usually a ranking difference, and an approximate
+// similarity would make that difference invisible until production.
+func (s *KnowledgeStore) VectorSearch(
+	_ context.Context,
+	scope evidence.RetrievalScope,
+	query []float32,
+	topK int,
+	filter port.VectorFilter,
+) ([]port.ScoredDocument, error) {
+	if scope != evidence.ScopeRestaurant && scope != evidence.ScopeEvidence {
+		return nil, errs.Newf(errs.CodeInvalidArgument,
+			"memory: vector search needs an explicit scope, got %q", scope)
+	}
+	if len(query) == 0 {
+		return nil, errs.New(errs.CodeInvalidArgument, "memory: vector search needs a query vector")
+	}
+	if topK <= 0 {
+		return nil, errs.Newf(errs.CodeInvalidArgument,
+			"memory: vector search needs a positive top_k, got %d", topK)
+	}
+	queryNorm := norm(query)
+	if queryNorm == 0 {
+		return nil, errs.New(errs.CodeEmbeddingZeroVector,
+			"memory: the query vector has zero magnitude, so every distance is undefined")
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	scored := make([]port.ScoredDocument, 0, len(s.byID))
+	for _, doc := range s.byID {
+		if !doc.IsActive || len(doc.Embedding) == 0 || doc.Scope != scope {
+			continue
+		}
+		if filter.Borough != "" {
+			borough, _ := doc.Metadata["borough"].(string)
+			if borough != filter.Borough {
+				continue
+			}
+		}
+		if filter.RestaurantID > 0 && doc.RestaurantID != filter.RestaurantID {
+			continue
+		}
+		// A zero vector has an undefined direction, and pgvector excludes such
+		// rows from distance results entirely. Skipping it here keeps the mock
+		// from returning a hit the database would never produce.
+		if norm(doc.Embedding) == 0 {
+			continue
+		}
+		scored = append(scored, port.ScoredDocument{
+			KnowledgeDocument: doc,
+			Distance:          1 - dot(doc.Embedding, query)/(norm(doc.Embedding)*queryNorm),
+		})
+	}
+	// Ties break on document id so the ordering is total and a re-run returns
+	// the same list. Without it, two equally distant documents could swap
+	// places between calls.
+	sort.Slice(scored, func(i, j int) bool {
+		if scored[i].Distance != scored[j].Distance {
+			return scored[i].Distance < scored[j].Distance
+		}
+		return scored[i].DocumentID < scored[j].DocumentID
+	})
+	if len(scored) > topK {
+		scored = scored[:topK]
+	}
+	return scored, nil
+}
+
+// dot is the inner product of two equal-length vectors.
+func dot(a, b []float32) float64 {
+	length := len(a)
+	if len(b) < length {
+		length = len(b)
+	}
+	var sum float64
+	for i := 0; i < length; i++ {
+		sum += float64(a[i]) * float64(b[i])
+	}
+	return sum
+}
+
+// norm is the Euclidean length of a vector.
+func norm(v []float32) float64 {
+	var sum float64
+	for _, x := range v {
+		sum += float64(x) * float64(x)
+	}
+	return math.Sqrt(sum)
+}
+
+// SupersededDocumentIDs returns the live rows that the given documents displace.
+func (s *KnowledgeStore) SupersededDocumentIDs(_ context.Context, docIDs []int64) ([]int64, error) {
+	if len(docIDs) == 0 {
+		return nil, nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	groups := make(map[group]struct{}, len(docIDs))
+	for _, id := range docIDs {
+		doc, ok := s.byID[id]
+		if !ok {
+			continue
+		}
+		groups[groupOf(doc)] = struct{}{}
+	}
+	// The exclusion is membership in the caller's set rather than "a different
+	// id": the caller passes a whole page, and a page routinely holds several
+	// rows from one group. Excluding only self left those siblings live, so
+	// the group ended up with every version active at once.
+	member := make(map[int64]struct{}, len(docIDs))
+	for _, id := range docIDs {
+		member[id] = struct{}{}
+	}
+	out := make([]int64, 0, len(docIDs))
+	for id, doc := range s.byID {
+		if !doc.IsActive {
+			continue
+		}
+		if _, replaced := groups[groupOf(doc)]; !replaced {
+			continue
+		}
+		if _, listed := member[id]; listed {
+			continue
+		}
+		out = append(out, id)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out, nil
+}
+
+// VectoredDocumentIDs returns the subset of the given ids that carry a vector.
+func (s *KnowledgeStore) VectoredDocumentIDs(_ context.Context, docIDs []int64) ([]int64, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make([]int64, 0, len(docIDs))
+	for _, id := range docIDs {
+		doc, ok := s.byID[id]
+		if !ok || len(doc.Embedding) == 0 {
+			continue
+		}
+		out = append(out, id)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out, nil
+}
+
+// DeactivateStaleModels retires the live documents produced by another model.
+func (s *KnowledgeStore) DeactivateStaleModels(_ context.Context, model string, dimensions int) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	changed := 0
+	for id, doc := range s.byID {
+		if !doc.IsActive || len(doc.Embedding) == 0 {
+			continue
+		}
+		if doc.EmbeddingModel == model && doc.EmbeddingDimensions == dimensions {
+			continue
+		}
+		doc.IsActive = false
+		s.byID[id] = doc
+		changed++
+	}
+	return changed, nil
 }

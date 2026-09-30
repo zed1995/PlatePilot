@@ -774,8 +774,9 @@ data-pipeline build-documents --limit=100   # 第二次，模拟无变化重跑
 - **并发度**：`Pipeline.Workers`（M1 已有，默认 4）。**不要**开太高：
   本地 Ollama 是 CPU 推理，32 个并发只会让每个都变慢而总吞吐不变，
   还会把内存打满。并发压测后固定一个值。
-- **批量大小**：`EMBEDDING_MAX_BATCH`（默认 32）。太大则单次请求超时风险上升，
-  太小则 HTTP 往返占比过高。**批量大小直接影响吞吐，必须实测后固定**。
+- **批量大小**：`EMBEDDING_MAX_BATCH`（默认 32，范围 1..2048）。太大则单次请求
+  超时风险上升，太小则 HTTP 往返占比过高。**批量大小直接影响吞吐，
+  必须实测后固定**；`--batch` 可临时覆盖配置以免每次实测都改环境变量。
 - **失败处理分级**：
   - 单条文档内容问题（超长、空文本）→ 该条标记 `rejected`，**不影响整批**；
   - 整批 provider 失败（服务不可用）→ 退避重试，连续失败则本轮结束、批次报 `failed`；
@@ -983,15 +984,21 @@ M2 的并行空间小于 M1，因为 M2-06 依赖 M2-03/04 的产物。可行的
 
 ### 6.1 每个任务通用 DoD（继承实施计划 §10）
 
-- [ ] 代码已实现。
-- [ ] 单元测试或集成测试已添加（`fake` provider 保证离线可测）。
-- [ ] 错误路径有明确错误码（`embedding_*` 族）。
-- [ ] 日志中包含 `batch_id`（批处理阶段的 trace 等价物）。
-- [ ] 不泄露密钥和 PII（评论正文已由 M1 脱敏；向量不进日志）。
-- [ ] 不绕过领域接口直接调用厂商 API（`ollama` 类型不逃逸 `shared/adapter/embedding/ollama`）。
-- [ ] 文档或注释说明关键设计（尤其是版本切换顺序与 HNSW 过滤限制）。
-- [ ] 通过 `go test ./...`、`go vet ./...`、`go test -race ./...`。
-- [ ] 相关验收标准可以实际演示。
+- [x] 代码已实现。
+- [x] 单元测试或集成测试已添加（`fake` provider 保证离线可测）。
+- [x] 错误路径有明确错误码（`embedding_*` 族）。
+- [x] 日志中包含 `batch_id`（批处理阶段的 trace 等价物）。
+- [x] 不泄露密钥和 PII（评论正文已由 M1 脱敏；向量不进日志）。
+- [x] 不绕过领域接口直接调用厂商 API（`ollama` 类型不逃逸 `shared/adapter/embedding/ollama`）。
+- [x] 文档或注释说明关键设计（尤其是版本切换顺序与 HNSW 过滤限制）。
+- [x] 通过 `go test ./...`、`go vet ./...`、`go test -race ./...`。
+- [ ] 相关验收标准可以实际演示。← **待数据库与模型服务恢复后**（见 §6.3 当前状态）
+      其中"续跑不重算"与"模型缺失不写入向量"两条已由单元测试覆盖（E.18），
+      剩下的是需要真实库与模型的计数类结论。
+
+> **`batch_id` 日志为什么是硬要求**：审计行是一次运行唯一的持久记录，
+> 日志里没有 `batch_id` 就无法把一行输出对应回某次具体的运行。
+> 两次运行交叠时，没有 id 的日志行是不可读的。
 
 ### 6.2 M2 里程碑门（Gate B）
 
@@ -1002,21 +1009,175 @@ M2 的并行空间小于 M1，因为 M2-06 依赖 M2-03/04 的产物。可行的
 - [ ] 所有向量均为 1024 维（`vector_dims` 全为 1024）。
 - [ ] 向量检索能返回正确 scope（两个 scope 各自 100% 命中）。
 
-本文档补充的扩充分项：
+本文档补充的扩充分项。**行为已由契约/单元测试覆盖，但计数类结论需要真实全量数据**，
+两者在下面分开标注：
 
-- [ ] 每个餐厅恰好 1 个活跃的 `restaurant_profile`。
-- [ ] `build-documents` 重跑幂等（`content_hash` 分布不变）。
-- [ ] `embed` 重跑幂等（`pending=0`）。
-- [ ] 模型切换不被静默复用（`embedding_model_mismatch` + `--force-model-change` 可显式覆盖）。
-- [ ] 无异常向量（空 / NaN / Inf / 全零 / 重复均为 0）。
-- [ ] borough partial HNSW 命中（`EXPLAIN` 非 Seq Scan）。
-- [ ] `representative_review_count` 与 `embedded_review_count` 有真实值，与库一致。
-- [ ] `knowledge_documents.content` 无邮箱 / 电话命中。
-- [ ] `reviews.is_representative` 不再恒为 false，且代表评论选择可重复。
-- [ ] KnowledgeStore 的 memory 与 postgres adapter 通过同一套契约测试。
-- [ ] `data-pipeline report --stage=embedding` 可查质量统计（该 `--stage` 过滤是 M2-06 新增的 flag）。
+**行为正确性（测试已覆盖，`go test ./...` 通过）**
+
+- [x] 每个餐厅恰好 1 个活跃的 `restaurant_profile`（契约：`runSupersession` 断言组内活跃数）
+- [x] `build-documents` 重跑幂等（契约：`UpsertDocuments` 二次调用 `skipped` 不新增行）
+- [x] `embed` 重跑幂等（`TestRunEmbedRerunIsANoOp`：第二次 `documents=0`）
+- [x] `content_hash` 保留文档的换行结构，只做计划规定的四条归一化
+      （`TestContentHashPreservesLineStructure` 等三条，并因此修掉 E.23）
+- [x] 同批同组文档版本号不重复（契约：`runSameGroupBatch`；memory 与 postgres 跑同一套）
+- [x] 模型切换不被静默复用（`TestRunEmbedRefusesAModelChange` 拒绝；
+      `TestForceModelChangeRetiresTheOldDocuments` 确认旧文档被下线且保留向量；
+      `TestRunAfterAModelChangeNeedsNoForce` 确认切换后不再需要 flag）
+- [x] `embedded_review_count` 的回写与文档一致（`TestRunEmbedWritesBackTheEmbeddedReviewCount`）
+- [x] 整页多行时 `SupersededDocumentIDs` 不返回调用方自己的行（E.27）
+- [x] `embed --restaurant-id` 只处理指定餐厅，且在 inactive 文档上有效（E.25）
+- [x] `build-documents` 的测试检查实际产出而非仅审计行（E.26）
+- [x] 重复向量在并发下也能检出（`TestRunEmbedRejectsDuplicatesAcrossWorkers`，
+      并因此修掉 E.24 的每 worker 独立集合）
+- [x] 质量门拒绝异常向量（`TestRunEmbedRecordsQualityRejections`、并发版本）
+- [x] KnowledgeStore 的 memory 与 postgres adapter 通过同一套契约测试
+- [x] `report --stage` 过滤与 M2 批次列往返（`runEmbeddingStageReport`）
+- [x] 中途失败后可续跑，已完成的文档不重算（`TestRunEmbedResumesAfterAMidRunFailure`，
+      并因此修掉 E.18 的孤儿文档）
+- [x] 模型不存在时报 `provider_unavailable` 且不写入任何向量
+      （`TestRunEmbedWritesNothingWhenTheModelIsMissing`）
+
+**需要真实数据库才能确认（见 §6.4）**
+
+- [ ] `retrieval_scope='restaurant'` 覆盖 ≥ 500 家餐厅
+- [ ] `retrieval_scope='evidence'` 活跃文档 ≥ 5,000 条
+- [ ] 所有向量均为 1024 维
+- [ ] 向量检索能返回正确 scope
+- [ ] 无异常向量（库侧兜底查询）
+- [ ] borough partial HNSW 命中（`EXPLAIN` 非 Seq Scan）
+- [ ] `representative_review_count` 与 `embedded_review_count` 有真实值，与库一致
+- [ ] `knowledge_documents.content` 无邮箱 / 电话命中
+- [ ] `reviews.is_representative` 不再恒为 false，且代表评论选择可重复
 
 ---
+
+### 6.3 当前状态：代码完成，待联调验证
+
+M2-01 ~ M2-08 的**代码**已全部实现，`go build` / `go vet` / `gofmt` 干净，
+`go test ./...` 与 `go test -race ./...` 除一项外全部通过。
+
+### 6.3.0 恢复完整权限后的验证结果
+
+权限恢复为完全访问后，以下几项从"未验证"转为"已验证"：
+
+- **迁移 0003 已在真实库上 apply**（36133 家餐厅 / 872 万条评论的库），
+  6 个审计列的类型与可空性全部正确，两条历史 `ingestion_batches` 行读出
+  NULL 而非 0 —— 正是设计意图（"本阶段未参与"而不是"跑了但结果是零"）。
+- **契约测试全绿**，过程中查出并修掉两个真实缺陷（见 E.33、E.34）。
+- **三个 HNSW 索引断言在真实 planner 上全绿**（见 E.35），并做过故障注入：
+  把 borough 断言改成全局索引名，测试变红。
+- **ollama 全部 18 个测试通过**，含此前因无法绑定端口而从未跑过的
+  `httptest` 版本；`go test -race` 亦通过。E.31 补的 `RoundTripper` 版本
+  仍然保留，两套互为对照。
+- **端到端链路跑通**：`build-documents` 产出 3000 篇 profile + 8842 篇
+  evidence，`embed` 用真实 `qwen3-embedding:0.6b` 写入 1024 维向量，
+  重跑为 no-op（0 篇），200 篇样本的向量互不相同且无 NaN/Inf。
+
+期间发现 `REQUEST_TIMEOUT` 默认值在真实数据上必然超时，已修（见 E.32）。
+
+原"唯一失败项"记录的是 ollama 的 `httptest` 用例受沙箱端口限制；
+权限恢复后该限制不复存在，这条记录已随之失效。
+
+E.29 补完后的最终回归：35 个包（除 ollama）全通过，
+`gofmt` / `go build` / `go vet` / `go test` / `go test -race` 均干净。
+测试必须带 `GOCACHE=/tmp/platepilot-gocache`——默认 GOCACHE 路径
+在沙箱内不可写，报错与代码无关。
+
+> **zsh 陷阱（已踩）**：`PKGS=$(go list ./... | grep -v ollama)` 之后
+> `go test $PKGS` 会失败并报 `malformed import path ... invalid char '\n'`，
+> 看起来像代码问题，实际是 zsh 不对未加引号的变量做分词，整串包名被当成
+> 一个 import path。正确写法是数组：
+> `PKGS=(${(f)"$(go list ./... | grep -v ollama)"})`。
+> 同样的原因还会产生假的 `[setup failed]`，指向一个其实完全正常的包
+> （当时指向 `shared/testkit`）——排查方向会被完全带偏。
+
+### 6.3.1 覆盖率驱动的补充审计
+
+M2-01~M2-08 逐个 review 之后，又用覆盖率做了一轮定点审计，
+目标是"**从未被执行过的代码**"——覆盖率 0% 意味着某条路径从未被验证过，
+而它是否正确只能靠猜。结果补上了三处此前无人测过的暴露面：
+
+| 函数 | 原覆盖率 | 说明 |
+|---|---|---|
+| `buildEvidenceDocuments` | 0% | Gate B「≥5,000 条 evidence」的实际产出路径 |
+| `selectRestaurants` | 0% | 决定哪些餐厅被处理（见 E.26：原测试里它从未返回过餐厅） |
+| `embedOneRestaurant` | 0% | `--restaurant-id` 调试路径（见 E.25：真实数据上恒为空转） |
+| `runBuildDocuments` / `runEmbed`（`main.go`） | 0% | 运维实际敲的命令，含 flag 与前置校验 |
+| `boroughOf` / `optionalString` / `orEmptyMap` | 0% | borough 决定文档进哪个 HNSW partial 索引 |
+
+`data-pipeline` 主包 8.4% → 12.9%，`pipeline` 包 73.3% → 80.4%。
+`postgres` 包 5.5% 是沙箱限制（需要真实库），其中两个纯函数
+（`vectorSearchStatement`、`vectorLiteral`）已 100%。
+
+最后一处 0% 覆盖是 `ParseEmbedOptions` 里 `EMBEDDING_MAX_BATCH` 的
+接线：配置项在计划里被写了三遍，代码里一次都没有（见 E.29）。
+审计这个旋钮时顺带发现批量大小**不可配置**——而计划自己写着
+"必须实测后固定"，实测的前提就是能改这个值而不重新编译。
+这是覆盖率审计的第四个"0% 才是真正的信号"的例子：
+前三个是**功能没写**，这个是**功能写了计划文档就以为写了**。
+
+### 6.4 尚未验证的部分（不可从沙箱内完成）
+
+以下三项**必须**在真实 Postgres 与 Ollama 上跑过才能勾选 Gate B。
+它们不是"还没写"，而是"写了但从未执行过"，因此不能算通过：
+
+| 项 | 状态 | 需要的验证 |
+|---|---|---|
+| 迁移 `0003_embedding_audit.sql` | **从未 apply 过**（但结构已静态验证，见下） | 6 个新列能否在真实库上 apply；`ALTER TABLE` 的实际执行 |
+| `knowledge_index_test.go` 的 EXPLAIN 断言 | **断言本身已修好**（E.20/E.21），但**从未在真库上跑过** | planner 是否真的选 `knowledge_documents_hnsw_<borough>` 而非 Seq Scan |
+| Gate B 第 1、2 条数量门槛 | **需要全量跑** | ≥500 家餐厅 / ≥5,000 条 evidence；`--limit=200` 达不到 |
+
+`knowledge_sql_test.go` 用正则静态校验了 `VectorSearch` 的占位符编号
+（无空洞、无未引用），这覆盖了 SQL 构造本身，**但不能替代**上面第 1、2 项——
+它们验证的是数据库行为，不是字符串逻辑。
+
+#### 迁移 0003 的静态验证（`migration_audit_test.go`）
+
+既然迁移无法在沙箱内 apply，就把它内部的一致性变成可执行断言。
+新增 `shared/adapter/repository/postgres/migration_audit_test.go`，锁住四件事：
+
+1. **迁移声明的 6 个列**与 `review.BatchReport` 的 M2 字段一一对应，且都是可空的
+   （不可空会让从不设置它们的 M1 阶段插入失败）；
+2. **迁移加的每个列**都在 `batchInsertSQL` 里出现——否则迁移本身完全正确，
+   而下一次运行写批次时失败；
+3. **每个列在 UPDATE 里也被赋值**——否则运行开始时记录的值会在结束时丢失；
+4. **INSERT / UPDATE 的列序与位置参数一一对应**（第 n 个参数就是第 n 列），
+   并且 `batchArgs` 绑定的参数个数等于 INSERT 的列数。
+
+第 4 条是 Go 和 PostgreSQL 都不检查的东西：写错时 PG 报的是
+"column x is of type y but expression is of type z"，既不点名阶段也不点名字段。
+
+三种故障注入已验证这些断言不是空转：
+
+| 注入 | 捕获者 |
+|---|---|
+| 从 INSERT 删掉 `documents_embedded` | `TestBatchInsertMatchesTheMigratedColumns` + `batchArgs` 参数数不符 |
+| 交换 UPDATE 里 `documents_built` / `documents_rejected` 的占位符 | `TestBatchStatementsAgreeOnColumnAndParameterOrder/update` |
+| 把 `documents_built` 改成 `NOT NULL` | `TestMigration0003DefinesEveryAuditedColumn` |
+
+> 解析 `batchUpdateSQL` 时踩过一个坑：SET 子句里多数赋值是
+> `COALESCE($n, column)` 包着的，按逗号朴素切分会把一条赋值劈成两半，
+> 让列数与占位符数对不上——一条完全正确的 SQL 因此报错。
+> 现在按括号深度切分（`splitTopLevel`），且 UPDATE 只取 SET 子句、不含
+> `WHERE id = $1`。
+
+**这不能替代真实 apply**：类型兼容性、`jsonb` 列的实际写入、迁移在已有
+36225 家餐厅的库上的耗时，都仍然只有跑一次才知道。
+
+### 6.5 恢复后的执行顺序
+
+```bash
+# Gate B 必须带 PLATEPILOT_REQUIRE_DB=1，否则需要数据库的测试会静默跳过（E.19）
+export PLATEPILOT_REQUIRE_DB=1
+
+go run ./data-pipeline migrate                        # 应用 0003
+go run ./data-pipeline build-documents --limit=200 --dry-run
+go run ./data-pipeline build-documents --limit=200     # 看 inserted / skipped
+go run ./data-pipeline embed --limit=200 --batch=32 --workers=4
+go run ./data-pipeline embed --limit=200               # 重跑应为 pending=0
+go run ./data-pipeline report --stage=embedding        # 批次报告可查
+# 确认无误后去掉 --limit 跑全量，再执行附录 C 的 10 条查询
+```
 
 ## 7. 与后续里程碑的衔接
 
@@ -1128,11 +1289,825 @@ M2 完成后按实施计划 §14 进入 M3（两级检索）。衔接点：
 - `unnest(...) WITH ORDINALITY` 里的 `ord` 必须显式列出字段（`SELECT u.ord, u.restaurant_id, ...`），
   `SELECT ord, u.*` 会造成列名二义（`SQLSTATE 42702`）。
 
-### E.6 JSON 无法承载 NaN/Inf（见 §M2-01）
+### E.6 `PendingDocuments` 原本选中了一个不可能的状态（已修）
+
+`0001_init.sql:246` 有 `CHECK (is_active = false OR embedding IS NOT NULL)`，
+而 M1-03 定的 `PendingDocuments` 写的是 `WHERE is_active AND embedding IS NULL`。
+**这两个条件互相矛盾**：前者禁止"活跃但无向量"，后者只返回"活跃但无向量"。
+
+叠加 M2-03/M2-04 的 builder 全部以 `IsActive: false` 落库（符合计划的四步切换），
+结果是 **M2-06 永远查不到任何待处理文档，整条 embedding 链路是一个静默 no-op**：
+命令正常退出、批次报 `succeeded`、`embedded=0`，没有任何错误线索。
+
+已把谓词改为 `WHERE embedding IS NULL`。理由：
+
+- 「谁需要向量」与「谁是活跃版本」是两个正交的问题。前者只取决于有没有向量；
+- 刚构建的文档恰好都是 `is_active = false`，而它们正是最需要向量的那些；
+- 激活是 embedding 之后的独立一步，混进查询谓词会让两个阶段互相等待。
+
+契约测试同步更新，并新增两条断言：向量写入后文档离开 pending 集合；
+`limit = 0` 返回空（0 是"取 0 条"，不是"取全部"——调用方必须自己分页）。
+
+### E.7 拒绝的文档会让 embedding 循环不终止（已修）
+
+质量门拒绝的文档**不会拿到向量**，所以它永远留在 pending 集合里。
+原循环每轮重新查 pending、重新问 provider、重新拒绝同一个文档，
+`rejected` 计数无限增长且循环不退出。
+
+已在本轮内维护 `rejected` 集合，跳过本次运行已拒绝的文档，并在
+「剩余 pending 全部已拒绝」时退出。语义是诚实的：这些文档留在库里但没有向量，
+审计表里有它们的 id 和原因，重跑会再试一次（provider 修好后可能就通过了）。
+
+### E.8 `EmbedResult` 按值传递导致计数全部丢失（已修）
+
+`embedDocuments` / `embedBatch` / `embedPending` 的 `result EmbedResult`
+是值传递，内部 `result.Embedded++` 改的是副本。
+结果是 `Documents` 计数正确（它在循环里累加）而 `Embedded`/`Rejected`/`Failed`
+恒为 0。已全部改为 `*EmbedResult`。
+
+这个 bug 被 `TestRunEmbedFillsPendingDocuments` 抓到——它断言的是**写进数据库的
+向量**而不是返回值，所以如果只断言返回值就会一起漏掉。
+
+### E.9 `UpdateReviewStats` 整行覆盖的风险按计划建议消除
+
+计划 §M2-06 指出 `UpdateReviewStats` 会覆盖 7 个计数列，要求调用前先读出其它 6 列
+原样带回，否则会清零 M1/M2-04 的成果。
+
+已按计划给出的"更稳妥的做法"加了窄接口
+`RestaurantStore.UpdateEmbeddedReviewCount(ctx, id, count)`（postgres + memory），
+只写 `embedded_review_count` 一列。契约测试断言：调用窄接口后
+`stored_review_count` / `text_review_count` / `rating_computed_avg` 保持不变。
+
+计数值本身来自 `KnowledgeStore.EmbeddedReviewCounts`——按文档的
+`metadata->>'representative_count'` 聚合，**从库里算而不是从本轮写入的累加**。
+增量式写法在"写完向量但没来得及更新计数"时会永久漂移，也分不清重嵌入和新嵌入。
+
+### E.10 没有任何代码调用 `ActivateDocuments`（已修）
+
+四步切换的前三步都有实现，**第四步（`is_active = true`）没有**：
+`grep -r ActivateDocuments data-pipeline/` 只命中端口定义和测试。
+
+后果比 E.6 更隐蔽：文档拿到了向量，却永远停在 `is_active = false`，
+而**所有** partial 索引的谓词都是 `WHERE is_active`。也就是说
+6 个 HNSW 索引一个都看不到这些文档，`VectorSearch` 恒返回空，
+Gate B 的覆盖率查询全部为 0——但每一步都"成功"。
+
+已在 M2-06 补上激活，顺序严格按计划：
+
+```text
+SetEmbedding（向量落库）
+-> ActivateDocuments(新版本, true)      # 先开新的
+-> SupersededDocumentIDs(找出同组旧版本)
+-> ActivateDocuments(旧版本, false)     # 再关旧的
+```
+
+「先开后关」不是风格问题：先关会在失败时留下一个**没有活跃版本**的组，
+该餐厅该 doc_type 直接检索不到。计划里说的"检索黑洞"就是这个。
+
+为此新增 `KnowledgeStore.SupersededDocumentIDs`：哪些旧版本被顶替，
+取决于文档所属的 `(restaurant_id, scope, doc_type)` 组，调用方拿 id 算不出来。
+
+### E.11 memory 的 `identity` 表达不了"组"
+
+memory adapter 的幂等键 `identity` 含 `contentHash`，所以同一事实的两个版本
+在它眼里是**两个不同的 identity**。用 `identityOf` 写 supersession 判定会得到
+"没有任何文档被顶替"——因为新旧版本的 identity 天然不相等。
+
+已引入独立的 `group`（不含 `contentHash`）。两者的区别是硬性的：
+**identity 决定"是不是同一篇"，group 决定"是不是同一件事"**。
+幂等性用前者，版本切换用后者。混用会让 supersession 永远失效且不报错。
+
+### E.12 可选过滤器的占位符编号会留下空洞（已修）
+
+`VectorSearch` 的 borough / restaurant_id 都是可选的。第一版按固定编号写
+（scope=`$1`、borough=`$2`、vector=`$3`、restaurant=`$4`），
+**borough 为空时 `$2` 无人引用但仍然绑定**，PostgreSQL 直接拒绝：
+
+```
+could not determine data type of parameter $2
+```
+
+这个报错指向一个编号而不是本该使用它的 `AND borough = ...` 子句，
+排查成本很高。已改为**边拼子句边编号**（`bind` 闭包），
+保证语句里出现的每个 `$n` 都有对应参数、每个参数都被引用。
+
+顺带把 SQL 构造抽成 `vectorSearchStatement`，这样编号规则可以**不连数据库**就测：
+`knowledge_sql_test.go` 用正则抽出所有 `$n`，双向断言"无空洞、无未引用"，
+四种过滤组合各测一遍。这类 bug 只有真跑一次才暴露，
+但它的成因是纯字符串逻辑，不该被数据库的可达性绑住。
+
+### E.13 `--workers` 被解析但从未使用（已修）
+
+`EmbedOptions.Workers` 有解析、有默认值、usage 里也写着"embedding concurrency"，
+但 `embedDocuments` 是**纯串行**的 for 循环。计划 §M2-06 明确要求"并发"，
+验收标准还有一条"并发 4 与并发 1 的总耗时对比：并发 4 更快（证明并发确实生效，不是空转）"——
+这条验收在串行实现下永远无法通过，而它本来正是用来抓这种"参数存在但没接线"的。
+
+已实现 worker pool（`embedPageConcurrently`）。并发度按 `Workers` 而不是按批次数封顶：
+provider 是本地 CPU 模型，多发请求不提高总吞吐，只会让每个请求更慢、内存占用更高。
+
+### E.14 并发 worker 会互相把对方的文档下线（已修）
+
+第一版把「激活 + 版本顶替」放在**每个 batch 内部**。但 batch 不是 group：
+同一页里多个 batch 经常属于**同一个** `(restaurant_id, scope, doc_type)`
+（例如一家餐厅的 9 篇文档按 batch=2 切成 5 批，全是同一个 group）。
+
+于是每个 worker 在激活完自己的文档后，去下线"同组的旧版本"，
+而下线的对象正是**其他 worker 刚写好的新文档**。
+9 篇文档的测试结果是 `embedded=9` 但 **0 篇活跃**——而且没有任何报错。
+
+已改为**整页 join 之后再切换**（`activatePage`）：
+
+```text
+各 worker 并发：SetEmbedding（只写向量，不碰 is_active）
+-> join
+-> VectoredDocumentIDs(筛出真正拿到向量的)
+-> ActivateDocuments(新, true)
+-> SupersededDocumentIDs(同组旧版本)
+-> ActivateDocuments(旧, false)
+```
+
+同时新增 `VectoredDocumentIDs`：切换前必须知道**哪些文档真的拿到了向量**，
+被质量门拒绝的文档没有向量，`ActivateDocuments` 会拒绝它（schema 的 CHECK 也一样），
+所以不能把整页无脑传进去。
+
+配套的三个并发测试都用 `-race` 跑过：
+峰值并发 ≥ 2（证明真的重叠而不是空转）、串行与并行的结果一致、
+以及**并发下的拒绝仍然进批次报告**——每个 worker 用自己的 collector 缓冲，
+join 后统一并入 run 的 collector，否则并发路径的拒绝会全部丢失。
+
+### E.15 `--force-model-change` 只是跳过了检查，没有真的切换（已修）
+
+计划 §M2-06 对模型切换写得很具体：
+
+```text
+把所有 embedding_model <> 当前模型的活跃文档置 is_active = false
+-> 重新生成文档
+-> 重新 embedding
+```
+
+原实现只有 `if opts.ForceModelChange { return nil }`——**纯粹跳过守卫**。
+跳过后旧模型的文档仍然 `is_active = true`，run 继续用新模型写入新文档，
+最后索引里**两个模型的活跃文档并存**。这正是守卫存在的目的：
+不同模型的余弦距离语义不同，混在一起返回的分数无法解释，而且没有任何东西会报错。
+
+已按计划实现真正的切换：新增 `DeactivateStaleModels`，
+`--force-model-change` 时把旧模型的活跃文档置 `is_active = false`。
+行和向量都保留——它们是历史，不是待办，且切换前签发的引用仍要能解析。
+
+### E.16 模型切换后，每次运行都会被守卫挡住（已修）
+
+`DistinctEmbeddingModels` 原本统计**所有**有向量的行，不管是否活跃。
+E.15 把旧模型下线之后，它依然在清单里，于是下一次 `embed`
+（哪怕配置已经完全正确）仍然报 `embedding_model_mismatch`。
+
+模型切换因此变成一次性的：第一次能跑，第二次开始永远失败。
+已加 `AND is_active`。守卫要回答的是"**活跃集合**里有没有冲突模型"，
+已下线的历史正是它应该忽略的东西。
+
+`--force-model-change` 因此是**三步**而不是一步：
+强制切换 -> 重新 `build-documents`（生成新版本）-> 再 `embed`。
+被下线的文档带着向量，不会重新变成 pending；替换它是重建的职责。
+这一点写在 `PendingDocuments` 与 `DeactivateStaleModels` 的接口注释里，
+因为"为什么重跑 embed 补不回来"不是看代码能猜到的。
+
+### E.17 JSON 无法承载 NaN/Inf（见 §M2-01）
 
 `encoding/json` 序列化 NaN/Inf 直接失败，所以合规服务端不可能把它们发上线；
 而 JSON 里合法的 `null` 分量会被**静默解成 `0.0`**。
 结论：Ollama 路径上真正可达的守卫是**全零向量检查**，不是 NaN 检查。
+
+### E.18 批次中途失败会留下"有向量但没激活"的孤儿（已修）
+
+这是写 M2-06 最后两条验收标准的测试时才发现的，也是 E.10 的续集。
+
+E.10 补上了"拿到向量就激活"，但激活被放在了 page 循环里 `err != nil` 的**之后**：
+
+```text
+embedPageConcurrently(...)   // 批 1 写入 3 个向量，批 2 provider 报错
+if err != nil { return }     // ← 直接返回
+activatePage(ctx, stores, page)   // ← 永远到不了
+```
+
+page 是分批写的，后一批失败**不会回滚**已经写入的前几批。于是这些文档的状态是
+`embedding IS NOT NULL AND is_active = false`。这个状态是**不可恢复的**：
+
+- 它们已经离开 pending 集合（谓词是 `embedding IS NULL`），所以重跑捞不到；
+- 它们不在任何 HNSW 索引里（6 个索引谓词都含 `is_active`），所以检索不到；
+- 它们的向量已经写进库里，所以既没有报错也没有告警。
+
+也就是说一批文档被永久写进了"存在但不可检索"的状态，而批报告里 `embedded=3` 显示一切正常。
+
+已把 `activatePage` 移到错误检查**之前**。它是幂等的，且内部先用
+`VectoredDocumentIDs` 把 page 收窄到"真正拿到向量的"，所以在半完成的 page 上调用
+只会激活成功的批次，失败那批仍然留在 pending 集合里等下一轮。
+
+回归测试 `TestRunEmbedResumesAfterAMidRunFailure` 断言三件事：
+部分运行后有文档是"活跃且有向量"的（而不是只写了向量）；
+续跑时 provider 被问到的文档数恰好等于还没 embedding 的数量（已完成的**没有重算**）；
+最终没有"活跃但无向量"的文档。
+
+> 顺带修正一个此前写错的测试假设：fixture 把 9 篇文档放进同一个
+> `(restaurant, scope, doc_type)` 组，而 supersession 的语义是组内版本切换，
+> 所以"9 篇全活跃"从来不是正确预期。测试因此改为断言不变式
+> （无孤儿、活跃必有向量）而不是具体活跃数。
+
+### E.19 索引测试跳过时整体报 PASS（已修）
+
+`indexSearchConn` 在数据库不可达时 `t.Skipf`，沿用 M1 契约套件的模式。
+开发时这是对的（本地 `go test ./...` 不该因为没起库而红），**但对 Gate B 是错的**：
+"套件通过"和"套件从没跑过"的退出码相同，一个分不清这两者的门不是门。
+
+已改为 `requireDatabase`：默认仍跳过（本地循环保持快），
+但 `PLATEPILOT_REQUIRE_DB=1` 时**硬失败**并提示启动命令。
+两种模式都已实测：默认报 `ok`（附 skip 说明），`PLATEPILOT_REQUIRE_DB=1` 报 `FAIL`。
+
+> 恢复额度后跑 Gate B **必须**带 `PLATEPILOT_REQUIRE_DB=1`，
+> 否则这四条索引测试即使一行没执行也会显示为通过。
+
+### E.20 索引断言用子串匹配，会假阳性（已修）
+
+`assertPlanUses` 原来用 `strings.Contains(plan, indexName)`。
+`knowledge_documents_hnsw` 是 `knowledge_documents_hnsw_manhattan` 的**前缀**，
+所以 `TestUnfilteredQueryUsesTheGlobalIndex`（断言全局索引）在规划器实际选了
+某个 borough 索引时也会**通过**——而"无 borough 过滤时不会掉进 borough 索引"
+正是这条测试存在的理由。假阳性比失败更危险：它让一条从没验证过的性质显示为已验证。
+
+已改为 `planIndexNames` 按 token 精确提取 `using <index>` 后的名字。
+解析逻辑本身有合成 plan 的单元测试（`TestPlanIndexNames` 四个子用例 +
+`TestGlobalIndexAssertionRejectsBoroughIndex`），不连库就能验证：
+
+| 合成 plan | 提取结果 |
+|---|---|
+| `Index Scan using knowledge_documents_hnsw_manhattan on ...` | `[knowledge_documents_hnsw_manhattan]` |
+| `Index Scan using knowledge_documents_hnsw on ...` | `[knowledge_documents_hnsw]` |
+| `Seq Scan on knowledge_documents` | `[]` |
+| `BitmapAnd` 下两个 Index Scan | 两个索引名 |
+
+> 写这个解析器时它第一版把 `on knowledge_documents` 里的**表名**也当成索引名收进来了，
+> 于是任何 plan 看起来都"用过索引"。是上面的合成测试抓到的，不是 review 看出来的。
+
+### E.21 EXPLAIN 断言里传了 3 维向量（已修）
+
+`knowledge_index_test.go` 的三处 `EXPLAIN` 都把查询向量写成 `"[1,0,0]"`，
+而列声明是 `vector(1024)`。**这个测试从未真正验证过索引选择**：
+
+- EXPLAIN 虽然不执行查询，但仍要绑定操作数，3 维字面量撞上 `vector(1024)`
+  会被 PostgreSQL 直接拒绝；
+- 失败会走 `t.Fatalf("EXPLAIN: %v", err)` —— 测试**红**，而不是报告它想验证的 plan；
+- 也就是说这四条索引测试在真实库上第一次跑就会全部失败，且失败原因与索引无关。
+
+已改为 `indexVectorLiteral(t, 0)`，用与 seed 相同的 `indexVector` 渲染成 1024 维
+pgvector 字面量。字面量仍然是**参数化绑定**的，没有拼进 SQL 字符串。
+
+### E.22 同批同组文档拿到相同版本号（已修）
+
+M2-05 明确写了 `(restaurant_id, scope, doc_type)` 到文档是 **1:N**
+（"同一家餐厅可能有两个 `restaurant_hours` chunk"），
+而 `next_version` 的写法是相关子查询：
+
+```sql
+SELECT max(d.version) + 1 FROM knowledge_documents d
+ WHERE d.restaurant_id = i.restaurant_id AND ...
+```
+
+子查询只能看到**语句执行前已在表里**的行。一批新建的同组文档彼此都看不见，
+于是**每一篇都拿到同一个版本号**。
+
+没有任何东西会拒绝这种数据：`version` 列没有唯一约束，而这几篇的
+`content_hash` 各不相同，所以幂等键也拦不住。写入成功、批报告 `inserted=3`、
+没有任何警告——直到 Gate B 附录 C 第 7 条查询（组内版本号不得重复）才会暴露。
+
+memory adapter 恰好躲过了：它是逐行插入的 Go 循环，每篇插入后 `nextVersionFor`
+就能看到前一篇。**两个 adapter 对同一份契约给出不同结果，正是契约套件要抓的东西**，
+所以先补了契约断言（`runSameGroupBatch`）再去修 postgres。
+
+已改为窗口函数，让每一行看到同批中排在自己前面的行：
+
+```sql
+), next_version AS (
+    SELECT g.ord,
+           coalesce(e.max_version, 0)
+               + row_number() OVER (
+                   PARTITION BY g.restaurant_id, g.retrieval_scope, g.doc_type
+                   ORDER BY g.ord
+               ) AS version
+    FROM (...) g
+    LEFT JOIN (
+        SELECT d.restaurant_id, d.retrieval_scope, d.doc_type,
+               max(d.version) AS max_version
+        FROM knowledge_documents d
+        GROUP BY d.restaurant_id, d.retrieval_scope, d.doc_type
+    ) e ON ...
+)
+```
+
+`existing_max` 仍然不带 `is_active` 过滤（E.16 那条：组内全部退役后不能把
+版本号 2 再发一次）。
+
+**验证过程中的一个教训**：这个断言的第一版是
+`strings.Contains(sub, "incoming") || strings.Contains(sub, "row_number()")`。
+退回旧 SQL 后测试**依然通过**——因为 `FROM incoming i` 里就有 "incoming"，
+判据命中了一个每个版本都有的词。改成要求"存在按批内位置编号的窗口函数"，
+旧写法才真的 FAIL。**假阳性的测试比没有测试更危险**，它会把没验证过的性质
+显示为已验证。
+
+为此把 `UpsertDocuments` 里的内联 SQL 提成包级常量 `upsertDocumentsSQL`，
+测试直接读它——否则测试里存一份 SQL 副本，副本与真实语句各改各的，
+静态断言就变成了对影子的断言。
+
+### E.23 文档哈希复用了评论的归一化规则，抹平了段落结构（已修）
+
+M2-02 明确写了归一化"要**极窄**且可测"，并列了四条：统一换行、折叠行尾空白、
+3+ 连续空行折叠为 2 个、去首尾空白；并明写"**不做**小写化、不做标点归一、
+不做全角半角转换"。
+
+`hash.go` 里 `normalizeForHash` 直接调用了 `curate.NormalizeText`，而它是：
+
+```go
+func NormalizeText(text string) string { return strings.Join(strings.Fields(text), " ") }
+```
+
+这把**所有**空白折叠成单个空格并删掉换行。对评论去重这是对的——"同样的词"
+正是判断两条评论重复的依据；对文档则是错的：**文档的换行结构承载信息**。
+
+后果是静默的数据丢失。一篇逐行列出营业时间的文档被压成一行后，
+**另一篇词句相同但排版不同的文档会拿到同一个 `content_hash`**，
+而 `content_hash` 是幂等键的一半，于是后者被 `ON CONFLICT DO NOTHING`
+当成"已存在"吞掉。它不是写坏了，是根本没被写进去，也没有任何计数异常。
+
+已按计划的四条重写 `normalizeForHash`：CRLF/CR → LF、逐行去行尾空白、
+4+ 连续换行折叠为 3 个（3 个空行 → 2 个空行）、`TrimSpace`。
+不做其它任何变换。
+
+**原有测试把错误行为固化成了期望**：
+`TestContentHashIgnoresWhitespaceOnlyChurn` 断言 `"Mon-Fri  11:00-22:00"`（行内双空格）
+与单空格版本哈希相同——但计划四条规则里**没有**折叠行内空白这一条，
+所以正确行为是哈希**改变**。这条期望本身就是上一版实现泄漏出来的。
+已改正，并补上三条断言：
+
+- `TestContentHashPreservesLineStructure` — 两行文档与同样文字排成一行，哈希必须不同
+- `TestContentHashCollapsesRunsOfBlankLines` — 3+ 空行折叠到 2 个
+- `TestContentHashDistinguishesBlankLineCounts` — 0/1/2 个空行三者互不相同
+  （否则这条规则和评论那条一样，属于过度归一化）
+
+退回旧实现后 `TestContentHashPreservesLineStructure` 确实 FAIL，已验证可证伪。
+
+> **对存量数据无影响**：M2 的文档构建从未全量跑过（§6.4），
+> `knowledge_documents` 目前没有真实语料，所以改归一化规则不会造成版本膨胀。
+> 若将来库中已有文档，换规则意味着所有 `content_hash` 改变、
+> 每篇都会生成"新版本"——那时需要先 truncate 或配合 `--force-model-change` 式的重建。
+
+### E.24 并发 worker 各自持有重复向量集合，跨批次的重复全部漏掉（已修）
+
+M2-08 的重复检测集合 `seen` 原本是 `embedPending` 的**局部变量**。
+串行时它覆盖整页的全部 batch，所以工作正常；`embedPageConcurrently` 里
+每个 worker 各自调用一次 `embedBatch` → `embedPending`，
+**于是每个 worker 拿到一个独立的 `seen`**。
+
+后果：一个恒定返回同一向量的 provider，在 9 篇文档 / batch 2 / workers 4 下
+会写入 **5 个**相同向量（每个 worker 的第一批各留一个），只有 worker 内部
+检测到了 2 个重复。批报告里每个 batch 都成功，没有任何异常计数——
+而 Gate B 扩充分项要求"重复均为 0"。
+
+这正是 E.14 的并发教训在另一处的复现：E.14 是 worker 互相把对方的文档下线，
+这次是每个 worker 的去重视野只覆盖自己那一段。**两者都只在 `--workers > 1`
+时出现，而串行是默认值**，所以默认配置下永远测不出来。
+
+已把 `seen` 提升为 `duplicateSet`，由 `embedPageConcurrently` 创建一次、
+所有 worker 共享：
+
+```go
+type duplicateSet struct {
+	mu   sync.Mutex
+	seen map[string]struct{}
+}
+
+func (d *duplicateSet) add(fingerprint string) bool { // 检查与插入在同一把锁下
+```
+
+检查和插入必须在**一次加锁**内完成。分开写的话两个 worker 会同时观察到
+"不存在"并各自保留自己的向量——那正是这个类型要防的情况。
+用 `sync.Mutex` 而不是 `sync.Map` 也一样重要：即使每个 key 都不同，
+多 goroutine 写普通 map 本身就是数据竞争。
+
+回归测试 `TestRunEmbedRejectsDuplicatesAcrossWorkers`
+（9 篇 / batch 2 / workers 4，断言 `embedded=1`、`rejected=8`，
+且审计表里 `embedding_duplicate` 计数为 8）。
+退回"每 worker 一个 set"后该测试确实 FAIL（`embedded = 5`），已验证可证伪。
+`-race -count=3` 无竞争。
+
+### E.25 `embed --restaurant-id` 在真实数据上永远是空转（已修）
+
+用覆盖率找出来的一段代码里叠了两个缺陷，任何一个单独存在都足以让这条命令
+"成功但什么都不做"。
+
+**第一个**：`ListByRestaurant(ctx, id, "")` 传空 scope，而
+`ListByRestaurant` 是**精确匹配** scope 的——`doc.Scope == scope`。
+空串不匹配任何 scope，于是**每一家餐厅都返回空列表**。
+
+**第二个**：`if doc.IsActive && len(doc.Embedding) == 0` 里的 `doc.IsActive`。
+这正是 E.6 的同款缺陷：M2-05 的四步切换要求新文档以 `is_active = false` 落库
+（表级 CHECK 也禁止"活跃但无向量"），所以真实数据里**所有待 embedding 的文档
+都是 inactive**。批量路径的 `PendingDocuments` 早就改成了 `embedding IS NULL`
+不看 `is_active`，这个函数却漏改了。
+
+两者叠加的结果：`embed --restaurant-id=123` 报告 `documents=0 embedded=0`、
+退出码 0、批次记 `succeeded`——而这是运维在排查单个餐厅时最常用的命令。
+
+顺带发现第三点：这个函数也缺 `activatePage`，即 E.18 修的"写了向量不激活"。
+已一并补上，且**同样在错误检查之前**调用——批次成功的部分必须被激活，
+失败的留给下一轮。
+
+修好后 `ListByRestaurant` 被显式调用两次（`ScopeRestaurant` + `ScopeEvidence`），
+因为一个餐厅两种 scope 都有文档。
+
+回归测试 `TestRunEmbedOneRestaurantTouchesNothingElse` 断言：
+目标餐厅 4 篇全部写入向量、**另一家餐厅的 4 篇一个都没被碰**。
+退回原写法后该测试 FAIL（`embedded = 0`），已验证可证伪。
+
+### E.26 build-documents 的原有测试只断言审计行，从不检查产出（已修）
+
+覆盖率显示 `buildEvidenceDocuments` 与 `selectRestaurants` 是 **0%**。
+补测试时发现原因，而且比"漏写测试"更糟：
+
+`stageStores` 的 fixture 用 `UpsertRestaurant` 插入餐厅，**新插入的行
+`is_active_for_demo` 为 false**，而 `selectRestaurants` 只取 demo 集合。
+所以那些测试里的 `build-documents` **一篇文档都没构建过**——
+`TestRunBuildDocumentsRecordsABatch` / `...RecordsAFailedBatch` /
+`...DryRunWritesNoBatch` 断言的全是审计行，而审计行在一个空转的阶段里
+同样会被正确地写出来。
+
+已验证：把 fixture 的 demo 标记去掉后，那 5 个测试**依然全部通过**。
+
+这比假阳性的断言更隐蔽——断言本身没错（批次确实被记录了），
+缺的是"产出非空"这一半。`is_active_for_demo` 需要 `UpdateScores` 同时
+传入 scores 与 active 两个 map，只传 active 是无效的（循环遍历的是 scores），
+这个坑也写进了 fixture 的注释。
+
+新增 5 条测试，全部检查**实际产出**而非仅审计行：
+
+- `TestBuildEvidenceDocumentsProducesChunksAndMarksReviews` — 产出 evidence 文档、
+  文档在 embed 前必须 inactive 且无向量、`is_representative` 的置位数与运行报告一致
+- `TestBuildDocumentsRerunWritesNothingNew` — Gate B 点名要的幂等：重跑不新增行
+- `TestBuildDocumentsPagesThroughEveryRestaurant` — `BatchSize=1` 时每家餐厅恰好一次
+  （一页覆盖全部时暴露不出的 off-by-one）
+- `TestRunEmbedOneRestaurant*`（两条）— 见 E.25
+
+pipeline 包覆盖率 73.3% → 80.4%。
+
+### E.27 `SupersededDocumentIDs` 会把调用方自己列出的行当成"被顶替"（已修）
+
+`activatePage` 传的是**整页**文档 id，而 `SupersededDocumentIDs` 原来只排除
+"一个不同的 document_id"（memory 是 `contains(docIDs, id)` 的反面写法，
+postgres 是 `d.document_id <> n.document_id`）。
+
+于是一页里同组的兄弟文档被当成"调用方没列出"而被返回，随后被
+`ActivateDocuments(..., false)` 下线——**刚写完向量就自己关掉**。
+
+这是 E.14 的另一处变体。E.14 是并发 worker 互相把对方的文档下线，
+这次是"排除自己"这个谓词在整页语义下不成立。两个 adapter 一致地错，
+所以契约套件也测不出来：契约里只传单行（`[]int64{v2}`），
+一页多行的情形没有任何断言覆盖。
+
+已把排除条件改为**集合成员关系**（memory 用 `member` map，postgres 用
+`NOT EXISTS ... WHERE incoming.document_id = d.document_id`），
+并顺带删掉了 memory 里因此不再被调用的 `contains` 辅助函数。
+
+契约新增断言：两篇同组文档都活跃时，
+`SupersededDocumentIDs(ctx, []int64{v1, v2})` **不得**返回 v1 或 v2。
+
+**端到端回归 `TestRunEmbedKeepsEverySiblingOfAGroupLive`**：一家餐厅的三条
+`restaurant_hours` 文档放在同一页里 embedding，断言三篇**都**有向量且**都**活跃。
+故障注入实测：修复前 `live = 1, want 3`——三分之二的语料写进了向量却不可检索，
+而阶段报告每个批次都成功。这条测试比契约层的单元断言更能说明后果：
+Gate B 的「≥5,000 条 evidence」会直接少三分之二，且没有任何错误提示。
+
+> 这条断言第一版被我放错了位置——放在"两篇都还没激活"的那一段。
+> 那里 `d.is_active` 为假，函数在成员判断之前就 `continue` 了，
+> 于是退回旧实现测试**依然通过**。移动到两篇都活跃之后才真正生效，
+> 退回旧写法时确实 FAIL（返回了调用方列出的 v1）。
+
+### E.28 `CodeEmbeddingDuplicate` 是一个不可达的错误码（已修）
+
+`embedPending` 记录重复向量的拒绝原因时用的是**字符串字面量**
+`"embedding_duplicate"`，而质量门的所有其它原因都走
+`string(errs.CodeOf(err))`——也就是错误码常量。
+
+于是 `errs.CodeEmbeddingDuplicate` 这个常量**在生产代码里没有任何产生点**：
+它被声明、被映射到 HTTP 状态（422）、出现在错误码列表里，
+但没有任何一行代码 `return errs.New(errs.CodeEmbeddingDuplicate, ...)`。
+重复检测本身是直接用 `seen.add()` 的布尔返回值走的，根本不经过错误体系。
+
+风险不在于现在会出错，而在于 `reject_reasons` 是审计表里给
+人看的 map，键就是这些字符串。字面量与常量一旦漂移（例如有人"修正"拼写），
+同一个原因会被拆成两个各自计数、永远不相加的键，而报告里看不出来。
+
+已改为 `var duplicateReason = string(errs.CodeEmbeddingDuplicate)`，
+两处使用同一个变量，字面量不再存在。
+
+新增 `TestEveryEmbeddingCodeIsProducedByTheQualityGate`：对 taxonomy 里
+每一个 embedding 码构造出**应当触发它的向量**，断言 `knowledge.Check`
+真的返回那个码。这比"检查常量非空"强得多——移除任何一条规则
+（比如 Inf 检查）测试立刻失败并指名是哪个码没了：
+
+```
+去掉 Inf 分支 → Check accepted a vector that should raise embedding_inf
+```
+
+`CodeEmbeddingDuplicate` 在该测试里被单独列出并注明理由：
+重复是**批次**的属性而不是单个向量的属性，所以质量门不产生它，
+由 stage 产生。写清楚这一点比把它塞进 `Check` 更诚实。
+
+### E.29 `EMBEDDING_MAX_BATCH` 在计划里被写了两遍，代码里一次都没有（已修）
+
+计划在三处要求这个配置项：§M2-01 写"以及可选的 `EMBEDDING_MAX_BATCH`
+（默认 32）"，§M2-06 写"批量大小：`EMBEDDING_MAX_BATCH`（默认 32）"，
+附录 A 把它列进了环境变量清单。三处都把它当作**已存在**的东西。
+
+代码里不存在。`ParseEmbedOptions` 用的是包内常量
+`const defaultEmbedBatch = 32`，`EmbeddingConfig` 没有对应字段，
+`Loader.Embedding()` 不读这个环境变量。
+
+这条在别的条目里排第 29 而不是更靠前，是因为它**不导致错误结果**，
+只导致计划与实现不一致：跑 `--batch=64` 能工作（flag 路径是真的），
+但改 `EMBEDDING_MAX_BATCH=64` 不起作用。危险在于排查顺序——运维看到
+吞吐不理想时，计划告诉他"调 `EMBEDDING_MAX_BATCH`"，他调了，
+重启，什么都没变，于是去调一个更深的参数或干脆认为计划不准。
+
+而且它卡在计划自己指定的动作上：§M2-06 写"批量大小直接影响吞吐，
+必须实测后固定"，附录 A 写"需实测后固定"。**实测的前置条件就是
+能改这个值而不重新编译**，硬编码常量让这句话无法执行。
+
+已改为：`EmbeddingConfig.MaxBatch int` + `DefaultMaxBatch = 32` +
+`BatchSize()`（0 视为未设置，返回默认值），`Loader.Embedding()` 读
+`EMBEDDING_MAX_BATCH`，`ParseEmbedOptions` 默认值改用
+`cfg.Embedding.BatchSize()`，删除 `defaultEmbedBatch`。`--batch`
+仍然覆盖配置，这样单次实测不必改环境变量。
+
+顺带加了范围校验 `0 < MaxBatch <= 2048`：0 是"未设置"哨兵所以放行，
+负数与超大值报错而不是静默钳制。上界存在的原因是整个 batch 是**一个
+JSON 请求体**，批大小同时也是服务端单次读取的文本量上限，越界的表现
+是服务端拒绝而不是变慢——那看起来像一次线上故障。
+
+两个方向各做了一次故障注入确认断言可证伪：
+退回硬编码常量 → `TestEmbedOptionsBatchSizeComesFromConfig` 变红；
+把 `BatchSize()` 改成直接返回 `MaxBatch` →
+`TestEmbeddingBatchSizeFallsBackToDefault` 变红（未设置时得到 0，
+而 0 会在切分循环里空转）。
+
+### E.30 `check-config` 不显示 E.29 新增的旋钮（已修）
+
+补完 E.29 之后回头看运维路径，发现新配置项只走通了"能被读到"，
+没走通"能被确认"。两处都缺：
+
+- `.env` / `.env.example` 里没有 `EMBEDDING_MAX_BATCH`（只有计划附录 A 有）；
+- `ConfigSummary`（`check-config` 的输出）不打印它。
+
+（`--help` 不提它**不算缺陷**：usage 只列 flag，从不列环境变量，
+`EMBEDDING_MODEL` / `EMBEDDING_DIMENSIONS` 也都不在里面。环境变量的
+文档位置是 `.env.example` 和计划附录 A。）
+
+第二处是要害。`check-config` 的作用正是"确认配置生效了"，而确认
+`EMBEDDING_MAX_BATCH=64` 有没有生效，现在只能靠跑一批真实 embedding
+并计时——而这恰恰是 M2-06 还没做完的那件事。于是新旋钮的验证成本
+和它要优化的那个指标一样高，实际等于不可用。
+
+已把 `batch=%d`（用 `BatchSize()` 取**生效值**而非 `MaxBatch`）加进
+`ConfigSummary`，并补 `.env` / `.env.example`。
+
+**断言本身踩了一次假阳性，值得记下来。** 第一版断言是往已有的
+substring 列表里加一个 `"batch=64"`，然后做故障注入：把
+`BatchSize()` 换成 `MaxBatch`，测试**照样通过**。原因是测试里设了
+`MaxBatch=64`，两个实现输出完全相同——断言无法区分。
+
+第二版把配置**故意留空**（`MaxBatch=0`），此时正确实现输出
+`batch=32`，错误实现输出 `batch=0`，才真正区分得开。这个版本对
+两个故障都变红了：
+
+```
+打印 MaxBatch 而非 BatchSize → unset batch should report the default 32, got ... batch=0
+从摘要里删掉该字段            → configured batch should be reported, got ...
+```
+
+这也解释了为什么 `batch=0` 不只是"不够好"而是**有害**：运维在
+`check-config` 里看到 `batch=0`，第一反应是 pipeline 有 bug，
+而不是"这个旋钮没设"。留空配置才让两个实现产生分歧——这是
+本项目第四次因为"断言放在有值的状态上"而写出假阳性断言
+（前三次见 E.20 / E.22 / E.27）。
+
+### E.31 M2-01 的传输层测试全部依赖 socket，等于没有覆盖（已修）
+
+`shared/adapter/embedding/ollama` 有 18 个测试，其中 11 个用
+`httptest.NewServer` 起真实监听器。沙箱禁止 `listen()`（`bind: operation
+not permitted`），这 11 个**从来没跑过**。
+
+被盖住的是整个 M2-01 传输契约：批量顺序、错误分类（429/5xx 可重试、
+4xx 不可重试）、重试上限、调用方取消不重试、数量/维度不匹配。
+`go test ./...` 里那个"唯一失败项"看起来像环境问题，实际是**这条契约
+在 CI 上零覆盖**——而它是 M2-06 批量向量化的地基。
+
+`Options.HTTPClient` 这个 seam 本来就在（`client.go` 的 `HTTPClient` 字段），
+只是测试没用。补了 `roundTripperFunc` / `jsonResponse` / `offlineClient`
+/ `echoTripper` 四个无 socket 的辅助函数，8 个关键用例改为直接驱动
+`http.RoundTripper`。httptest 版本保留——有 socket 的环境两套都跑，
+互为对照。
+
+**比 httptest 更严的地方**：RoundTripper 能断言请求的**精确内容**并回放
+**精确响应体**，而 handler 做不到。所以新用例能钉住"一个 4 文档批次
+只发一次请求"这类契约，这在真实服务器上只能靠数 `calls` 近似。
+
+故障注入（每条都验证过会红）：
+
+| 注入的错误实现 | 变红的测试 |
+|---|---|
+| 每篇文档发一次请求（打掉批量） | 4 个（含 `SendsOneRequestPerBatch`） |
+| 4xx 也重试 | `DoesNotRetryClientErrors` |
+| 去掉重试上限 | `GivesUpAfterMaxRetries` |
+| 调用方取消也重试 | `CallerCancellationIsNotRetried` |
+
+**"去掉重试上限"这一条暴露了断言写法的问题**：第一版断言只比对
+`calls == 3`，注入后测试**挂死**到包级 timeout（90s）才失败，而不是
+立刻失败。挂死也算"能发现"，但没人会等 90 秒——CI 上这看起来就像
+卡住了。改成：tripper 里设 `maxCalls = 16` 上限并带 2s context，
+于是无限重试在 2 秒内报 `attempts exceeded 16: the retry loop is not
+bounded`。**断言不仅要能判错，还要能快速判错。**
+
+### E.32 `REQUEST_TIMEOUT=15s` 对真实文档不够，M2-06 在真实数据上必然超时（已修默认值）
+
+M2-06 的验收摘要写"可对样本批次生成并写入向量"。跑真实数据时，
+200 篇 profile 文档（每篇约 738 字符）用 17.6 秒跑完，看着没问题；
+换到 `restaurant_representative_reviews` 就炸了：
+
+```
+{"documents":500,"embedded":436,"failed":64}
+provider_unavailable: ollama: request failed: context deadline exceeded
+```
+
+原因是两类文档的体量差了一个数量级。实测本机（`qwen3-embedding:0.6b`，
+Q8_0，CPU 推理）：
+
+| 文档类型 | 篇数 | 平均字符 | 最长字符 |
+|---|---|---|---|
+| `restaurant_representative_reviews` | 3000 | 2878 | 8615 |
+| `restaurant_profile` | 2364 | 738 | 1359 |
+| `restaurant_attributes` | 3000 | 364 | 920 |
+| `restaurant_hours` | 2842 | 107 | 185 |
+
+用**最长的 32 篇**（共 234,997 字符）逐档实测单次请求耗时：
+
+| batch | 字符数 | 耗时 | 15s 超时下 |
+|---|---|---|---|
+| 4 | 33,062 | 6.6s | 通过 |
+| 8 | 64,457 | 14.7s | 勉强通过 |
+| 16 | 123,768 | 28.3s | **超时** |
+| 32 | 234,997 | 52.2s | **超时** |
+
+**关键发现：吞吐与 batch 大小基本无关**（36 / 33 / 34 / 37 篇/分钟）。
+本地 CPU 模型不会因为一个请求里多塞几篇就并行处理，所以
+"批量越大越省往返"这个假设在这台机器上**不成立**——加大 batch 只是
+线性拉长单次请求，直到撞上超时。
+
+因此正确的应对不是调小 batch，而是把单次请求的超时提到覆盖最坏情况。
+`REQUEST_TIMEOUT` 默认从 15s 提到 180s。这也让 E.29 新增的
+`EMBEDDING_MAX_BATCH` 有了实测依据：它决定单次请求的字符量，
+必须和超时一起看，而不是单独调。
+
+顺带记一条 M2-06 原本没写的前提：**代表评论文档的体量必须被当作容量
+规划的输入**。它是唯一一类平均接近 3K 字符的文档，占了 8842 篇 evidence
+里的 3000 篇，也就是全量向量化耗时的四分之一强。
+
+### E.33 `SupersededDocumentIDs` 的自连接没有钉住调用方给的行（已修）
+
+契约测试在真实库上第一次跑就红了：
+
+```
+contract.go:1084: superseded = [4 5 6 7 8 9 10], want none while no version is live
+```
+
+原来的 SQL 是这样把候选行和调用方的页联系起来的：
+
+```sql
+FROM knowledge_documents d
+JOIN knowledge_documents n
+  ON n.restaurant_id  = d.restaurant_id
+ AND n.retrieval_scope = d.retrieval_scope
+ AND n.doc_type        = d.doc_type
+WHERE d.is_active AND d.document_id <> n.document_id
+```
+
+join 键全部取自 `d`，`n.document_id` 从头到尾没有和 `$1` 关联过。
+于是这个自连接做的是"把每个活跃文档和**它自己那一组**里的每个文档配对"，
+与调用方问的是哪一页毫无关系。实测：查 `restaurant_attributes` 的一页，
+返回的却是 `document_id = 17`（一个 `restaurant_profile`），
+因为 17 恰好是活跃的，而它和它自己组内的 6 个文档都能配成对。
+
+后果正是 E.27 描述的那个，只是原因不同：调用方拿到一份"看起来像被顶替"
+的清单，`activatePage` 老老实实把它 deactivate 掉。**索引存在、
+查询能返回、结果全错**——这类缺陷在只有内存 adapter 的测试里不会出现。
+
+改成以 `unnest($1)` 为驱动表：
+
+```sql
+FROM unnest($1::bigint[]) AS incoming(document_id)
+JOIN knowledge_documents n ON n.document_id = incoming.document_id
+JOIN knowledge_documents d ON d.restaurant_id = n.restaurant_id
+                        AND d.retrieval_scope = n.retrieval_scope
+                        AND d.doc_type        = n.doc_type
+WHERE d.is_active
+  AND NOT EXISTS (SELECT 1 FROM unnest($1::bigint[]) AS listed(document_id)
+                  WHERE listed.document_id = d.document_id)
+```
+
+改的过程中还发现第二个问题：排除条件如果只写
+`d.document_id <> n.document_id`，排除的是"配对上的那一行"，
+而不是"调用方列出的整页"。同一组里有兄弟文档时（比如一家餐厅的
+三段营业时间），它们会作为 `d` 被返回——而它们正要被这一页打开。
+E.27 当时把排除谓词写成了整页语义，但 join 本身还是错的；
+**两个缺陷叠在一起，才让 E.27 的修复在真实库上没生效**。
+
+### E.34 `knowledgeColumns` 不含 `embedding`，退役文档因此"丢失"向量（已修）
+
+契约测试的另一条红：
+
+```
+contract.go:1261: the retired document lost its vector
+```
+
+`DeactivateStaleModels` 只做 `SET is_active = false`，向量确实还在行里。
+问题在读侧：`knowledgeColumns` 这个投影常量里**根本没有 embedding 列**，
+`scanKnowledgeDocuments` 也就没有扫它。于是 `ListByRestaurant` 返回的
+文档永远带一个空向量，调用方无从区分"这文档没向量"和"这文档的向量没被读出来"。
+
+memory adapter 返回的是整个文档结构体（自带 `Embedding`），postgres 是
+唯一一个"读了但不给"的实现。契约测试正是靠这个差异把它抓出来的。
+
+修法：`knowledgeColumns` 加上 `embedding`，扫描目标用 `*string`
+接住 pgvector 的文本形式，再用新增的 `parseVectorLiteral` 解析——
+与写入端的 `vectorLiteral` 互为逆运算，pool 上不注册 pgvector 类型这件事
+也就保持了原样（宽度仍然是 schema 的属性，不是 Go 类型的属性）。
+
+`parseVectorLiteral` 对 NULL 和 `[]` 都返回 nil，这样"还没有向量"
+和"向量是空的"仍然是两件可区分的事。`VectorSearch` 走同一份投影，
+它多带一列 distance，所以 `scanScoredDocuments` 也要跟着多扫一个
+`embeddingText`——漏掉的话会得到 `got 17 and 16 destinations` 这种
+只在真库上才暴露的错。
+
+### E.35 三个 HNSW 索引断言其实在断言 planner 的成本模型（已修）
+
+`TestBoroughQueryUsesTheBoroughPartialIndex` 等三个测试在真实库上全部红了：
+
+```
+plan does not use knowledge_documents_hnsw_manhattan; it used []:
+  -> Seq Scan on knowledge_documents
+       Filter: (is_active AND (embedding IS NOT NULL) AND ...)
+```
+
+断言本身写对了（E.19/E.20/E.21 修的就是它），错的是**它问的问题太小**：
+
+```go
+const restaurantsToSeed = 500   // 实际只种了 500 行
+const indexSearchSeedRows = 5000 // 注释说 5000，实际只当 slice 容量用
+```
+
+注释详细论证了"要 5000 行 planner 才会选索引"，而 `indexSearchSeedRows`
+**只被用作容量和分页上限，从没当过行数**。真实行数是硬编码的 500。
+
+实测这个 schema 上的真实交叉点（1024 维，`ANALYZE` 已跑）：
+
+| 行数 | 全局索引 | borough 分区索引 |
+|---|---|---|
+| 500 | 顺序扫描 | 顺序扫描 |
+| 5,000 | 顺序扫描 | 顺序扫描 |
+| 10,000 | **HNSW** | 顺序扫描 |
+| 50,000 | **HNSW** | **HNSW** |
+
+borough 是最紧的约束：每个分区索引只覆盖五分之一行，而 pgvector 0.8
+在 1024 维上建的索引相当大（5,000 行 → 39MB，而表本身只有 4.4MB），
+随机读成本高到 planner 要等到表更大才愿意走它。
+
+改成 `restaurantsToSeed = indexSearchSeedRows` 并把常量提到 50,000——
+这个量级也正是 Gate B 真实语料的规模（3000 profile + ~8800 evidence），
+所以断言的是**将要依赖的行为**，而不是一个人造的最优情形。
+
+两个附带修正：
+
+- `SetEmbedding` / `ActivateDocuments` 按 2000 一批分批调用。单次 50,000
+  向量的 UPDATE 撞的是语句级超时（60s），分批之后 25 批全部通过。
+  这也正是 pipeline 真实运行时的形状。
+- 整个 fixture 改为 `sync.Once` 共享。种一次要 3 分钟，原来四个测试各
+  种一次共 12 分钟；现在 1 次 setup + 3 个瞬间完成的断言。测试之间只读，
+  互不干扰。
+
+改完之后做了故障注入：把 borough 断言改成全局索引名，
+`TestBoroughQueryUsesTheBoroughPartialIndex` 变红——说明它现在真的在
+断言索引选择，而不是断言一个 500 行的表上顺序扫描是合理的。
+
+**同一批测试里还藏着一个自己跳过自己的用例**：
+`TestVectorSearchFindsTheExactMatch` 开头调 `PendingDocuments`，
+而 fixture 里所有文档都已带向量都已激活，返回空 → `t.Skip("no seeded documents")`。
+它一直是 SKIP，看起来无害，实际是 E.19 那一类问题的残留：断言放在
+一个不成立的前提上，于是永远不执行。改成直接读一篇活跃文档。
 
 ## 附录 A：环境变量（M2 相关）
 
@@ -1145,7 +2120,15 @@ M2 完成后按实施计划 §14 进入 M3（两级检索）。衔接点：
 # EMBEDDING_DIMENSIONS=1024
 
 # 单次 embedding 请求的批量大小（M2-06，需实测后固定）
+# 生效范围 1..2048，0 或不设置等价于默认值；--batch 优先级更高
+# 注意：本机实测吞吐与 batch 大小基本无关（见 E.32），调大它主要是在
+# 拉长单次请求、抬高超时风险，不是提速手段
 # EMBEDDING_MAX_BATCH=32
+
+# 单次出站请求的超时（M2-06）
+# 必须覆盖最长的一批文档：代表评论文档平均 2878 字符、最长 8615，
+# 本机实测 32 篇约需 52s。默认 180s，不要调回 15s（见 E.32）
+# REQUEST_TIMEOUT=180s
 
 # --- data-pipeline（M2 复用）-----------------------------------------------
 # PIPELINE_WORKERS=4            # 向量化 worker pool 并发度

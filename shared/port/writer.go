@@ -40,6 +40,13 @@ type RestaurantStore interface {
 	// rating for one restaurant. The two are written together because they are
 	// derived from the same review sample.
 	UpdateReviewStats(ctx context.Context, restaurantID int64, stats restaurant.ReviewStats, computed restaurant.Rating) error
+	// UpdateEmbeddedReviewCount writes only the embedded_review_count column.
+	//
+	// It exists because UpdateReviewStats overwrites all seven rollup columns at
+	// once, so the embedding stage calling it would have to read the other six
+	// first and hope they were still valid. A narrow setter makes the safe call
+	// the only call.
+	UpdateEmbeddedReviewCount(ctx context.Context, restaurantID int64, count int) error
 	// UpdateScores writes knowledge_score and is_active_for_demo for a batch.
 	UpdateScores(ctx context.Context, scores map[int64]float64, active map[int64]bool) error
 	// SelectForDemo returns active-for-demo restaurants ordered by score.
@@ -107,8 +114,16 @@ type KnowledgeStore interface {
 	// citation issued before the change still resolves.
 	UpsertDocuments(ctx context.Context, docs []evidence.KnowledgeDocument) (UpsertResult, error)
 
-	// PendingDocuments returns active documents with no vector, oldest first,
-	// for the embedding stage to fill.
+	// PendingDocuments returns documents with no vector, oldest first, for the
+	// embedding stage to fill.
+	//
+	// The live flag is not part of the predicate. Documents are inserted
+	// inactive and only go live once vectored, so requiring is_active would
+	// select a state the table's CHECK constraint makes impossible.
+	//
+	// A document retired by a model change keeps its vector and therefore does
+	// not reappear here. Replacing it is the rebuild's job: it inserts a new
+	// version of the same fact, and that version is what this returns.
 	PendingDocuments(ctx context.Context, limit int) ([]evidence.KnowledgeDocument, error)
 
 	// SetEmbedding writes vectors for existing document ids and stamps the
@@ -136,6 +151,82 @@ type KnowledgeStore interface {
 	// recorded on active documents, so the embedding stage can refuse to mix
 	// two models in one live set.
 	DistinctEmbeddingModels(ctx context.Context) ([]EmbeddingModelInfo, error)
+
+	// EmbeddedReviewCounts returns, per restaurant, how many reviews are packed
+	// into documents that now carry a vector.
+	//
+	// The count is derived from the stored documents rather than from what the
+	// embedding stage believed it wrote, so a value in restaurants cannot drift
+	// away from the documents that justify it. A restaurant with no embedded
+	// document is absent from the map rather than mapped to zero, which lets the
+	// caller tell "never embedded" from "embedded nothing".
+	EmbeddedReviewCounts(ctx context.Context) (map[int64]int, error)
+
+	// DeactivateStaleModels takes the live documents produced by any model
+	// other than the given one out of the live set, and returns how many rows
+	// it changed.
+	//
+	// It is how a model change is applied without mixing: the old documents
+	// stop being recallable, a rebuild inserts new versions, and the next
+	// embedding pass fills those. The rows are kept, not deleted, so a citation
+	// issued before the switch still resolves.
+	//
+	// The retired documents keep their vectors, so they do not become pending.
+	// That is deliberate — they are history, not work in progress — and it is
+	// why a model change is a three-step operation rather than one: force the
+	// switch, rebuild the documents, then embed again.
+	DeactivateStaleModels(ctx context.Context, model string, dimensions int) (int, error)
+
+	// VectoredDocumentIDs returns the subset of the given ids that currently
+	// carry a vector.
+	//
+	// The embedding stage needs it to tell an accepted document from a rejected
+	// one before activating: only an accepted document may go live, and the
+	// stage's own counters are not enough to reconstruct which ids those were
+	// once several batches have been merged.
+	VectoredDocumentIDs(ctx context.Context, docIDs []int64) ([]int64, error)
+
+	// SupersededDocumentIDs returns the live documents that the given documents
+	// replace: for each (restaurant_id, retrieval_scope, doc_type) group, every
+	// currently active row that is not in the given set.
+	//
+	// It exists so the caller can deactivate the old version only after the new
+	// one is live. Doing it in that order needs to know which rows the new
+	// documents displace, and that is a question about the groups the documents
+	// belong to rather than something the caller can work out from ids alone.
+	SupersededDocumentIDs(ctx context.Context, docIDs []int64) ([]int64, error)
+
+	// VectorSearch ranks vectored documents in one retrieval scope by cosine
+	// distance to the query.
+	//
+	// The scope is required, not defaulted: a search that could return both
+	// restaurant profiles and evidence chunks would let a profile outrank the
+	// quote a caller meant to retrieve, with nothing downstream able to tell
+	// them apart. Callers choose the scope.
+	VectorSearch(
+		ctx context.Context,
+		scope evidence.RetrievalScope,
+		query []float32,
+		topK int,
+		filter VectorFilter,
+	) ([]ScoredDocument, error)
+}
+
+// VectorFilter narrows a vector search beyond the scope.
+type VectorFilter struct {
+	// Borough restricts the search to one borough.
+	Borough string
+	// RestaurantID, when positive, restricts results to one restaurant.
+	RestaurantID int64
+}
+
+// ScoredDocument is one search hit with its distance to the query.
+//
+// Distance is a cosine distance, not a similarity: 0 means identical
+// direction, and smaller is closer.
+type ScoredDocument struct {
+	evidence.KnowledgeDocument
+	Distance float64
 }
 
 // UpsertResult reports what UpsertDocuments actually did.

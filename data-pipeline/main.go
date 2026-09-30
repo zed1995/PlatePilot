@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"sort"
 	"strconv"
 	"syscall"
 
@@ -74,6 +75,23 @@ Prefilter flags:
   --keep-short-text                    keep short-text reviews instead of dropping
   --limit=N                            read at most N source rows (0 = all)
 
+Build-documents flags:
+  --limit=N                            build at most N restaurants (0 = all)
+  --restaurant-id=ID                   build one restaurant, for debugging
+  --scope=restaurant|evidence          restrict to one retrieval scope
+  --batch=N                            documents written per upsert
+  --dry-run                            build and count without writing
+
+Embed flags:
+  --limit=N                            embed at most N pending documents
+  --batch=N                            texts per provider request
+  --workers=N                          embedding concurrency (default 4; a local CPU
+                                       model does not scale past a handful)
+  --restaurant-id=ID                   embed one restaurant
+  --dry-run                            embed and count without writing
+  --force-model-change                 write vectors from a different model,
+                                       superseding the ones already stored
+
 Progress:
   The streaming stages (meta, review) print a rewritten status line to stderr
   with percent complete, throughput, ETA, and the accept/filter/reject
@@ -133,9 +151,9 @@ func run(args []string) error {
 	case "report":
 		return runReport(ctx, cfg, rest)
 	case "build-documents":
-		return pipeline.BuildDocuments(ctx, cfg)
+		return runBuildDocuments(ctx, cfg, rest)
 	case "embed":
-		return pipeline.Embed(ctx, cfg)
+		return runEmbed(ctx, cfg, rest)
 	default:
 		fmt.Fprint(os.Stderr, usage)
 		return fmt.Errorf("unknown command %q", command)
@@ -152,6 +170,7 @@ func openStores(ctx context.Context, cfg config.Config) (*postgres.Client, pipel
 		Restaurants: postgres.NewRestaurantStore(client),
 		Reviews:     postgres.NewReviewStore(client),
 		Pipeline:    postgres.NewPipelineStore(client),
+		Knowledge:   postgres.NewKnowledgeStore(client),
 	}, nil
 }
 
@@ -238,6 +257,7 @@ func runReport(ctx context.Context, cfg config.Config, args []string) error {
 	fs := flag.NewFlagSet("report", flag.ContinueOnError)
 	last := fs.Int("last", 5, "number of recent batches to print")
 	batchID := fs.String("batch-id", "", "print one batch and its rejections")
+	stage := fs.String("stage", "", "only show batches of this stage")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -271,8 +291,20 @@ func runReport(ctx context.Context, cfg config.Config, args []string) error {
 	if err != nil {
 		return err
 	}
+	// The stage filter is applied here rather than in SQL because the batch
+	// list is already bounded by --last; filtering a handful of rows in memory
+	// is cheaper than another query, and it keeps ListBatches unchanged for the
+	// import stages that do not need it.
+	shown := 0
 	for _, report := range batches {
+		if *stage != "" && report.Stage != *stage {
+			continue
+		}
 		printReport(report)
+		shown++
+	}
+	if *stage != "" && shown == 0 {
+		fmt.Printf("no batches with stage=%q in the last %d\n", *stage, *last)
 	}
 	return nil
 }
@@ -357,4 +389,100 @@ func printReport(report review.BatchReport) {
 	for _, missing := range report.MissingFields {
 		fmt.Printf("    missing %-16s %d\n", missing.Field, missing.Count)
 	}
+	printStageReport(report)
+}
+
+// printStageReport prints the M2 document and embedding counters.
+//
+// The two sections are printed only when the batch carries them, because an
+// import batch leaving them out is not a run that counted zero documents. The
+// pointers on the report make that distinction, which a plain int would lose.
+func printStageReport(report review.BatchReport) {
+	if report.DocumentsBuilt != nil || report.DocumentsEmbedded != nil || report.DocumentsRejected != nil {
+		fmt.Printf("  documents built=%s embedded=%s rejected=%s\n",
+			optionalCount(report.DocumentsBuilt),
+			optionalCount(report.DocumentsEmbedded),
+			optionalCount(report.DocumentsRejected))
+	}
+	if report.EmbeddingModel != "" {
+		fmt.Printf("  model %s dimensions=%s\n", report.EmbeddingModel,
+			optionalCount(report.EmbeddingDimensions))
+	}
+	for _, reason := range sortedReasons(report.RejectReasons) {
+		fmt.Printf("    rejected %-26s %d\n", reason, report.RejectReasons[reason])
+	}
+}
+
+// optionalCount renders a nullable counter, spelling out "not reported" so a
+// missing value is not read as a zero.
+func optionalCount[T any](v *T) string {
+	if v == nil {
+		return "-"
+	}
+	return fmt.Sprint(*v)
+}
+
+func sortedReasons(counts map[string]int64) []string {
+	out := make([]string, 0, len(counts))
+	for reason := range counts {
+		out = append(out, reason)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// runBuildDocuments builds the knowledge documents for the demo restaurants.
+func runBuildDocuments(ctx context.Context, cfg config.Config, args []string) error {
+	opts, err := pipeline.BuildDocumentsOptions(args, cfg)
+	if err != nil {
+		return err
+	}
+	if cfg.Postgres.DSN == "" {
+		return errs.New(errs.CodeInvalidArgument, "POSTGRES_DSN is required for build-documents")
+	}
+	_, stores, err := openStores(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	result, err := pipeline.RunBuildDocuments(ctx, stores, opts)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("restaurants=%d inserted=%d skipped=%d summaries=%d representative_reviews=%d\n",
+		result.Restaurants, result.Inserted, result.Skipped, result.Summaries,
+		result.RepresentativeReviews)
+	for _, docType := range pipeline.SortedDocTypes(result.ByDocType) {
+		fmt.Printf("    %-34s %d\n", docType, result.ByDocType[docType])
+	}
+	return nil
+}
+
+// runEmbed generates vectors for documents that do not have one yet.
+func runEmbed(ctx context.Context, cfg config.Config, args []string) error {
+	opts, err := pipeline.ParseEmbedOptions(args, cfg)
+	if err != nil {
+		return err
+	}
+	if cfg.Postgres.DSN == "" {
+		return errs.New(errs.CodeInvalidArgument, "POSTGRES_DSN is required for embed")
+	}
+	if !cfg.Embedding.Enabled() {
+		return errs.New(errs.CodeInvalidArgument,
+			"EMBEDDING_PROVIDER is required for embed; run check-config to see what is missing")
+	}
+	_, stores, err := openStores(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	result, err := pipeline.RunEmbed(ctx, stores, cfg, opts)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("documents=%d embedded=%d skipped=%d rejected=%d failed=%d model=%s dims=%d duration_ms=%d\n",
+		result.Documents, result.Embedded, result.Skipped, result.Rejected, result.Failed,
+		result.Model, result.Dimensions, result.DurationMS)
+	for _, reason := range pipeline.SortedRejectReasons(result.RejectReasons) {
+		fmt.Printf("    rejected %-22s %d\n", reason, result.RejectReasons[reason])
+	}
+	return nil
 }

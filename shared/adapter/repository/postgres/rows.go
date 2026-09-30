@@ -208,6 +208,20 @@ func orEmptyArray(raw []byte) []byte {
 	return raw
 }
 
+// marshalOrNilOrNil behaves like marshalOrNil but keeps a nil map as SQL NULL.
+// missing_fields is always written, because "no field was missing" is a real
+// answer, whereas an absent reject_reasons means the stage never ran a check.
+func marshalOrNilOrNil(v map[string]int64) (any, error) {
+	if len(v) == 0 {
+		return nil, nil
+	}
+	data, err := json.Marshal(v)
+	if err != nil {
+		return nil, errs.Wrap(errs.CodeInternal, "postgres: encode json column", err)
+	}
+	return data, nil
+}
+
 // marshalOrNil encodes v, returning SQL NULL when there is nothing to store.
 func marshalOrNil(v any) ([]byte, error) {
 	data, err := json.Marshal(v)
@@ -281,12 +295,22 @@ type batchRow struct {
 	MissingFields   []byte
 	Status          string
 	ErrorCode       *string
+	// The M2 columns are nullable. A null counter means the stage did not
+	// report one, which is different from a stage that reported zero.
+	DocumentsBuilt      *int64
+	DocumentsEmbedded   *int64
+	DocumentsRejected   *int64
+	EmbeddingModel      *string
+	EmbeddingDimensions *int32
+	RejectReasons       []byte
 }
 
 const batchColumns = `
 	id, stage, curation_version, source_file, source_sha256, boundary_version,
 	started_at, finished_at, duration_ms, rows_read, accepted, written,
-	deduped, filtered, rejected, unmatched, missing_fields, status, error_code`
+	deduped, filtered, rejected, unmatched, missing_fields, status, error_code,
+	documents_built, documents_embedded, documents_rejected,
+	embedding_model, embedding_dimensions, reject_reasons`
 
 func (r batchRow) toDomain() (review.BatchReport, error) {
 	out := review.BatchReport{
@@ -303,6 +327,14 @@ func (r batchRow) toDomain() (review.BatchReport, error) {
 		Rejected:        r.Rejected,
 		Unmatched:       r.Unmatched,
 		Status:          r.Status,
+
+		DocumentsBuilt:      r.DocumentsBuilt,
+		DocumentsEmbedded:   r.DocumentsEmbedded,
+		DocumentsRejected:   r.DocumentsRejected,
+		EmbeddingDimensions: int32PtrToInt(r.EmbeddingDimensions),
+	}
+	if r.EmbeddingModel != nil {
+		out.EmbeddingModel = *r.EmbeddingModel
 	}
 	if r.SourceFile != nil {
 		out.SourceFile = *r.SourceFile
@@ -322,7 +354,24 @@ func (r batchRow) toDomain() (review.BatchReport, error) {
 	if err := json.Unmarshal(orEmptyArray(r.MissingFields), &out.MissingFields); err != nil {
 		return review.BatchReport{}, errs.Wrap(errs.CodeInternal, "postgres: decode missing_fields", err)
 	}
+	// reject_reasons is NULL for a stage with no quality gate, which must not
+	// become an empty map: a reader has to be able to tell "nothing was
+	// checked" from "everything passed".
+	if len(r.RejectReasons) > 0 {
+		if err := json.Unmarshal(r.RejectReasons, &out.RejectReasons); err != nil {
+			return review.BatchReport{}, errs.Wrap(errs.CodeInternal, "postgres: decode reject_reasons", err)
+		}
+	}
 	return out, nil
+}
+
+// int32PtrToInt widens a nullable smallint into the domain's int.
+func int32PtrToInt(v *int32) *int {
+	if v == nil {
+		return nil
+	}
+	out := int(*v)
+	return &out
 }
 
 // pgErrNoRows reports whether err is the driver's empty-result sentinel, so

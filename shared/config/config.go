@@ -103,7 +103,40 @@ type EmbeddingConfig struct {
 	BaseURL    string
 	Model      string
 	Dimensions int
+	// MaxBatch is how many texts go into one provider request.
+	//
+	// It is configuration rather than a constant because it is the knob that
+	// decides throughput: a local CPU model embeds an array server-side in
+	// parallel, so a larger batch is strictly cheaper per document, while a
+	// larger batch also raises the chance that one request exceeds its timeout.
+	// Which value wins cannot be decided from the code — it has to be measured
+	// against the actual model and machine, and a constant makes that
+	// impossible without recompiling.
+	//
+	// Zero means unset; DefaultMaxBatch is then used.
+	MaxBatch int
 }
+
+// DefaultMaxBatch is the provider batch size when EMBEDDING_MAX_BATCH is unset.
+//
+// It is a starting point rather than a tuned constant. The embedding stage
+// treats it as a default that --batch overrides, so measuring a different value
+// does not require changing this.
+const DefaultMaxBatch = 32
+
+// BatchSize returns the effective provider batch size.
+func (c EmbeddingConfig) BatchSize() int {
+	if c.MaxBatch > 0 {
+		return c.MaxBatch
+	}
+	return DefaultMaxBatch
+}
+
+// ProviderFake is the deterministic in-process embedding provider. It exists
+// so the pipeline can be run and tested without a model server, which is the
+// difference between a test that runs on every commit and one that needs a
+// 639MB download first.
+const ProviderFake = "fake"
 
 // Enabled reports whether an embedding provider has been configured.
 func (c EmbeddingConfig) Enabled() bool { return c.Provider != "" }
@@ -113,7 +146,25 @@ func (c EmbeddingConfig) Validate() []string {
 	if !c.Enabled() {
 		return nil
 	}
-	var problems []string
+	// Zero is the "unset" sentinel BatchSize resolves, so only values outside
+	// the accepted range are problems. They are reported rather than clamped:
+	// a silently clamped batch would surface much later as an unexplained
+	// throughput number, which is far harder to trace back than a refusal.
+	problems := c.validateMaxBatch()
+	// The fake provider needs no server, so the endpoint and model checks that
+	// guard a real provider do not apply to it. A missing model name is still a
+	// problem: the model is recorded on every document, and an empty one would
+	// leave the audit trail unable to say what produced a vector.
+	if c.Provider == ProviderFake {
+		if strings.TrimSpace(c.Model) == "" {
+			problems = append(problems, "EMBEDDING_MODEL: required when EMBEDDING_PROVIDER is set")
+		}
+		if c.Dimensions <= 0 {
+			problems = append(problems,
+				fmt.Sprintf("EMBEDDING_DIMENSIONS: must be > 0 (got %d)", c.Dimensions))
+		}
+		return problems
+	}
 	if strings.TrimSpace(c.BaseURL) == "" {
 		problems = append(problems, "OLLAMA_BASE_URL: required when EMBEDDING_PROVIDER is set")
 	}
@@ -122,6 +173,25 @@ func (c EmbeddingConfig) Validate() []string {
 	}
 	if c.Dimensions <= 0 {
 		problems = append(problems, fmt.Sprintf("EMBEDDING_DIMENSIONS: must be > 0 (got %d)", c.Dimensions))
+	}
+	return problems
+}
+
+// maxEmbedBatch caps EMBEDDING_MAX_BATCH.
+//
+// The batch is one JSON request body, so the size also caps how much text the
+// provider must accept in a single read. Past this the request is refused by
+// the server rather than made slower, and a refused run looks like an outage.
+const maxEmbedBatch = 2048
+
+// validateMaxBatch reports EMBEDDING_MAX_BATCH values that are out of range.
+func (c EmbeddingConfig) validateMaxBatch() []string {
+	var problems []string
+	if c.MaxBatch < 0 {
+		problems = append(problems, fmt.Sprintf("EMBEDDING_MAX_BATCH: must be > 0 (got %d)", c.MaxBatch))
+	}
+	if c.MaxBatch > maxEmbedBatch {
+		problems = append(problems, fmt.Sprintf("EMBEDDING_MAX_BATCH: must be <= %d (got %d)", maxEmbedBatch, c.MaxBatch))
 	}
 	return problems
 }
@@ -279,12 +349,23 @@ func (l *Loader) Embedding() EmbeddingConfig {
 		BaseURL:    l.String("OLLAMA_BASE_URL", "http://localhost:11434"),
 		Model:      l.String("EMBEDDING_MODEL", "qwen3-embedding:0.6b"),
 		Dimensions: l.Int("EMBEDDING_DIMENSIONS", 1024),
+		MaxBatch:   l.Int("EMBEDDING_MAX_BATCH", DefaultMaxBatch),
 	}
 }
 
+// DefaultRequestTimeout bounds one outbound request.
+//
+// It is three minutes rather than the more usual fifteen seconds because the
+// heaviest document this pipeline embeds -- a representative-review chunk --
+// averages 2,878 characters and reaches 8,615. Measured against the local
+// Qwen3 model on CPU, a batch of the sixteen longest of those takes 28s and a
+// batch of thirty-two takes 52s, so a 15s default fails on real data while
+// passing on the short profile documents it was sized for. See E.32.
+const DefaultRequestTimeout = 3 * time.Minute
+
 // Timeout loads the shared outbound timeout config.
 func (l *Loader) Timeout() TimeoutConfig {
-	return TimeoutConfig{Request: l.Duration("REQUEST_TIMEOUT", 15*time.Second)}
+	return TimeoutConfig{Request: l.Duration("REQUEST_TIMEOUT", DefaultRequestTimeout)}
 }
 
 // LoadDotEnv reads KEY=VALUE pairs from path and sets any variable that is not

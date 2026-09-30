@@ -51,10 +51,12 @@ type Summary struct {
 
 // Ingestion stage identifiers.
 const (
-	StageMeta   = "meta"
-	StageReview = "review"
-	StageStats  = "stats"
-	StageAll    = "all"
+	StageMeta      = "meta"
+	StageReview    = "review"
+	StageStats     = "stats"
+	StageDocuments = "documents"
+	StageEmbedding = "embedding"
+	StageAll       = "all"
 )
 
 // Batch status values.
@@ -86,6 +88,16 @@ type BatchReport struct {
 	MissingFields   []FieldMissing `json:"missing_fields,omitempty"`
 	Status          string         `json:"status"`
 	ErrorCode       string         `json:"error_code,omitempty"`
+
+	// The M2 fields below are populated only by the document and embedding
+	// stages. They are pointers or nil maps so an M1 row reads as "this stage
+	// did not apply" rather than as a run that produced zero documents.
+	DocumentsBuilt      *int64           `json:"documents_built,omitempty"`
+	DocumentsEmbedded   *int64           `json:"documents_embedded,omitempty"`
+	DocumentsRejected   *int64           `json:"documents_rejected,omitempty"`
+	EmbeddingModel      string           `json:"embedding_model,omitempty"`
+	EmbeddingDimensions *int             `json:"embedding_dimensions,omitempty"`
+	RejectReasons       map[string]int64 `json:"reject_reasons,omitempty"`
 }
 
 // FieldMissing counts how often a required field was absent in a batch.

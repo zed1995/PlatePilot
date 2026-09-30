@@ -1,36 +1,13 @@
 package pipeline
 
 import (
-	"context"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/zed/platepilot/data-pipeline/internal/config"
 	sharedcfg "github.com/zed/platepilot/shared/config"
 )
-
-func TestRemainingStagesReportTheirMilestone(t *testing.T) {
-	cfg := config.Config{}
-	cases := []struct {
-		name      string
-		milestone string
-		run       func() error
-	}{
-		{"build-documents", "M2-03", func() error { return BuildDocuments(context.Background(), cfg) }},
-		{"embed", "M2-06", func() error { return Embed(context.Background(), cfg) }},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			err := tc.run()
-			if err == nil {
-				t.Fatal("stage should not silently succeed before it is implemented")
-			}
-			if !strings.Contains(err.Error(), tc.name) || !strings.Contains(err.Error(), tc.milestone) {
-				t.Fatalf("error %q should name the stage and milestone %s", err, tc.milestone)
-			}
-		})
-	}
-}
 
 func TestConfigSummarySummarisesConfiguration(t *testing.T) {
 	cfg := config.Config{
@@ -47,6 +24,28 @@ func TestConfigSummarySummarisesConfiguration(t *testing.T) {
 		if !strings.Contains(summary, want) {
 			t.Errorf("summary %q should contain %q", summary, want)
 		}
+	}
+}
+
+// The embedding batch size is the knob M2-06 says must be tuned against a real
+// model, so check-config has to print the value that will actually be used --
+// otherwise confirming the setting took effect means running a real embedding
+// batch and timing it.
+//
+// The configured value is 0 here on purpose. Printing the raw field would show
+// "batch=0", which is both wrong and worse than showing nothing: an operator
+// reads 0 as a bug in the pipeline rather than an unset knob.
+func TestConfigSummaryReportsEffectiveEmbeddingBatch(t *testing.T) {
+	cfg := config.Config{
+		Postgres:  sharedcfg.PostgresConfig{Database: "platepilot"},
+		Embedding: sharedcfg.EmbeddingConfig{Provider: "ollama", Model: "m", Dimensions: 1024},
+	}
+	if got := ConfigSummary(cfg); !strings.Contains(got, "batch="+strconv.Itoa(sharedcfg.DefaultMaxBatch)) {
+		t.Errorf("unset batch should report the default %d, got %q", sharedcfg.DefaultMaxBatch, got)
+	}
+	cfg.Embedding.MaxBatch = 64
+	if got := ConfigSummary(cfg); !strings.Contains(got, "batch=64") {
+		t.Errorf("configured batch should be reported, got %q", got)
 	}
 }
 

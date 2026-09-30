@@ -19,12 +19,16 @@ func TestContentHashIsStable(t *testing.T) {
 
 func TestContentHashIgnoresWhitespaceOnlyChurn(t *testing.T) {
 	base := ContentHash(evidence.ScopeEvidence, evidence.DocTypeRestaurantHours, 1, "Mon-Fri 11:00-22:00\nSat 11:00-23:00")
+	// Only the four steps the plan lists are forgiven. A run of *two* spaces
+	// inside a line is not one of them, so it is content and has to change the
+	// hash: the rule tidsies line endings, trailing whitespace, long runs of
+	// blank lines, and the edges, and leaves the inside of a line alone.
 	cases := map[string]string{
 		"crlf":         "Mon-Fri 11:00-22:00\r\nSat 11:00-23:00",
-		"extra blank":  "Mon-Fri 11:00-22:00\n\n\n\nSat 11:00-23:00",
 		"trailing":     "Mon-Fri 11:00-22:00\nSat 11:00-23:00   ",
 		"leading":      "   Mon-Fri 11:00-22:00\nSat 11:00-23:00",
-		"double space": "Mon-Fri  11:00-22:00\nSat 11:00-23:00",
+		"lone cr":      "Mon-Fri 11:00-22:00\rSat 11:00-23:00",
+		"tab trailing": "Mon-Fri 11:00-22:00\t\nSat 11:00-23:00",
 	}
 	for name, content := range cases {
 		if got := ContentHash(evidence.ScopeEvidence, evidence.DocTypeRestaurantHours, 1, content); got != base {
@@ -84,5 +88,59 @@ func TestDocumentKeyMatchesContentHash(t *testing.T) {
 	want := ContentHash(evidence.ScopeEvidence, evidence.DocTypeRestaurantHours, 3, "11:00-22:00")
 	if got != want {
 		t.Errorf("DocumentKey = %s, want %s", got, want)
+	}
+}
+
+// The normalisation rule is deliberately narrow, and "narrow" has a specific
+// meaning here: it may tidy line endings and runs of blank lines, and it may
+// trim the edges, but it must not touch wording and it must not destroy the
+// document's structure.
+//
+// Collapsing every whitespace run into a single space satisfies the tests
+// above while quietly deleting the paragraph structure, which is the part of a
+// document that says what the lines are *for*. A hours document that lists
+// "Mon-Fri 11:00-22:00" and "Sat 11:00-23:00" as separate lines becomes one
+// line, and two documents whose wording is identical but whose line structure
+// differs then hash the same. Since content_hash is half the idempotency key,
+// that is a document being silently treated as one that was already stored.
+func TestContentHashPreservesLineStructure(t *testing.T) {
+	hours := ContentHash(evidence.ScopeEvidence, evidence.DocTypeRestaurantHours, 1,
+		"Mon-Fri 11:00-22:00\nSat 11:00-23:00")
+	oneLine := ContentHash(evidence.ScopeEvidence, evidence.DocTypeRestaurantHours, 1,
+		"Mon-Fri 11:00-22:00 Sat 11:00-23:00")
+	if hours == oneLine {
+		t.Error("line structure was collapsed: a two-line document and the same words " +
+			"on one line hash identically, so the second one is treated as already stored")
+	}
+}
+
+func TestContentHashCollapsesRunsOfBlankLines(t *testing.T) {
+	// Two blank lines is the canonical form: three or more collapse to it, and
+	// one blank line stays one because it is different text.
+	want := ContentHash(evidence.ScopeEvidence, evidence.DocTypeRestaurantReviewSummary, 1,
+		"Great pizza.\n\n\nSlow service.\n\n\nWould return.")
+	for name, content := range map[string]string{
+		"three blanks":            "Great pizza.\n\n\n\nSlow service.\n\n\n\nWould return.",
+		"many blanks":             "Great pizza.\n\n\n\n\n\nSlow service.\n\n\n\n\n\nWould return.",
+		"crlf":                    "Great pizza.\r\n\r\n\r\nSlow service.\r\n\r\n\r\nWould return.",
+		"trailing ws":             "Great pizza.   \n\n\nSlow service.\t\n\n\nWould return.  ",
+		"space on the blank line": "Great pizza.\n   \n\nSlow service.\n \n\n\nWould return.",
+	} {
+		if got := ContentHash(evidence.ScopeEvidence, evidence.DocTypeRestaurantReviewSummary, 1, content); got != want {
+			t.Errorf("%s: hash differs; the blank-line rule is not the one specified", name)
+		}
+	}
+}
+
+// Line structure is content. Two documents that list the same facts in a
+// different order are different documents, and the hours builder produces
+// exactly this kind of pair.
+func TestContentHashDistinguishesReorderedLines(t *testing.T) {
+	a := ContentHash(evidence.ScopeEvidence, evidence.DocTypeRestaurantHours, 1,
+		"Mon-Fri 11:00-22:00\nSat 11:00-23:00")
+	b := ContentHash(evidence.ScopeEvidence, evidence.DocTypeRestaurantHours, 1,
+		"Sat 11:00-23:00\nMon-Fri 11:00-22:00")
+	if a == b {
+		t.Error("reordering two lines did not change the hash")
 	}
 }
