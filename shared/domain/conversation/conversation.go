@@ -28,12 +28,15 @@ type Conversation struct {
 
 // Checkpoint is the recoverable state of a thread.
 type Checkpoint struct {
-	ThreadID             string    `json:"thread_id"`
-	Version              int64     `json:"version"`
-	State                State     `json:"state"`
-	PendingAction        string    `json:"pending_action,omitempty"`
-	MissingSlots         []string  `json:"missing_slots,omitempty"`
-	EvidenceIDs          []string  `json:"evidence_ids,omitempty"`
-	SelectedRestaurantID string    `json:"selected_restaurant_id,omitempty"`
+	ThreadID      string   `json:"thread_id"`
+	Version       int64    `json:"version"`
+	State         State    `json:"state"`
+	PendingAction string   `json:"pending_action,omitempty"`
+	MissingSlots  []string `json:"missing_slots,omitempty"`
+	// These reference rows the database owns, so they carry the database id
+	// type. ThreadID stays a string: it is minted by the transport layer, not by
+	// an identity column.
+	EvidenceIDs          []int64   `json:"evidence_ids,omitempty"`
+	SelectedRestaurantID int64     `json:"selected_restaurant_id,omitempty"`
 	CreatedAt            time.Time `json:"created_at"`
 }

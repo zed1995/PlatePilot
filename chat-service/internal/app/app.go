@@ -14,7 +14,7 @@ import (
 )
 
 // Deps holds the ports the application is assembled from. M0 leaves them nil:
-// the Mongo repository arrives in M1, the Ollama embedding adapter in M2, and
+// the Postgres repository arrives in M1, the Ollama embedding adapter in M2, and
 // the OpenAI-compatible chat adapter in M4.
 type Deps struct {
 	Chat          port.ChatProvider

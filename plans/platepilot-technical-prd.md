@@ -4,8 +4,8 @@
 
 > 版本：v0.12（Draft）  
 > 日期：2026-09-29  
-> 项目定位：练手型、Agent 核心、Go 实现、远端 Chat Provider 负责聊天模型、MongoDB Atlas 负责数据和向量  
-> 本次重点：Eino Agent 编排、OpenAI-Compatible Chat Provider、本地 Qwen Embedding、MongoDB Atlas 和 Go 技术栈
+> 项目定位：练手型、Agent 核心、Go 实现、远端 Chat Provider 负责聊天模型、PostgreSQL（pgvector + PostGIS）负责数据和向量  
+> 本次重点：Eino Agent 编排、OpenAI-Compatible Chat Provider、本地 Qwen Embedding、PostgreSQL（pgvector + PostGIS）和 Go 技术栈
 > 实施计划：[platepilot-implementation-plan.md](platepilot-implementation-plan.md)
 
 ## 1. 项目目标与边界
@@ -29,7 +29,7 @@
 - **链路清晰**：明确 raw -> curated -> knowledge -> embedding -> retrieval 的写入链路。
 - **RAG 可解释**：回答餐厅体验类问题时返回证据、来源和数据时间。
 - **交易可安全演示**：把库存和预约实现为可选 Mock 工具，不伪装成真实预订。
-- **技术栈不过度**：优先使用 Go、MongoDB Atlas、Eino 和本地 Qwen；模型、RAG 与 Agent 状态保持清晰的模块边界。
+- **技术栈不过度**：优先使用 Go、PostgreSQL（pgvector + PostGIS）、Eino 和本地 Qwen；模型、RAG 与 Agent 状态保持清晰的模块边界。
 
 ### 1.3 非目标
 
@@ -38,7 +38,7 @@
 - 不处理真实支付、押金、短信和信用卡。
 - 不追求 2021 年数据的实时正确性。
 - 不建立生产级多城市、多租户、权限和合规平台。
-- 不在本地部署 MongoDB；知识文档、向量和 Agent 运行数据使用 MongoDB Atlas。
+- 不引入独立搜索引擎或向量数据库；知识文档、向量、地理检索与 Agent 运行数据统一存放在 PostgreSQL。
 - 不在 MVP 阶段 Fine-tune 模型。
 - 不在 MVP 阶段引入 Kafka、Elasticsearch、Neo4j 等额外基础设施。
 - 不把评论文本中的指令当作系统指令执行。

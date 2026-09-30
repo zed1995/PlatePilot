@@ -37,7 +37,7 @@ coverage.out
 # Logs and runtime files
 *.log
 logs/
-run/
+/run/
 *.pid
 
 # macOS and editors
@@ -50,3 +50,6 @@ run/
 
 # Local development scripts
 scripts/
+
+# Reference geometry: git-ignored, provenance lives in README.md
+data/boundaries/*.geojson

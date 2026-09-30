@@ -54,48 +54,45 @@ func (c LogConfig) Validate() []string {
 	}
 }
 
-// MongoConfig holds MongoDB Atlas settings.
-type MongoConfig struct {
-	URI      string
+// PostgresConfig holds PostgreSQL connection settings.
+type PostgresConfig struct {
+	// DSN is a libpq-style connection string, for example
+	// "postgres://platepilot:platepilot@localhost:55432/platepilot?sslmode=disable".
+	// Empty disables the store.
+	DSN string
+	// Database is the logical database name, used for reporting and to build
+	// the default DSN.
 	Database string
-	// Timeout bounds a single point operation (ping, single-document read or
-	// write).
+	// Timeout bounds a single statement.
 	Timeout time.Duration
-	// WriteTimeout bounds a bulk write or aggregation. Remote clusters need a
-	// far larger budget here than a point read: a 1k-document upsert can take
-	// tens of seconds.
-	WriteTimeout time.Duration
 	// ConnectTimeout bounds the initial handshake.
 	ConnectTimeout time.Duration
 	// MaxPoolSize and MinPoolSize bound the connection pool. Zero means the
 	// driver default.
-	MaxPoolSize uint64
-	MinPoolSize uint64
+	MaxPoolSize int32
+	MinPoolSize int32
 }
 
-// Enabled reports whether MongoDB has been configured.
-func (c MongoConfig) Enabled() bool { return c.URI != "" }
+// Enabled reports whether PostgreSQL has been configured.
+func (c PostgresConfig) Enabled() bool { return c.DSN != "" }
 
-// Validate reports problems with the MongoDB settings.
-func (c MongoConfig) Validate() []string {
+// Validate reports problems with the PostgreSQL settings.
+func (c PostgresConfig) Validate() []string {
 	if !c.Enabled() {
 		return nil
 	}
 	var problems []string
 	if strings.TrimSpace(c.Database) == "" {
-		problems = append(problems, "MONGO_DATABASE: required when MONGO_URI is set")
+		problems = append(problems, "POSTGRES_DATABASE: required when POSTGRES_DSN is set")
 	}
 	if c.Timeout <= 0 {
-		problems = append(problems, fmt.Sprintf("MONGO_TIMEOUT: must be > 0 (got %s)", c.Timeout))
-	}
-	if c.WriteTimeout <= 0 {
-		problems = append(problems, fmt.Sprintf("MONGO_WRITE_TIMEOUT: must be > 0 (got %s)", c.WriteTimeout))
+		problems = append(problems, fmt.Sprintf("POSTGRES_TIMEOUT: must be > 0 (got %s)", c.Timeout))
 	}
 	if c.ConnectTimeout <= 0 {
-		problems = append(problems, fmt.Sprintf("MONGO_CONNECT_TIMEOUT: must be > 0 (got %s)", c.ConnectTimeout))
+		problems = append(problems, fmt.Sprintf("POSTGRES_CONNECT_TIMEOUT: must be > 0 (got %s)", c.ConnectTimeout))
 	}
 	if c.MinPoolSize > 0 && c.MaxPoolSize > 0 && c.MinPoolSize > c.MaxPoolSize {
-		problems = append(problems, fmt.Sprintf("MONGO_MIN_POOL_SIZE: must not exceed MONGO_MAX_POOL_SIZE (got %d > %d)", c.MinPoolSize, c.MaxPoolSize))
+		problems = append(problems, fmt.Sprintf("POSTGRES_MIN_POOL_SIZE: must not exceed POSTGRES_MAX_POOL_SIZE (got %d > %d)", c.MinPoolSize, c.MaxPoolSize))
 	}
 	return problems
 }
@@ -201,6 +198,20 @@ func (l *Loader) Int(key string, def int) int {
 	return value
 }
 
+// Bool parses a boolean, recording a problem and returning def on error.
+func (l *Loader) Bool(key string, def bool) bool {
+	raw, ok := os.LookupEnv(key)
+	if !ok || strings.TrimSpace(raw) == "" {
+		return def
+	}
+	value, err := strconv.ParseBool(strings.TrimSpace(raw))
+	if err != nil {
+		l.problems = append(l.problems, fmt.Sprintf("%s: invalid boolean %q", key, raw))
+		return def
+	}
+	return value
+}
+
 // List reads a comma-separated list, trimming blanks.
 func (l *Loader) List(key string) []string {
 	raw, ok := os.LookupEnv(key)
@@ -249,16 +260,15 @@ func (l *Loader) Log() LogConfig {
 	return LogConfig{Level: l.String("LOG_LEVEL", "info")}
 }
 
-// Mongo loads the shared MongoDB config.
-func (l *Loader) Mongo() MongoConfig {
-	return MongoConfig{
-		URI:            l.String("MONGO_URI", ""),
-		Database:       l.String("MONGO_DATABASE", "platepilot"),
-		Timeout:        l.Duration("MONGO_TIMEOUT", 10*time.Second),
-		WriteTimeout:   l.Duration("MONGO_WRITE_TIMEOUT", 60*time.Second),
-		ConnectTimeout: l.Duration("MONGO_CONNECT_TIMEOUT", 10*time.Second),
-		MaxPoolSize:    uint64(max(l.Int("MONGO_MAX_POOL_SIZE", 0), 0)),
-		MinPoolSize:    uint64(max(l.Int("MONGO_MIN_POOL_SIZE", 0), 0)),
+// Postgres loads the shared PostgreSQL config.
+func (l *Loader) Postgres() PostgresConfig {
+	return PostgresConfig{
+		DSN:            l.String("POSTGRES_DSN", ""),
+		Database:       l.String("POSTGRES_DATABASE", "platepilot"),
+		Timeout:        l.Duration("POSTGRES_TIMEOUT", 30*time.Second),
+		ConnectTimeout: l.Duration("POSTGRES_CONNECT_TIMEOUT", 10*time.Second),
+		MaxPoolSize:    int32(max(l.Int("POSTGRES_MAX_POOL_SIZE", 0), 0)),
+		MinPoolSize:    int32(max(l.Int("POSTGRES_MIN_POOL_SIZE", 0), 0)),
 	}
 }
 
@@ -321,10 +331,63 @@ func Redact(secret string) string {
 	return "***"
 }
 
-// RedactURI strips embedded credentials from a connection string.
+// looksLikeKeywordDSN reports whether s is a libpq keyword/value connection
+// string rather than an arbitrary unparseable value.
+func looksLikeKeywordDSN(s string) bool {
+	fields := strings.Fields(s)
+	if len(fields) == 0 {
+		return false
+	}
+	// Every field must be a known libpq keyword=value pair, or a bare value
+	// that continues the previous keyword (libpq allows quoted values with
+	// spaces). Requiring at least one recognised keyword keeps prose out.
+	known := map[string]bool{
+		"host": true, "hostaddr": true, "port": true, "dbname": true,
+		"user": true, "password": true, "passfile": true, "sslmode": true,
+		"sslrootcert": true, "sslcert": true, "sslkey": true,
+		"connect_timeout": true, "application_name": true, "search_path": true,
+		"options": true, "target_session_attrs": true, "service": true,
+		"servicefile": true, "sslcrl": true, "gssencmode": true,
+		"channel_binding": true, "sslnegotiation": true, "sslcompression": true,
+		"ssl_min_protocol_version": true, "ssl_max_protocol_version": true,
+		"krbsrvname": true, "gsslib": true,
+	}
+	sawKnown := false
+	for _, field := range fields {
+		key, _, found := strings.Cut(field, "=")
+		if !found {
+			// A continuation of a previous quoted value; tolerate it.
+			continue
+		}
+		if known[strings.ToLower(strings.TrimSpace(key))] {
+			sawKnown = true
+			continue
+		}
+		// An unrecognised key means this is not a DSN.
+		return false
+	}
+	return sawKnown
+}
+
+// RedactURI strips embedded credentials from a connection string. It accepts
+// both libpq URLs and keyword/value DSNs.
 func RedactURI(uri string) string {
 	if uri == "" {
 		return ""
+	}
+	// libpq also accepts a keyword/value DSN ("host=... password=..."). It is
+	// recognised by looking like key=value pairs rather than by assuming every
+	// non-URL string is a DSN, so an arbitrary unparseable value is still
+	// redacted wholesale.
+	if looksLikeKeywordDSN(uri) {
+		fields := strings.Fields(uri)
+		for i, field := range fields {
+			key, _, found := strings.Cut(field, "=")
+			if found && strings.EqualFold(strings.TrimSpace(key), "password") {
+				fields[i] = key + "=***"
+			}
+		}
+		return strings.Join(fields, " ")
 	}
 	parsed, err := url.Parse(uri)
 	if err != nil || parsed.Host == "" {

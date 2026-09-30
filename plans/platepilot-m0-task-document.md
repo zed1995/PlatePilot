@@ -1,7 +1,7 @@
 # PlatePilot M0 工程基础任务文档
 
-> 版本：v1.0  
-> 日期：2026-09-29  
+> 版本：v1.1  
+> 日期：2026-09-30  
 > 依据：`plans/platepilot-implementation-plan.md`（§6 M0、§7 关键路径、§10 完成定义）与 `plans/platepilot-technical-prd.md` v0.12（§7 API 边界、§8 技术栈、§9 API 框架约定）  
 > 里程碑目标：搭建一个**可启动、可测试、边界清晰**的 Go 工程底座  
 > 退出条件：服务可本地启动且 `/healthz` 可用；领域 DTO、Provider、Repository 接口和测试骨架完整；**领域层不依赖任何具体中间件或厂商 SDK**
@@ -48,7 +48,7 @@ M0 已完成并通过本地验收。代码按**两个可独立运行的服务**�
 
 1. **组织结构**：单一 Go module 承载两个独立进程。`data-pipeline` 是批处理 CLI，`chat-service` 是 HTTP 服务，各自拥有 `main.go` 与 `internal/`；仅共享 `shared/`。两个服务互不 import，只依赖 `shared/port` 与 `shared/domain`。
 2. **HTTP 包命名**：目录使用 `chat-service/internal/transport/httpapi`（package `httpapi`）而非 `http`，避免与标准库 `net/http` 冲突；统一错误信封拆到 `transport/httperr`，供 middleware 与 handler 共用，避免 import cycle。
-3. **配置拆分**：`shared/config` 提供 `Loader`、`ValidationError`、`APP_ENV`/`LOG_LEVEL`/`MONGO_*`/`EMBEDDING_*`/`REQUEST_TIMEOUT` 等共用原语；两个服务各自组合出自己的 `Config`，只校验自己需要的字段。聊天服务校验 `HTTP_*`/`CHAT_*`，数据生产校验 `PIPELINE_*`。
+3. **配置拆分**：`shared/config` 提供 `Loader`、`ValidationError`、`APP_ENV`/`LOG_LEVEL`/`POSTGRES_*`/`EMBEDDING_*`/`REQUEST_TIMEOUT` 等共用原语；两个服务各自组合出自己的 `Config`，只校验自己需要的字段。聊天服务校验 `HTTP_*`/`CHAT_*`，数据生产校验 `PIPELINE_*`。
 4. **Repository 返回值**：`Get*`/`Load*` 使用值返回 + `error`，未找到时返回 `errs.ErrNotFound`（可用 `errors.Is` 判定），不使用 `nil` 指针表达缺失。
 5. **校验落地方式**：M0 尚无业务请求体，因此以「Hertz `WithCustomValidatorFunc` + `Validatable` 接口 + `BindAndValidate` 辅助函数」实现；绑定失败映射为 `invalid_argument`，校验失败映射为 `validation_failed`。
 6. **领域纯净性**：由 `shared/domain/architecture_test.go` 强制（解析领域包 import，只允许标准库与 `shared/domain` 前缀），随 `go test ./...` 执行，无需额外工具。
@@ -97,7 +97,7 @@ M0 只解决"工程基础"，不承载任何业务逻辑；它要证明后续所
 - [ ] 缺少关键配置时进程启动失败，且错误信息明确指出缺失项。
 - [ ] 日志为 JSON，且包含 `request_id` / `trace_id`。
 - [ ] 非法请求返回统一错误响应体与稳定错误码。
-- [ ] 领域包 `shared/domain/...` 的依赖闭包中**不出现** `go.mongodb.org`、Eino、Ollama、OpenAI/HTTP 客户端、Hertz 等外部实现包。
+- [ ] 领域包 `shared/domain/...` 的依赖闭包中**不出现** `github.com/jackc/pgx`、Eino、Ollama、OpenAI/HTTP 客户端、Hertz 等外部实现包。
 - [ ] 每个 Provider / Repository 接口都有可用的 Mock 或内存实现，且有单元测试覆盖。
 
 ---
@@ -154,8 +154,9 @@ platepilot/                              # 单一 Go module，两个可独立运
 │   ├── adapter/                         # 实现 port 的外部依赖，厂商 SDK 只允许出现在这里
 │   │   ├── chat/openai/                 # M4 填充，M0 留骨架
 │   │   ├── embedding/ollama/            # M2 填充，M0 留骨架
-│   │   ├── repository/memory/           # M0 提供内存实现
-│   │   └── repository/mongo/            # M1 填充，M0 留骨架
+│   │   └── repository/                  # 实现 port 的存储实现
+│   │       ├── memory/                  # M0 提供内存实现
+│   │       └── postgres/                # M1 提供 PostgreSQL 实现
 │   ├── observability/logging/           # slog 初始化与字段约定
 │   ├── idgen/                           # 无依赖的 ID 生成
 │   └── testkit/                         # 测试夹具与 Mock（两个服务共用）
@@ -179,14 +180,14 @@ data-pipeline/main ──> data-pipeline/internal/pipeline ──┐
 chat-service/main  ──> chat-service/internal/app ────────┘
                              │
                              ├──> chat-service/internal/transport/httpapi（Hertz，实现 API）
-                             └──> shared/adapter/*（OpenAI / Ollama / Mongo，实现 port）
+                             └──> shared/adapter/*（OpenAI / Ollama / PostgreSQL，实现 port）
 ```
 
 **禁止**的方向：
 
 - `shared/domain` 或 `shared/port` 反向 import `adapter` / `transport` / 任一服务的 `internal`。
-- `shared/domain` import 任何第三方 SDK（Mongo、Eino、Hertz、OpenAI 客户端、Ollama 客户端）。
-- 业务代码直接 `import` Mongo Driver 或厂商 Chat SDK，绕过 `shared/port`。
+- `shared/domain` import 任何第三方 SDK（数据库驱动、Eino、Hertz、OpenAI 客户端、Ollama 客户端）。
+- 业务代码直接 `import` 数据库驱动或厂商 Chat SDK，绕过 `shared/port`。
 - `data-pipeline` 与 `chat-service` 互相 import：两个服务只通过 `shared/` 共享代码，不直接依赖对方。
 
 
@@ -199,9 +200,9 @@ chat-service/main  ──> chat-service/internal/app ────────┘
 | M0-01 | 初始化 Go 工程 | `go.mod`、目录结构、入口程序、Makefile | 无 | S | `go test ./...` 与本地启动通过 |
 | M0-02 | 配置与密钥管理 | 环境变量、配置文件、启动校验 | M0-01 | S | 缺少关键配置时启动失败并给出明确错误 |
 | M0-03 | 日志和错误模型 | `slog`、错误码、请求 ID | M0-01 | S | JSON 日志包含 trace/request ID |
-| M0-04 | 领域 DTO | Chat、Tool、Search、Evidence、Memory DTO | M0-01 | M | 领域包不依赖 Mongo、Eino、具体 Chat API、Ollama |
+| M0-04 | 领域 DTO | Chat、Tool、Search、Evidence、Memory DTO | M0-01 | M | 领域包不依赖数据库驱动、Eino、具体 Chat API、Ollama |
 | M0-05 | Provider 接口 | ChatProvider、EmbeddingProvider、RerankProvider | M0-04 | M | Mock Provider 可用于测试 |
-| M0-06 | Repository 接口 | Restaurant、Knowledge、Conversation、Memory、Run Repository | M0-04 | M | 接口可由 Mongo 和内存实现 |
+| M0-06 | Repository 接口 | Restaurant、Knowledge、Conversation、Memory、Run Repository | M0-04 | M | 接口可由 PostgreSQL 和内存实现 |
 | M0-07 | Hertz HTTP/API 骨架 | Hertz Router、健康检查和统一错误响应 | M0-01 | S | `/healthz` 和统一错误响应可用 |
 | M0-07A | Hertz 中间件与验证 | binding、validation、recovery、request ID、CORS | M0-07 | M | 非法请求返回统一错误，request ID 可贯穿 trace |
 | M0-08 | 测试基线 | `go test`、接口 Mock、测试夹具 | M0-04 | M | 核心 DTO 和 Provider 有单元测试 |
@@ -259,7 +260,7 @@ M0-01
 
 **实现要点**
 
-- 引入首批依赖：`github.com/cloudwego/hertz`（HTTP）、`log/slog`（标准库）。Mongo 与 Eino 依赖推迟到对应里程碑，避免 M0 引入未使用依赖。
+- 引入首批依赖：`github.com/cloudwego/hertz`（HTTP）、`log/slog`（标准库）。数据库驱动与 Eino 依赖推迟到对应里程碑，避免 M0 引入未使用依赖。
 - 两个服务的 `main.go` 都只做「读配置 → 构造依赖 → 执行业务」。聊天服务跑 HTTP 服务，数据生产跑批处理子命令。
 - 优雅退出：聊天服务监听 `SIGINT`/`SIGTERM`，在 `ShutdownTimeout` 内关闭 HTTP；数据生产复用同一 `signal.NotifyContext` 作为作业取消信号。
 
@@ -290,14 +291,14 @@ bin/data-pipeline version
 - `shared/config/config.go`（两个服务共用的配置原语）：
   - `Loader`：从环境变量读取 `String`/`Duration`/`Int`/`List`/`StringMap`，并累积解析失败而不是首错即停。
   - `ValidationError` 与 `Combine(...)`：把所有问题一次性汇总，错误信息带变量名。
-  - 共用子配置：`AppConfig`（`APP_ENV`）、`LogConfig`、`MongoConfig`、`EmbeddingConfig`、`TimeoutConfig`，各自提供 `Validate()`。
+  - 共用子配置：`AppConfig`（`APP_ENV`）、`LogConfig`、`PostgresConfig`、`EmbeddingConfig`、`TimeoutConfig`，各自提供 `Validate()`。
   - `LoadDotEnv`（不覆盖已有环境变量）、`Redact` / `RedactURI`。
 - `chat-service/internal/config/config.go`：
-  - `type Config struct { App; HTTP; Log; Mongo; Chat; Embedding; Timeout }`
+  - `type Config struct { App; HTTP; Log; Postgres; Chat; Embedding; Timeout }`
   - `func Load() (Config, error)`：共享原语 + `HTTP_*` / `CHAT_*`。
   - `func (c Config) Validate() error`，以及 `Redacted()` / `Summary()`。
 - `data-pipeline/internal/config/config.go`：
-  - `type Config struct { App; Log; Mongo; Embedding; Timeout; Pipeline }`
+  - `type Config struct { App; Log; Postgres; Embedding; Timeout; Pipeline }`
   - `PipelineConfig{ DataDir; BatchSize; Workers }`，对应 `PIPELINE_*`。
   - `func Load() (Config, error)`、`Validate()`、`Redacted()`、`Summary()`。
 - 测试：`shared/config/config_test.go`、`chat-service/internal/config/config_test.go`、`data-pipeline/internal/config/config_test.go`。
@@ -308,12 +309,12 @@ bin/data-pipeline version
 |---|---|---|---|---|
 | `APP_ENV` | 否 | `dev` | 共享 | `dev` / `test` / `prod` |
 | `LOG_LEVEL` | 否 | `info` | 共享 | `debug`/`info`/`warn`/`error` |
-| `MONGO_URI` | M1 起必填 | 空 | 共享 | Atlas 连接串 |
-| `MONGO_DATABASE` | 否 | `platepilot` | 共享 | 数据库名 |
+| `POSTGRES_DSN` | M1 起必填 | 空 | 共享 | PostgreSQL 连接串 |
+| `POSTGRES_DATABASE` | 否 | `platepilot` | 共享 | 数据库名 |
 | `EMBEDDING_PROVIDER` | M2 起必填 | 空 | 共享 | `ollama` |
 | `OLLAMA_BASE_URL` | 否 | `http://localhost:11434` | 共享 | Ollama 地址 |
 | `EMBEDDING_MODEL` | 否 | `qwen3-embedding:0.6b` | 共享 | 模型 ID |
-| `EMBEDDING_DIMENSIONS` | 否 | `1024` | 共享 | 向量维度，需与 Atlas 索引一致 |
+| `EMBEDDING_DIMENSIONS` | 否 | `1024` | 共享 | 向量维度，需与向量索引一致 |
 | `REQUEST_TIMEOUT` | 否 | `15s` | 共享 | 出站请求默认超时 |
 | `HTTP_ADDR` | 否 | `:8080` | chat-service | HTTP 监听地址 |
 | `HTTP_CORS_ALLOW_ORIGINS` | 否 | 空 | chat-service | CORS 白名单，空则禁用跨域 |
@@ -328,7 +329,7 @@ bin/data-pipeline version
 
 **实现要点**
 
-- **M0 阶段只强校验 `HTTP_ADDR` 与 `PIPELINE_*`**；`MONGO_*`、`CHAT_*`、`EMBEDDING_*` 采用"配置了才校验"，避免 M0 因缺少后续里程碑配置而无法启动。
+- **M0 阶段只强校验 `HTTP_ADDR` 与 `PIPELINE_*`**；`POSTGRES_*`、`CHAT_*`、`EMBEDDING_*` 采用"配置了才校验"，避免 M0 因缺少后续里程碑配置而无法启动。
 - 两个服务各自只校验自己需要的字段：聊天服务管 `HTTP_*`/`CHAT_*`，数据生产管 `PIPELINE_*`；共享原语复用同一套 `Loader` 与错误模型。
 - 提供 `Redacted()` / `Summary()`，用于日志输出时把密钥替换为 `***`。
 - `.env` 仅用于本地开发，且必须在 `.gitignore` 中；生产从真实环境变量注入。
@@ -341,7 +342,7 @@ bin/data-pipeline version
 
 - 聊天服务设置 `HTTP_ADDR=:9090` 时监听 9090；数据生产设置 `PIPELINE_BATCH_SIZE=50` 时摘要显示 50。
 - 故意设置非法 `HTTP_ADDR`（如 `"::::"`）或必填项为空时，对应服务启动/执行失败且错误信息包含具体变量名。
-- 日志打印配置摘要时，`CHAT_API_KEY`、`MONGO_URI` 凭据等显示为 `***`。
+- 日志打印配置摘要时，`CHAT_API_KEY`、`POSTGRES_DSN` 凭据等显示为 `***`。
 - 三个 `config_test.go` 覆盖上述场景并通过。
 
 ---
@@ -560,7 +561,7 @@ type Memory struct {
 **验收标准**
 
 - 提供**架构约束测试**（如 `shared/domain/architecture_test.go`）：
-  - 使用 `go list -deps` 或 `go/packages` 遍历 `shared/domain/...`，断言依赖闭包中不含禁用前缀（`go.mongodb.org`、`github.com/cloudwego/eino`、`github.com/cloudwego/hertz`、Ollama/OpenAI 客户端等）。
+  - 使用 `go list -deps` 或 `go/packages` 遍历 `shared/domain/...`，断言依赖闭包中不含禁用前缀（`github.com/jackc/pgx`、`github.com/cloudwego/eino`、`github.com/cloudwego/hertz`、Ollama/OpenAI 客户端等）。
   - `go test ./shared/domain/...` 通过。
 - 每个 DTO 包有 JSON 往返测试。
 - 领域层可被任意上层 import 而不引入外部依赖。
@@ -637,7 +638,7 @@ type RerankProvider interface {
 
 ### M0-06 Repository 接口
 
-**目标**：定义数据访问端口，使其同时可由 Mongo 与内存实现，隔离数据库细节。
+**目标**：定义数据访问端口，使其同时可由 PostgreSQL 与内存实现，隔离数据库细节。
 
 **交付物**
 
@@ -684,10 +685,10 @@ type RunRepository interface {
 
 **实现要点**
 
-- 端口层只依赖 `shared/domain/...`，不依赖 Mongo 类型（如 `primitive.ObjectID`、`bson.M`）。
-- 查询条件用领域 DTO（如 `search.SearchQuery`、`map[string]any` 过滤），不把 `bson` 泄漏到端口签名。
-- 内存实现要能表达"未找到"（返回 `errs.ErrNotFound`）和"重复键冲突"（返回 `errs.ErrConflict`），供后续 Mongo 实现对齐。
-- Mongo 实现（`shared/adapter/repository/mongo`）推迟到 M1-01，M0 只留目录与接口适配占位。
+- 端口层只依赖 `shared/domain/...`，不依赖任何数据库类型（如 `pgx.Row`、`sql.NullString`）。
+- 查询条件用领域 DTO（如 `search.SearchQuery`、`map[string]any` 过滤），不把驱动类型泄漏到端口签名。
+- 内存实现要能表达"未找到"（返回 `errs.ErrNotFound`）和"重复键冲突"（返回 `errs.ErrConflict`），供后续 PostgreSQL 实现对齐。
+- PostgreSQL 实现（`shared/adapter/repository/postgres`）推迟到 M1-01。
 
 **依赖**：M0-04。  
 **工作量**：M。
@@ -697,7 +698,7 @@ type RunRepository interface {
 - 编译期断言：内存实现满足全部 Repository 接口。
 - 内存实现单测覆盖：get/upsert/search/list/delete 与未找到错误路径。
 - 重复 `Upsert` 同一主键不产生重复记录（幂等），单测通过。
-- 端口包不 import Mongo Driver。
+- 端口包不 import 数据库驱动。
 
 ---
 
@@ -737,7 +738,7 @@ type RunRepository interface {
 **实现要点**
 
 - 路由/处理器使用 Hertz；**领域层与工具不依赖 Hertz Context**，HTTP 层负责把 Hertz Context 转成项目 `RequestContext` 后注入 `context.Context`。
-- `/healthz` 不依赖 Mongo/模型（M1 起可增加 readiness 探针），M0 保证存活探针可用。
+- `/healthz` 不依赖数据库/模型（M1 起可增加 readiness 探针），M0 保证存活探针可用。
 - 统一错误响应由 `httperr.Write` 集中生成，所有处理器都通过返回 `errs.Error` 走同一出口。
 - 404 由 `NoRoute` 统一处理，保证未匹配路由也返回同一错误信封。
 - M0 不实现业务路由（`/v1/...` 留空壳或注释），但需预留版本化前缀 `/v1`。
@@ -817,7 +818,7 @@ curl -s -o /dev/null -w '%{http_code}\n' localhost:8080/nope
 
 - 使用标准库 `testing`；Hertz 可用其官方 `ut` 工具或 `httptest` 风格的路由测试。
 - 夹具数据放 `shared/testkit` 或 `testdata/`，不要引用 `data/raw` 下的大文件。
-- 测试必须可在无网络、无 Atlas、无 Ollama 的环境下运行（全部依赖 Mock/内存实现）。
+- 测试必须可在无网络、无数据库、无 Ollama 的环境下运行（全部依赖 Mock/内存实现）。
 - 覆盖率不作为硬门槛，但核心包（config、errs、domain、port、testkit）应有明确断言。
 
 **依赖**：M0-04（Mock/夹具），实际实施贯穿 M0 全程。  
@@ -833,7 +834,7 @@ golangci-lint run
 ```
 
 - 全部通过。
-- 测试在断网环境可运行（不依赖 Atlas / Ollama / 远端模型）。
+- 测试在断网环境可运行（不依赖数据库 / Ollama / 远端模型）。
 - 新增测试夹具可被后续里程碑直接 import 复用。
 
 ---
@@ -898,7 +899,7 @@ M0 完成后，按实施计划 §14 第 1 组进入 M1。服务归属如下：
 
 | 里程碑 | 主要落点 |
 |---|---|
-| M1 Atlas 数据底座 | `shared/adapter/repository/mongo` + `data-pipeline/internal/pipeline`（导入、清洗、聚合） |
+| M1 PostgreSQL 数据底座 | `shared/adapter/repository/postgres` + `data-pipeline/internal/pipeline`（导入、清洗、聚合） |
 | M2 Embedding 与文档 | `shared/adapter/embedding/ollama` + `data-pipeline/internal/pipeline`（文档构建、批量向量化） |
 | M3 两级检索 | `shared/port`（检索接口）+ `chat-service`（读取链路） |
 | M4 Agent 运行时 | `shared/adapter/chat/openai` + `chat-service`（Eino、工具、checkpoint、SSE） |
@@ -907,8 +908,8 @@ M0 完成后，按实施计划 §14 第 1 组进入 M1。服务归属如下：
 
 进入 M1 的具体衔接：
 
-1. M1-01 Atlas 连接：实现 `shared/adapter/repository/mongo`，满足 M0-06 定义的 Repository 接口。
-2. M1-02 Collection 与索引：基于 M0-04 的领域 DTO 定义存储结构。
+1. M1-01 数据库连接：实现 `shared/adapter/repository/postgres`，满足 M0-06 定义的 Repository 接口。
+2. M1-02 表结构与索引：基于 M0-04 的领域 DTO 定义存储结构。
 3. M1-04 Meta 流式导入：在 `data-pipeline/internal/pipeline` 中实现，使用 M0-02 配置与 M0-03 日志/错误模型。
 
 **服务边界要求**：`data-pipeline` 与 `chat-service` 互不 import，只通过 `shared/` 共享代码。数据生产负责写入（raw → curated → knowledge → embedding），聊天服务负责读取（检索 → 证据 → 回答），两侧共用同一套领域 DTO 和端口，避免数据语义漂移。
@@ -922,7 +923,7 @@ M0 完成后，按实施计划 §14 第 1 组进入 M1。服务归属如下：
 **M0 明确不做的事**（避免范围蔓延）：
 
 - 不实现任何真实业务 API（`/v1/restaurants/search` 等留到 M3/M5）。
-- 不接入真实 Mongo / Atlas（M1）。
+- 不接入真实 PostgreSQL（M1）。
 - 不实现真实 Ollama / OpenAI 请求（M2/M4）。
 - 不引入 Eino（M4）。
 - 不实现 SSE（M4-11）。
@@ -935,14 +936,14 @@ M0 完成后，按实施计划 §14 第 1 组进入 M1。服务归属如下：
 
 | 风险 | 触发点 | 控制措施 |
 |---|---|---|
-| 过早引入重依赖 | M0 引入 Eino / Mongo / 向量库却未使用 | 首批依赖只加 Hertz 与标准库；其它依赖随里程碑引入 |
+| 过早引入重依赖 | M0 引入 Eino / 数据库驱动 / 向量库却未使用 | 首批依赖只加 Hertz 与标准库；其它依赖随里程碑引入 |
 | 两个服务互相耦合 | `data-pipeline` 直接 import `chat-service`（或反向） | 只允许经 `shared/` 共享；code review 与目录结构共同保证 |
-| 领域层被污染 | 业务代码直接 import Mongo / 厂商 SDK | 用 `depguard` 或架构测试固化禁依赖规则；Adapter 只做转换 |
+| 领域层被污染 | 业务代码直接 import 数据库驱动 / 厂商 SDK | 用 `depguard` 或架构测试固化禁依赖规则；Adapter 只做转换 |
 | Provider 接口过度设计 | M0 就把 M4 全部能力塞进接口 | 接口只定义 M0 已知形状；能力用 `Supports*` 声明，细节后补 |
-| Mock 与真实实现漂移 | 内存实现与 Mongo 语义不一致 | 内存实现对齐 `ErrNotFound`/`ErrConflict` 语义，M1 用同一套契约测试验收 |
+| Mock 与真实实现漂移 | 内存实现与数据库语义不一致 | 内存实现对齐 `ErrNotFound`/`ErrConflict` 语义，M1 用同一套契约测试验收 |
 | 配置过早强校验 | M0 因缺少 M1–M4 配置无法启动 | 共享原语只提供 `Validate()`；各服务只强校验自己的必填项 |
 | 错误码散落 | 各层自定义错误字符串 | 错误码集中在 `shared/domain/errs`，HTTP 映射集中处理 |
-| 测试依赖外部环境 | 单测需要 Atlas / Ollama | M0 全部测试使用 Mock/内存实现，保证离线可跑 |
+| 测试依赖外部环境 | 单测需要数据库 / Ollama | M0 全部测试使用外部依赖的 Mock/内存实现，保证离线可跑 |
 | 目录反复重构 | 未定骨架就写业务 | 先落 M0-01 双服务骨架，再逐层填充 |
 
 ---
@@ -956,9 +957,9 @@ M0 完成后，按实施计划 §14 第 1 组进入 M1。服务归属如下：
 APP_ENV=dev
 LOG_LEVEL=info
 
-# MongoDB Atlas（M1 起需要）
-# MONGO_URI=mongodb+srv://<user>:<pass>@<cluster>/
-# MONGO_DATABASE=platepilot
+# PostgreSQL（M1 起需要）
+# POSTGRES_DSN=postgres://<user>:<pass>@<host>:<port>/<database>?sslmode=disable
+# POSTGRES_DATABASE=platepilot
 
 # 本地 Ollama Embedding（M2 起需要）
 # EMBEDDING_PROVIDER=ollama

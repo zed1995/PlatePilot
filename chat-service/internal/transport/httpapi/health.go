@@ -19,7 +19,7 @@ type HealthResponse struct {
 }
 
 // HealthHandler reports liveness. It deliberately has no external dependencies
-// so it stays valid while Atlas and models are unreachable.
+// so it stays valid while the database and models are unreachable.
 func HealthHandler(version string) app.HandlerFunc {
 	return func(ctx context.Context, c *app.RequestContext) {
 		rc, _ := requestctx.FromContext(ctx)

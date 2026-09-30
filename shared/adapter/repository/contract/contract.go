@@ -1,6 +1,6 @@
 // Package contract holds the behaviour suite that every implementation of the
 // write-side ports must satisfy. Running the same suite against the in-memory
-// store and the Mongo adapter is what keeps the mock from drifting from Atlas.
+// store and the Postgres adapter is what keeps the mock from drifting.
 package contract
 
 import (
@@ -29,17 +29,18 @@ type Factory func(t *testing.T) Stores
 func Run(t *testing.T, newStores Factory) {
 	t.Helper()
 	t.Run("RestaurantStore", func(t *testing.T) { runRestaurantStore(t, newStores(t).Restaurants) })
-	t.Run("ReviewStore", func(t *testing.T) { runReviewStore(t, newStores(t).Reviews) })
+	t.Run("ReviewStore", func(t *testing.T) { runReviewStore(t, newStores(t)) })
 	t.Run("PipelineStore", func(t *testing.T) { runPipelineStore(t, newStores(t).Pipeline) })
 }
 
 var baseTime = time.Date(2021, 9, 1, 0, 0, 0, 0, time.UTC)
 
-func restaurantFixture(id, sourceRecordID, name string, createdAt time.Time) restaurant.Restaurant {
+// restaurantFixture builds a source-derived restaurant. It deliberately leaves
+// ID zero: the store assigns it, exactly as the database identity column does.
+func restaurantFixture(sourceRecordID, name string, createdAt time.Time) restaurant.Restaurant {
 	price := 2
 	avg := 4.5
 	return restaurant.Restaurant{
-		ID:             id,
 		Source:         restaurant.SourceGoogleLocal2021,
 		SourceRecordID: sourceRecordID,
 		Name:           name,
@@ -61,7 +62,7 @@ func restaurantFixture(id, sourceRecordID, name string, createdAt time.Time) res
 func runRestaurantStore(t *testing.T, s port.RestaurantStore) {
 	ctx := context.Background()
 
-	first := restaurantFixture("id-1", "gmap-1", "Joe's Pizza", baseTime)
+	first := restaurantFixture("gmap-1", "Joe's Pizza", baseTime)
 	if err := s.UpsertRestaurant(ctx, first); err != nil {
 		t.Fatalf("UpsertRestaurant: %v", err)
 	}
@@ -69,18 +70,21 @@ func runRestaurantStore(t *testing.T, s port.RestaurantStore) {
 	if err != nil {
 		t.Fatalf("GetBySourceRecordID: %v", err)
 	}
-	if got.ID != "id-1" || got.Name != "Joe's Pizza" {
+	// The store assigns the id; a zero id must never reach the caller.
+	if got.ID == 0 || got.Name != "Joe's Pizza" {
 		t.Fatalf("stored = %+v", got)
 	}
+	id1 := got.ID
 	// The source review count comes from Meta and must survive the insert.
 	if got.ReviewStats.SourceReviewCount != 9998 || !got.ReviewStats.SourceReviewCountCapped {
 		t.Errorf("source review stats not persisted on insert: %+v", got.ReviewStats)
 	}
 
-	// Re-import proposes a new ID and a new creation time; both must be ignored
-	// so that reviews keep pointing at a stable restaurant_id.
+	// A re-import must not mint a new id for the same place: reviews point at
+	// restaurant_id, so a new value would orphan the whole review corpus. The
+	// creation time is ignored for the same reason.
 	later := baseTime.Add(48 * time.Hour)
-	update := restaurantFixture("id-2", "gmap-1", "Joe's Pizza Updated", later)
+	update := restaurantFixture("gmap-1", "Joe's Pizza Updated", later)
 	if err := s.UpsertRestaurant(ctx, update); err != nil {
 		t.Fatalf("re-UpsertRestaurant: %v", err)
 	}
@@ -88,8 +92,8 @@ func runRestaurantStore(t *testing.T, s port.RestaurantStore) {
 	if err != nil {
 		t.Fatalf("GetBySourceRecordID after update: %v", err)
 	}
-	if got.ID != "id-1" {
-		t.Errorf("id changed on re-import: got %q want %q", got.ID, "id-1")
+	if got.ID != id1 {
+		t.Errorf("id changed on re-import: got %d want %d", got.ID, id1)
 	}
 	if got.Name != "Joe's Pizza Updated" {
 		t.Errorf("name not updated: got %q", got.Name)
@@ -103,8 +107,8 @@ func runRestaurantStore(t *testing.T, s port.RestaurantStore) {
 	}
 
 	written, err := s.UpsertRestaurants(ctx, []restaurant.Restaurant{
-		restaurantFixture("id-a", "gmap-a", "A", baseTime),
-		restaurantFixture("id-b", "gmap-b", "B", baseTime),
+		restaurantFixture("gmap-a", "A", baseTime),
+		restaurantFixture("gmap-b", "B", baseTime),
 	})
 	if err != nil {
 		t.Fatalf("UpsertRestaurants: %v", err)
@@ -113,14 +117,14 @@ func runRestaurantStore(t *testing.T, s port.RestaurantStore) {
 		t.Errorf("UpsertRestaurants wrote %d want 2", written)
 	}
 
-	byID, err := s.GetByID(ctx, "id-1")
+	byID, err := s.GetByID(ctx, id1)
 	if err != nil {
 		t.Fatalf("GetByID: %v", err)
 	}
 	if byID.SourceRecordID != "gmap-1" {
 		t.Errorf("GetByID source = %q", byID.SourceRecordID)
 	}
-	if _, err := s.GetByID(ctx, "missing"); !errors.Is(err, errs.ErrNotFound) {
+	if _, err := s.GetByID(ctx, 987654321); !errors.Is(err, errs.ErrNotFound) {
 		t.Errorf("GetByID missing want ErrNotFound, got %v", err)
 	}
 	listed, err := s.ListRestaurants(ctx, 0)
@@ -137,13 +141,29 @@ func runRestaurantStore(t *testing.T, s port.RestaurantStore) {
 		}
 	}
 
+	// The preprocessing path depends on this returning every id, sorted, so the
+	// same contract drives the Postgres projection query and the memory store.
+	sourceIDs, err := s.ListSourceRecordIDs(ctx)
+	if err != nil {
+		t.Fatalf("ListSourceRecordIDs: %v", err)
+	}
+	if len(sourceIDs) != len(listed) {
+		t.Fatalf("ListSourceRecordIDs = %d want %d", len(sourceIDs), len(listed))
+	}
+	for i, r := range listed {
+		if sourceIDs[i] != r.SourceRecordID {
+			t.Errorf("ListSourceRecordIDs[%d] = %q want %q", i, sourceIDs[i], r.SourceRecordID)
+		}
+	}
+
 	mapped, err := s.MapSourceRecordIDs(ctx, []string{"gmap-1", "gmap-a", "nope"})
 	if err != nil {
 		t.Fatalf("MapSourceRecordIDs: %v", err)
 	}
-	if mapped["gmap-1"] != "id-1" || mapped["gmap-a"] != "id-a" {
+	if mapped["gmap-1"] != id1 || mapped["gmap-a"] == 0 {
 		t.Errorf("mapped = %v", mapped)
 	}
+	idA := mapped["gmap-a"]
 	if _, ok := mapped["nope"]; ok {
 		t.Errorf("unexpected mapping for missing id: %v", mapped)
 	}
@@ -151,7 +171,7 @@ func runRestaurantStore(t *testing.T, s port.RestaurantStore) {
 	stats := restaurant.ReviewStats{StoredReviewCount: 7, TextReviewCount: 5, StatsUpdatedAt: baseTime}
 	computedAvg := 4.42
 	computed := restaurant.Rating{ComputedAvg: &computedAvg, RatingCountForComputedAvg: 7}
-	if err := s.UpdateReviewStats(ctx, "id-1", stats, computed); err != nil {
+	if err := s.UpdateReviewStats(ctx, id1, stats, computed); err != nil {
 		t.Fatalf("UpdateReviewStats: %v", err)
 	}
 	got, _ = s.GetBySourceRecordID(ctx, "gmap-1")
@@ -161,11 +181,11 @@ func runRestaurantStore(t *testing.T, s port.RestaurantStore) {
 	if got.Rating.ComputedAvg == nil || *got.Rating.ComputedAvg != 4.42 || got.Rating.RatingCountForComputedAvg != 7 {
 		t.Errorf("computed rating not written: %+v", got.Rating)
 	}
-	if err := s.UpdateReviewStats(ctx, "does-not-exist", stats, computed); !errors.Is(err, errs.ErrNotFound) {
+	if err := s.UpdateReviewStats(ctx, 987654321, stats, computed); !errors.Is(err, errs.ErrNotFound) {
 		t.Errorf("UpdateReviewStats missing want ErrNotFound, got %v", err)
 	}
 
-	if err := s.UpdateScores(ctx, map[string]float64{"id-1": 9.5, "id-a": 3.0}, map[string]bool{"id-1": true}); err != nil {
+	if err := s.UpdateScores(ctx, map[int64]float64{id1: 9.5, idA: 3.0}, map[int64]bool{id1: true}); err != nil {
 		t.Fatalf("UpdateScores: %v", err)
 	}
 	n, err := s.CountActiveForDemo(ctx)
@@ -179,7 +199,7 @@ func runRestaurantStore(t *testing.T, s port.RestaurantStore) {
 	if err != nil {
 		t.Fatalf("SelectForDemo: %v", err)
 	}
-	if len(active) != 1 || active[0].ID != "id-1" {
+	if len(active) != 1 || active[0].ID != id1 {
 		t.Fatalf("SelectForDemo = %+v", active)
 	}
 	if active[0].KnowledgeScore != 9.5 {
@@ -187,7 +207,7 @@ func runRestaurantStore(t *testing.T, s port.RestaurantStore) {
 	}
 
 	// Re-running the meta import must not wipe what the stats/score jobs wrote.
-	if err := s.UpsertRestaurant(ctx, restaurantFixture("id-77", "gmap-1", "Joe's Pizza Re-imported", later)); err != nil {
+	if err := s.UpsertRestaurant(ctx, restaurantFixture("gmap-1", "Joe's Pizza Re-imported", later)); err != nil {
 		t.Fatalf("re-import after stats: %v", err)
 	}
 	got, _ = s.GetBySourceRecordID(ctx, "gmap-1")
@@ -206,14 +226,40 @@ func runRestaurantStore(t *testing.T, s port.RestaurantStore) {
 
 }
 
-func runReviewStore(t *testing.T, s port.ReviewStore) {
+func runReviewStore(t *testing.T, stores Stores) {
 	ctx := context.Background()
+	s := stores.Reviews
 
+	// Reviews reference a restaurant, so the parents must exist first. A
+	// document store accepts a dangling reference silently; a relational one
+	// rejects it, and that difference is exactly what the suite exists to
+	// expose. Seeding the parents keeps both implementations honest about the
+	// invariant the pipeline actually relies on: a review is only ever written
+	// after its restaurant joined.
+	seeded := map[string]int64{}
+	for _, r := range []restaurant.Restaurant{
+		restaurantFixture("gmap-r1", "R1", baseTime),
+		restaurantFixture("gmap-r2", "R2", baseTime),
+	} {
+		if err := stores.Restaurants.UpsertRestaurant(ctx, r); err != nil {
+			t.Fatalf("seed restaurant %s: %v", r.SourceRecordID, err)
+		}
+		stored, err := stores.Restaurants.GetBySourceRecordID(ctx, r.SourceRecordID)
+		if err != nil {
+			t.Fatalf("read back seeded restaurant %s: %v", r.SourceRecordID, err)
+		}
+		seeded[r.SourceRecordID] = stored.ID
+	}
+	r1, r2 := seeded["gmap-r1"], seeded["gmap-r2"]
+
+	// Review ids are assigned by the store, so the fixtures leave them zero.
+	// Idempotency now comes from the (restaurant_id, text_hash, rating,
+	// reviewed_at) key, which is what the re-upsert below exercises.
 	items := []review.Review{
-		{ID: "rv-1", RestaurantID: "r1", Rating: 5, ReviewedAt: baseTime.Add(2 * time.Hour), Text: "great", TextHash: "h1"},
-		{ID: "rv-2", RestaurantID: "r1", Rating: 3, ReviewedAt: baseTime.Add(1 * time.Hour), Text: "", TextHash: "h2"},
-		{ID: "rv-3", RestaurantID: "r1", Rating: 5, ReviewedAt: baseTime, Text: "ok", TextHash: "h3", IsRepresentative: true},
-		{ID: "rv-9", RestaurantID: "r2", Rating: 4, ReviewedAt: baseTime, Text: "other", TextHash: "h9"},
+		{RestaurantID: r1, Rating: 5, ReviewedAt: baseTime.Add(2 * time.Hour), Text: "great", TextHash: "h1"},
+		{RestaurantID: r1, Rating: 3, ReviewedAt: baseTime.Add(1 * time.Hour), Text: "", TextHash: "h2"},
+		{RestaurantID: r1, Rating: 5, ReviewedAt: baseTime, Text: "ok", TextHash: "h3", IsRepresentative: true},
+		{RestaurantID: r2, Rating: 4, ReviewedAt: baseTime, Text: "other", TextHash: "h9"},
 	}
 	written, err := s.UpsertReviews(ctx, items)
 	if err != nil {
@@ -222,12 +268,13 @@ func runReviewStore(t *testing.T, s port.ReviewStore) {
 	if written != len(items) {
 		t.Errorf("wrote %d want %d", written, len(items))
 	}
-	// Re-upsert is idempotent: same IDs, no growth.
+	// Re-upsert is idempotent: the idempotency key means the second pass updates
+	// the same rows instead of inserting new ones.
 	if _, err := s.UpsertReviews(ctx, items); err != nil {
 		t.Fatalf("re-UpsertReviews: %v", err)
 	}
 
-	got, err := s.ListByRestaurant(ctx, "r1", 0)
+	got, err := s.ListByRestaurant(ctx, r1, 0)
 	if err != nil {
 		t.Fatalf("ListByRestaurant: %v", err)
 	}
@@ -238,7 +285,7 @@ func runReviewStore(t *testing.T, s port.ReviewStore) {
 		t.Errorf("reviews not sorted newest first: %v", got)
 	}
 
-	counts, err := s.CountByRestaurant(ctx, "r1")
+	counts, err := s.CountByRestaurant(ctx, r1)
 	if err != nil {
 		t.Fatalf("CountByRestaurant: %v", err)
 	}
@@ -261,11 +308,11 @@ func runReviewStore(t *testing.T, s port.ReviewStore) {
 		t.Errorf("rating distribution = %v", counts.RatingDistribution)
 	}
 
-	agg, err := s.AggregateStats(ctx, []string{"r1", "r2", "r3"})
+	agg, err := s.AggregateStats(ctx, []int64{r1, r2, 987654321})
 	if err != nil {
 		t.Fatalf("AggregateStats: %v", err)
 	}
-	if agg["r1"].StoredCount != 3 || agg["r2"].StoredCount != 1 || agg["r3"].StoredCount != 0 {
+	if agg[r1].StoredCount != 3 || agg[r2].StoredCount != 1 || agg[987654321].StoredCount != 0 {
 		t.Errorf("aggregate = %+v", agg)
 	}
 
@@ -277,7 +324,7 @@ func runReviewStore(t *testing.T, s port.ReviewStore) {
 		t.Errorf("ids with reviews = %v want 2", ids)
 	}
 
-	empty, err := s.CountByRestaurant(ctx, "nobody")
+	empty, err := s.CountByRestaurant(ctx, 987654321)
 	if err != nil {
 		t.Fatalf("CountByRestaurant empty: %v", err)
 	}
@@ -289,22 +336,30 @@ func runReviewStore(t *testing.T, s port.ReviewStore) {
 func runPipelineStore(t *testing.T, s port.PipelineStore) {
 	ctx := context.Background()
 
-	report := review.BatchReport{BatchID: "b-1", Stage: review.StageMeta, StartedAt: baseTime, Status: review.StatusRunning}
-	if err := s.StartBatch(ctx, report); err != nil {
+	// BatchID is assigned by the store, so StartBatch must hand it back: every
+	// rejection recorded during the run needs it to link back to this batch.
+	report := review.BatchReport{Stage: review.StageMeta, StartedAt: baseTime, Status: review.StatusRunning, BoundaryVersion: "test-boundary-v1"}
+	batchID, err := s.StartBatch(ctx, report)
+	if err != nil {
 		t.Fatalf("StartBatch: %v", err)
 	}
+	if batchID == 0 {
+		t.Fatalf("StartBatch returned id 0, want a real assigned id")
+	}
+	report.BatchID = batchID
 	report.Status = review.StatusSucceeded
 	report.RowsRead = 100
 	report.Written = 90
 	report.Rejected = 10
+	report.MissingFields = []review.FieldMissing{{Field: "description", Count: 17}}
 	report.FinishedAt = baseTime.Add(time.Minute)
 	if err := s.FinishBatch(ctx, report); err != nil {
 		t.Fatalf("FinishBatch: %v", err)
 	}
 
 	rejections := []review.Rejection{
-		{BatchID: "b-1", Stage: review.StageMeta, LineNo: 3, Reason: "invalid coordinates"},
-		{BatchID: "b-1", Stage: review.StageMeta, LineNo: 7, Reason: "missing gmap_id"},
+		{BatchID: batchID, Stage: review.StageMeta, LineNo: 3, Reason: "invalid coordinates"},
+		{BatchID: batchID, Stage: review.StageMeta, LineNo: 7, Reason: "missing gmap_id"},
 	}
 	if err := s.RecordRejections(ctx, rejections); err != nil {
 		t.Fatalf("RecordRejections: %v", err)
@@ -314,11 +369,25 @@ func runPipelineStore(t *testing.T, s port.PipelineStore) {
 	if err != nil {
 		t.Fatalf("ListBatches: %v", err)
 	}
-	if len(batches) != 1 || batches[0].BatchID != "b-1" || batches[0].Status != review.StatusSucceeded {
+	if len(batches) != 1 || batches[0].BatchID != batchID || batches[0].Status != review.StatusSucceeded {
 		t.Fatalf("batches = %+v", batches)
 	}
+	// The boundary version has to survive the round trip: it is the only record
+	// of which geometry release produced the borough labels in this batch.
+	if batches[0].BoundaryVersion != "test-boundary-v1" {
+		t.Errorf("boundary version = %q, want %q", batches[0].BoundaryVersion, "test-boundary-v1")
+	}
+	// FinishBatch passes missing_fields by position among the update parameters.
+	// A column dropped from the statement shifts every argument after it, so this
+	// asserts the value lands in its own column and not in a neighbouring one.
+	if len(batches[0].MissingFields) != 1 || batches[0].MissingFields[0].Field != "description" || batches[0].MissingFields[0].Count != 17 {
+		t.Errorf("missing fields = %+v, want one description=17", batches[0].MissingFields)
+	}
+	if batches[0].Status != review.StatusSucceeded || batches[0].Written != 90 || batches[0].Rejected != 10 {
+		t.Errorf("counters shifted into the wrong columns: %+v", batches[0])
+	}
 
-	got, gotRej, err := s.BatchDetail(ctx, "b-1")
+	got, gotRej, err := s.BatchDetail(ctx, batchID)
 	if err != nil {
 		t.Fatalf("BatchDetail: %v", err)
 	}
@@ -329,7 +398,7 @@ func runPipelineStore(t *testing.T, s port.PipelineStore) {
 		t.Errorf("rejections = %d want 2", len(gotRej))
 	}
 
-	if _, _, err := s.BatchDetail(ctx, "nope"); !errors.Is(err, errs.ErrNotFound) {
+	if _, _, err := s.BatchDetail(ctx, 987654321); !errors.Is(err, errs.ErrNotFound) {
 		t.Errorf("BatchDetail missing want ErrNotFound, got %v", err)
 	}
 }

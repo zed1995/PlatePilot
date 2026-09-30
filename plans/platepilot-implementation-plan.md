@@ -1,9 +1,9 @@
 # PlatePilot 实施计划
 
-> 版本：v0.6  
-> 日期：2026-09-29  
+> 版本：v0.7  
+> 日期：2026-09-30  
 > 依据文档：`plans/platepilot-technical-prd.md` v0.12  
-> 项目定位：Go + Eino Agent + OpenAI-Compatible Chat Provider + 本地 Qwen Embedding + MongoDB Atlas  
+> 项目定位：Go + Eino Agent + OpenAI-Compatible Chat Provider + 本地 Qwen Embedding + PostgreSQL（pgvector + PostGIS + pg_trgm）  
 > 计划目标：把技术 PRD 拆成可独立执行、可验证、可并行推进的任务
 
 ## 1. 项目最终形态
@@ -11,9 +11,9 @@
 第一阶段完成后，系统应具备：
 
 1. 从 Google Local 2021 Meta 和 Review 数据生成可查询的餐厅知识库。
-2. 使用 MongoDB Atlas 保存餐厅、评论、知识文档、向量、会话和 Agent 运行数据。
+2. 使用 PostgreSQL（pgvector + PostGIS + pg_trgm）保存餐厅、评论、知识文档、向量、会话和 Agent 运行数据。
 3. 使用本地 `qwen3-embedding:0.6b` 生成 1024 维向量。
-4. 使用 Atlas Vector Search 完成餐厅级语义召回和佐证召回。
+4. 使用 pgvector 向量检索完成餐厅级语义召回和佐证召回。
 5. 使用 Eino 编排 Agent 节点、工具和检查点。
 6. 使用可配置的 OpenAI-Compatible Chat Provider 调用聊天和工具模型。
 7. 支持中英文自然语言搜索、推荐、解释和追问。
@@ -34,8 +34,8 @@
 当前还没有：
 
 - Go 工程骨架。
-- MongoDB Atlas 数据。
-- Atlas Collection 和索引。
+- PostgreSQL 数据。
+- 表结构和索引。
 - Go 数据导入链路。
 - Ollama Embedding Adapter。
 - 文档构建和向量化链路。
@@ -63,12 +63,12 @@
             -> Evidence Recall
             -> Fusion / Rerank / Context Builder
        -> Memory / Checkpoint / Guardrails
-  -> MongoDB Atlas
+  -> PostgreSQL
        -> restaurants
-       -> restaurant_documents   # 已合并进 restaurants（PRD §4.4）
        -> reviews
        -> review_summaries
        -> knowledge_documents
+       -> boundaries            # 行政区划几何，M2 用于地名检索
        -> conversations
        -> conversation_checkpoints
        -> agent_runs
@@ -78,7 +78,7 @@
 
 ### 3.1 不可破坏的设计原则
 
-- Chat API、Ollama、Mongo 渠道类型不能进入领域层。
+- Chat API、Ollama、数据库驱动渠道类型不能进入领域层。
 - ChatProvider 和 EmbeddingProvider 是两个独立接口。
 - 餐厅召回和佐证召回必须分开。
 - `knowledge_documents` 使用 `retrieval_scope` 区分 `restaurant` 和 `evidence`。
@@ -109,9 +109,9 @@ PlatePilot/
 
 补充原则：
 
-- 写入（`data-pipeline`）与读取（`chat-service`）严格分离，通过 `shared/domain` 与 Atlas 达成一致的语义。
+- 写入（`data-pipeline`）与读取（`chat-service`）严格分离，通过 `shared/domain` 与存储层达成一致的语义。
 - 共享库不依赖任一服务的 `internal/`；服务可以依赖共享库，反之不行。
-- `shared/domain` 仍然遵守 §3.1 的纯净性约束：不依赖 Mongo、Eino、Hertz 或厂商 SDK。
+- `shared/domain` 仍然遵守 §3.1 的纯净性约束：不依赖数据库驱动、Eino、Hertz 或厂商 SDK。
 - 常见的可运行命令：`make run-chat`、`make run-pipeline`、`make build`。
 
 ## 4. 里程碑总览
@@ -119,7 +119,7 @@ PlatePilot/
 | 里程碑 | 目标 | 主要产出 | 退出条件 |
 |---|---|---|---|
 | M0 | 工程基础 | 双服务 Go 骨架（data-pipeline / chat-service）、共享库、配置、接口、测试基线 | 两个服务可独立启动，接口和测试骨架完整 |
-| M1 | Atlas 数据底座 | Collection、导入器、统计聚合 | Meta/Review 可稳定导入 Atlas |
+| M1 | PostgreSQL 数据底座 | 表结构、导入器、统计聚合 | Meta/Review 可稳定导入数据库 |
 | M2 | Embedding 与文档 | Qwen Adapter、文档构建器、向量写入 | 5,000 家样本餐厅可向量检索 |
 | M3 | 两级检索 | 餐厅召回、佐证召回、融合与引用 | 能返回候选餐厅和证据 |
 | M4 | Agent 运行时 | Eino、Chat Provider、工具、状态、记忆 | Agent 能自主选择搜索和证据工具 |
@@ -139,12 +139,12 @@ PlatePilot/
 - 错误模型。
 - 测试基线。
 
-### Workstream B：数据写入 Atlas
+### Workstream B：数据写入 PostgreSQL
 
 负责：
 
-- Collection 设计。
-- Index 设计。
+- 表结构设计。
+- 索引设计。
 - Meta 导入。
 - Review 导入。
 - 去重和归一化。
@@ -160,14 +160,14 @@ PlatePilot/
 - 餐厅级摘要文档。
 - 佐证级文档。
 - 批量向量化。
-- Atlas Vector Search 验证。
+- pgvector 索引验证。
 
 ### Workstream D：检索与 RAG
 
 负责：
 
 - 结构化餐厅过滤。
-- Atlas Search。
+- 全文检索（pg_trgm）。
 - 餐厅级向量召回。
 - 佐证向量召回。
 - 混合融合。
@@ -214,28 +214,28 @@ PlatePilot/
 | M0-01 | 初始化 Go 工程 | `go.mod`、目录结构、入口程序 | 无 | S | `go test ./...` 和本地启动通过 |
 | M0-02 | 配置与密钥管理 | 环境变量、配置文件、启动校验 | M0-01 | S | 缺少关键配置时启动失败并给出明确错误 |
 | M0-03 | 日志和错误模型 | `slog`、错误码、请求 ID | M0-01 | S | JSON 日志包含 trace/request ID |
-| M0-04 | 领域 DTO | Chat、Tool、Search、Evidence、Memory DTO | M0-01 | M | 领域包不依赖 Mongo、Eino、具体 Chat API、Ollama |
+| M0-04 | 领域 DTO | Chat、Tool、Search、Evidence、Memory DTO | M0-01 | M | 领域包不依赖数据库驱动、Eino、具体 Chat API、Ollama |
 | M0-05 | Provider 接口 | ChatProvider、EmbeddingProvider、RerankProvider | M0-04 | M | Mock Provider 可用于测试 |
-| M0-06 | Repository 接口 | Restaurant、Knowledge、Conversation、Memory、Run Repository | M0-04 | M | 接口可由 Mongo 和内存实现 |
+| M0-06 | Repository 接口 | Restaurant、Knowledge、Conversation、Memory、Run Repository | M0-04 | M | 接口可由 PostgreSQL 和内存实现 |
 | M0-07 | Hertz HTTP/API 骨架 | Hertz Router、健康检查和统一错误响应 | M0-01 | S | `/healthz` 和统一错误响应可用 |
 | M0-07A | Hertz 中间件与验证 | binding、validation、recovery、request ID、CORS | M0-07 | M | 非法请求返回统一错误，request ID 可贯穿 trace |
 | M0-08 | 测试基线 | `go test`、接口 Mock、测试夹具 | M0-04 | M | 核心 DTO 和 Provider 有单元测试 |
 
-### M1：Atlas 数据底座
+### M1：PostgreSQL 数据底座
 
 | ID | 任务 | 交付物 | 依赖 | 工作量 | 验收标准 |
 |---|---|---|---|---|---|
-| M1-01 | Atlas 连接 | Mongo Client、连接池、超时和健康检查 | M0-02 | S | 本地服务能连接 Atlas 并执行 ping |
-| M1-02 | Collection 定义 | `restaurants`、`reviews`、`review_summaries` | M1-01 | M | Collection 创建脚本可重复执行 |
+| M1-01 | 数据库连接 | PostgreSQL 连接池、超时和健康检查 | M0-02 | S | 本地服务能连接数据库并执行 ping |
+| M1-02 | 表结构定义 | `restaurants`、`reviews`、`review_summaries` | M1-01 | M | 迁移脚本可重复执行 |
 | M1-03 | 基础索引 | 唯一索引、时间索引、复合索引 | M1-02 | M | 关键查询无全表扫描 |
 | M1-04 | Meta 流式导入 | Go gzip JSONL Reader 和 batch writer | M1-02 | L | 可导入有限样本并输出批次统计 |
 | M1-05 | Review 流式导入 | Review Reader、关联、批量写入 | M1-04 | L | 可导入样本评论并正确关联 restaurant_id |
 | M1-06 | 清洗与归一化 | category、price、hours、state、MISC 转换 | M1-04 | L | 转换规则有单元测试和审计样本 |
-| M1-07 | 去重和幂等 | gmap_id、`sha256(gmap_id+user_id+time+text_hash)`、upsert 规则 | M1-04, M1-05 | M | 重复执行同一批次不产生重复数据，原始 user_id 不进入 curated review |
+| M1-07 | 去重和幂等 | `source_record_id`、唯一索引 `(restaurant_id, text_hash, rating, reviewed_at)`、upsert 规则 | M1-04, M1-05 | M | 重复执行同一批次不产生重复数据，原始 user_id 不进入 curated review |
 | M1-08 | 评论统计聚合 | source/stored/text/embedded count、评分统计 | M1-05 | M | `restaurant.review_stats` 可重建和校验 |
 | M1-09 | 数据审计报告 | 行数、拒绝数、缺失字段、分布统计 | M1-04, M1-05 | M | 每次导入生成可查询报告 |
 | M1-10 | 精选餐厅集合 | knowledge_score、is_active_for_demo | M1-06, M1-08 | M | 能稳定选出 2,000–5,000 家餐厅 |
-| M1-11 | Atlas Search 索引 | 名称、地址、类别和描述字段的 Search Index | M1-02, M1-03 | M | 名称和地址模糊查询可返回可解释结果 |
+| M1-11 | 全文检索索引 | 名称、地址、类别和描述字段的 trigram GIN 索引 | M1-02, M1-03 | M | 名称和地址模糊查询可返回可解释结果 |
 
 ### M2：Embedding 与知识文档
 
@@ -247,7 +247,7 @@ PlatePilot/
 | M2-04 | 佐证级文档构建 | `retrieval_scope=evidence` 知识 chunk，规则摘要优先，LLM 摘要可选 | M1-08, M0-04 | L | 事实、属性、评论摘要和代表评论分别成 chunk，并记录生成版本 |
 | M2-05 | 文档去重与版本 | content_hash、version、is_active | M2-03, M2-04 | M | 更新生成新版本，不覆盖旧证据 |
 | M2-06 | 批量向量化 Worker | worker pool、batch、失败重试 | M2-01, M2-05 | L | 可对样本批次生成并写入向量 |
-| M2-07 | Atlas Vector Index | vector + filter fields 索引定义 | M1-01, M2-06 | M | Atlas 可执行带 retrieval_scope 的 `$vectorSearch` |
+| M2-07 | 向量索引 | vector + 过滤字段的 HNSW 索引定义 | M1-01, M2-06 | M | 数据库可按 retrieval_scope 执行向量检索 |
 | M2-08 | 向量质量检查 | 空向量、维度、NaN、重复检测 | M2-06 | S | 异常向量被拒绝并进入报告 |
 
 ### M3：两级检索
@@ -255,7 +255,7 @@ PlatePilot/
 | ID | 任务 | 交付物 | 依赖 | 工作量 | 验收标准 |
 |---|---|---|---|---|---|
 | M3-01 | 结构化餐厅查询 | 菜系、价格、评分、距离、状态过滤 | M1-10 | M | 过滤条件可由 API 参数执行 |
-| M3-02 | 名称和地址检索 | Atlas Search 查询和结果归一化 | M1-10, M1-11 | M | 支持名称和地址模糊匹配 |
+| M3-02 | 名称和地址检索 | 全文检索查询和结果归一化 | M1-10, M1-11 | M | 支持名称和地址模糊匹配 |
 | M3-03 | 餐厅级向量召回 | `retrieval_scope=restaurant` 查询 | M2-07 | M | 软条件可影响候选排序 |
 | M3-04 | 佐证召回 | 按 restaurant_id 和问题召回 evidence | M2-07 | L | 不返回其他餐厅的 chunk |
 | M3-05 | 混合融合 | 结构化、关键词、向量分数融合 | M3-01, M3-02, M3-03 | M | 分数和来源可解释 |
@@ -342,7 +342,7 @@ M0-01 -> M0-02 -> M0-07 -> M0-07A
 这条链路不依赖 Embedding 和 Agent 模型，能最早证明：
 
 - Go 服务可启动。
-- Atlas 可连接。
+- 数据库可连接。
 - 数据可导入。
 - 餐厅查询 API 可用。
 
@@ -374,7 +374,7 @@ M0-01 -> M0-02 -> M0-07 -> M0-07A
 
 ## 9. 阶段质量门
 
-### Gate A：Atlas 数据门
+### Gate A：数据门
 
 - 至少 1,000 家餐厅成功导入。
 - 至少 100,000 条评论成功关联。
@@ -386,7 +386,7 @@ M0-01 -> M0-02 -> M0-07 -> M0-07A
 - 至少 500 家餐厅生成餐厅级文档。
 - 至少 5,000 条 evidence chunk 生成成功。
 - 所有向量均为 1024 维。
-- Atlas `$vectorSearch` 能返回正确 scope。
+- 向量检索能返回正确 scope。
 
 ### Gate C：检索门
 
@@ -441,9 +441,9 @@ M0-01 -> M0-02 -> M0-07 -> M0-07A
 
 ### 集成测试
 
-- Atlas Collection 和索引。
+- 表结构与索引。
 - 导入批次幂等。
-- Atlas Vector Search。
+- 向量检索。
 - 餐厅召回不混入 evidence。
 - 佐证不跨餐厅。
 - OpenAI-Compatible Adapter 使用 Mock Server，Hertz Client 负责出站请求。
@@ -485,13 +485,13 @@ M0-01 -> M0-02 -> M0-07 -> M0-07A
 
 | 风险 | 触发点 | 控制措施 |
 |---|---|---|
-| Atlas 索引配置错误 | 向量查询失败或结果异常 | 索引版本化、启动时验证、固定样本测试 |
-| Atlas 网络依赖 | 开发和演示不稳定 | 超时、重试、健康检查、可替换 Repository |
+| 索引配置错误 | 向量查询失败或结果异常 | 索引版本化、启动时验证、固定样本测试 |
+| 本地数据库未启动 | 开发和演示不可用 | 超时、重试、健康检查、可替换 Repository |
 | 模型工具调用不一致 | 远端模型或渠道更换后失败 | 能力表、冒烟测试、模型固定和回退 |
 | Embedding 与文档不匹配 | 引用无法支持回答 | content_hash、版本号、source_record_ids |
 | 评论噪声 | RAG 归纳错误 | 过滤短评、聚合摘要、代表性证据 |
-| Atlas 写入量和存储成本 | 导入或索引超预算 | 先跑样本批次，记录集合/索引大小，分层决定全量数据范围 |
-| Agent 状态丢失 | 重启后无法继续 | Mongo checkpoint，Eino 内存不作为事实来源 |
+| 写入量和磁盘占用 | 导入或索引超出本地磁盘 | 先跑样本批次，记录表/索引大小，分层决定全量数据范围 |
+| Agent 状态丢失 | 重启后无法继续 | 数据库 checkpoint，Eino 内存不作为事实来源 |
 | 上下文过长 | 延迟上升和成本失控 | evidence top-k、token 预算和摘要 |
 | 过度投入预约 | 偏离 Agent 核心 | 预约保持 P2 和可选工具 |
 | 任务过大 | 难以验证进度 | 以纵向切片为交付单位，不按纯层级拆任务 |
@@ -603,8 +603,8 @@ MVP 可以延后：
 1. M0-01：初始化 Go 工程。
 2. M0-04：定义领域 DTO。
 3. M0-05：定义 Provider 接口。
-4. M1-01：连接 MongoDB Atlas。
-5. M1-02：建立第一批 Collection 和索引。
+4. M1-01：连接 PostgreSQL。
+5. M1-02：建立第一批表和索引。
 
 完成这五项后，就可以开始第一条端到端纵向切片，而不是先编写大量孤立模块。
 
@@ -613,9 +613,9 @@ MVP 可以延后：
 以下事项不阻塞 M0/M1，但应在对应任务开始前明确：
 
 1. **远端 Chat 模型**：确定首个支持 Tool Calling 和 JSON Schema 的模型 ID。
-2. **Atlas 集群规格**：确认向量数量、索引大小、写入额度和区域。
+2. **本地数据库规格**：确认向量数量、索引大小和磁盘预算。
 3. **评论存储范围**：完整保存评论，还是只保存精选评论和摘要。
 4. **评论摘要方式**：规则统计优先，还是由远端模型生成主题摘要。
 5. **Rerank 策略**：第一版使用分数融合，还是接入独立 Rerank Provider。
-6. **Atlas Search 分析器**：名称、地址和中文查询是否需要自定义 analyzer。
+6. **中文检索方案**：`pg_trgm` 够用，还是需要引入专用分词器。
 7. **Mock 预约优先级**：确认是否放在完整 Agent/RAG 演示之后。

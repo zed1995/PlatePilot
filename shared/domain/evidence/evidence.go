@@ -26,8 +26,8 @@ const (
 // Evidence is a cited fragment returned by retrieval. Every value carries its
 // source and snapshot time so answers can be grounded and explained.
 type Evidence struct {
-	EvidenceID      string    `json:"evidence_id"`
-	RestaurantID    string    `json:"restaurant_id"`
+	EvidenceID      int64     `json:"evidence_id"`
+	RestaurantID    int64     `json:"restaurant_id"`
 	DocType         DocType   `json:"doc_type"`
 	Title           string    `json:"title,omitempty"`
 	Content         string    `json:"content"`
@@ -37,10 +37,10 @@ type Evidence struct {
 	Score           float64   `json:"score,omitempty"`
 }
 
-// KnowledgeDocument is an embeddable knowledge chunk stored in Atlas.
+// KnowledgeDocument is an embeddable knowledge chunk stored by the retrieval layer.
 type KnowledgeDocument struct {
-	DocumentID          string         `json:"document_id"`
-	RestaurantID        string         `json:"restaurant_id"`
+	DocumentID          int64          `json:"document_id"`
+	RestaurantID        int64          `json:"restaurant_id"`
 	Scope               RetrievalScope `json:"retrieval_scope"`
 	DocType             DocType        `json:"doc_type"`
 	Title               string         `json:"title,omitempty"`

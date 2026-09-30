@@ -35,7 +35,7 @@ func TestRemainingStagesReportTheirMilestone(t *testing.T) {
 func TestConfigSummarySummarisesConfiguration(t *testing.T) {
 	cfg := config.Config{
 		Pipeline: config.PipelineConfig{DataDir: "/data", BatchSize: 10, Workers: 2},
-		Mongo:    sharedcfg.MongoConfig{Database: "platepilot"},
+		Postgres: sharedcfg.PostgresConfig{Database: "platepilot"},
 		Embedding: sharedcfg.EmbeddingConfig{
 			Provider:   "ollama",
 			Model:      "qwen3-embedding:0.6b",

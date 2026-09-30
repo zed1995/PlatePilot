@@ -31,6 +31,9 @@ type MetaOptions struct {
 	// ServiceArea limits ingestion to a bounding box. The zero value disables
 	// the geographic filter.
 	ServiceArea ServiceArea
+	// Boroughs labels each place with its administrative borough. When nil the
+	// label falls back to bounding boxes, which are known to be approximate.
+	Boroughs *Boundaries
 }
 
 // ReviewOptions controls review normalisation.
@@ -47,8 +50,15 @@ type ReviewOptions struct {
 //
 // It returns ErrFiltered for places outside the food scope and an *errs.Error
 // for records that are structurally invalid.
-func NormalizeMeta(m raw.Meta, id string, opts MetaOptions) (restaurant.Restaurant, error) {
+//
+// The returned restaurant has a zero ID: restaurants.id is an identity column
+// assigned by the database on insert, so the pipeline must not pre-generate one.
+// The natural key is SourceRecordID (the source gmap_id).
+func NormalizeMeta(m raw.Meta, opts MetaOptions) (restaurant.Restaurant, error) {
 	observedAt := opts.ObservedAt
+	// Hoisted out of the row path: the resolver is read-only, so building it
+	// once here instead of per record keeps a 272k-row import from allocating.
+	boroughs := newBoroughResolver(opts.Boroughs)
 	if strings.TrimSpace(m.GmapID) == "" {
 		return restaurant.Restaurant{}, errs.New(errs.CodeInvalidArgument, "meta: gmap_id is required")
 	}
@@ -67,7 +77,6 @@ func NormalizeMeta(m raw.Meta, id string, opts MetaOptions) (restaurant.Restaura
 	}
 
 	r := restaurant.Restaurant{
-		ID:             id,
 		Source:         restaurant.SourceGoogleLocal2021,
 		SourceRecordID: m.GmapID,
 		Name:           name,
@@ -87,16 +96,15 @@ func NormalizeMeta(m raw.Meta, id string, opts MetaOptions) (restaurant.Restaura
 	}
 	if m.Latitude != nil && m.Longitude != nil {
 		r.Location = &restaurant.GeoPoint{Longitude: *m.Longitude, Latitude: *m.Latitude}
-		r.BoroughGuess = BoroughGuess(*m.Latitude, *m.Longitude)
+		r.BoroughGuess = boroughs.borough(*m.Latitude, *m.Longitude)
 	}
 	if m.NumOfReviews != nil {
 		r.ReviewStats.SourceReviewCount = *m.NumOfReviews
 		r.ReviewStats.SourceReviewCountCapped = *m.NumOfReviews >= SourceReviewCountCap
 	}
 
-	// The auxiliary payloads live on the same document: MongoDB's guidance is
-	// to store what is read together, and none of these is ever fetched
-	// separately from its restaurant.
+	// The auxiliary payloads live on the same row: store what is read together,
+	// and none of these is ever fetched separately from its restaurant.
 	r.AttributesRaw = map[string][]string(m.MISC)
 	r.Hours = ParseHours(m.Hours)
 	r.RelativeResults = m.RelativeResults
@@ -104,11 +112,15 @@ func NormalizeMeta(m raw.Meta, id string, opts MetaOptions) (restaurant.Restaura
 }
 
 // NormalizeReview converts a raw review into a curated review for a restaurant.
-func NormalizeReview(r raw.Review, restaurantID string, opts ReviewOptions) (review.Review, error) {
+//
+// The returned review has a zero ID: reviews.id is an identity column assigned
+// by the database on insert. Use ReviewDedupKey to collapse duplicates within a
+// run before the write.
+func NormalizeReview(r raw.Review, restaurantID int64, opts ReviewOptions) (review.Review, error) {
 	if strings.TrimSpace(r.GmapID) == "" {
 		return review.Review{}, errs.New(errs.CodeInvalidArgument, "review: gmap_id is required")
 	}
-	if strings.TrimSpace(restaurantID) == "" {
+	if restaurantID <= 0 {
 		return review.Review{}, errs.New(errs.CodeInvalidArgument, "review: restaurant_id is required")
 	}
 	if r.Rating < 1 || r.Rating > 5 {
@@ -138,7 +150,6 @@ func NormalizeReview(r raw.Review, restaurantID string, opts ReviewOptions) (rev
 	textHash := TextHash(text)
 
 	return review.Review{
-		ID:               ReviewID(r.GmapID, r.UserID, r.Time, textHash),
 		RestaurantID:     restaurantID,
 		Rating:           r.Rating,
 		ReviewedAt:       at,

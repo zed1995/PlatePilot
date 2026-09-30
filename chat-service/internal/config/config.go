@@ -23,7 +23,7 @@ type Config struct {
 	App       sharedcfg.AppConfig
 	HTTP      HTTPConfig
 	Log       sharedcfg.LogConfig
-	Mongo     sharedcfg.MongoConfig
+	Postgres  sharedcfg.PostgresConfig
 	Chat      ChatConfig
 	Embedding sharedcfg.EmbeddingConfig
 	Timeout   sharedcfg.TimeoutConfig
@@ -60,7 +60,7 @@ func Load() (Config, error) {
 	cfg := Config{
 		App:       l.App(),
 		Log:       l.Log(),
-		Mongo:     l.Mongo(),
+		Postgres:  l.Postgres(),
 		Embedding: l.Embedding(),
 		Timeout:   l.Timeout(),
 		HTTP: HTTPConfig{
@@ -85,14 +85,14 @@ func Load() (Config, error) {
 }
 
 // Validate checks the configuration required to run the chat service. Only the
-// HTTP and logging settings are required in M0; Mongo, chat, and embedding
+// HTTP and logging settings are required in M0; PostgreSQL, chat, and embedding
 // settings are validated as soon as they are configured.
 func (c Config) Validate() error {
 	return sharedcfg.Combine(
 		c.App.Validate(),
 		c.Log.Validate(),
 		c.HTTP.validate(),
-		c.Mongo.Validate(),
+		c.Postgres.Validate(),
 		c.Embedding.Validate(),
 		c.Chat.validate(),
 	)
@@ -132,7 +132,7 @@ func (c Config) Redacted() Config {
 		}
 		c.Chat.ExtraHeaders = headers
 	}
-	c.Mongo.URI = sharedcfg.RedactURI(c.Mongo.URI)
+	c.Postgres.DSN = sharedcfg.RedactURI(c.Postgres.DSN)
 	return c
 }
 
@@ -146,8 +146,8 @@ func (c Config) Summary() map[string]any {
 		"http_shutdown_timeout": c.HTTP.ShutdownTimeout.String(),
 		"cors_allow_origins":    c.HTTP.CORSAllowOrigins,
 		"log_level":             c.Log.Level,
-		"mongo_enabled":         c.Mongo.Enabled(),
-		"mongo_database":        c.Mongo.Database,
+		"postgres_enabled":      c.Postgres.Enabled(),
+		"postgres_database":     c.Postgres.Database,
 		"chat_provider":         c.Chat.Provider,
 		"chat_model":            c.Chat.Model,
 		"embedding_provider":    c.Embedding.Provider,

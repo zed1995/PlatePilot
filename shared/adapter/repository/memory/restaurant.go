@@ -17,28 +17,28 @@ const defaultTopK = 10
 // RestaurantRepository is an in-memory port.RestaurantRepository.
 type RestaurantRepository struct {
 	mu   sync.RWMutex
-	byID map[string]search.RestaurantDetail
+	byID map[int64]search.RestaurantDetail
 }
 
 // NewRestaurantRepository returns an empty in-memory restaurant repository.
 func NewRestaurantRepository() *RestaurantRepository {
-	return &RestaurantRepository{byID: make(map[string]search.RestaurantDetail)}
+	return &RestaurantRepository{byID: make(map[int64]search.RestaurantDetail)}
 }
 
 // GetByID returns a restaurant or a not_found error.
-func (r *RestaurantRepository) GetByID(_ context.Context, restaurantID string) (search.RestaurantDetail, error) {
+func (r *RestaurantRepository) GetByID(_ context.Context, restaurantID int64) (search.RestaurantDetail, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	restaurant, ok := r.byID[restaurantID]
 	if !ok {
-		return search.RestaurantDetail{}, errs.Newf(errs.CodeNotFound, "restaurant %q not found", restaurantID)
+		return search.RestaurantDetail{}, errs.Newf(errs.CodeNotFound, "restaurant %d not found", restaurantID)
 	}
 	return restaurant, nil
 }
 
 // Upsert inserts or replaces a restaurant by ID.
 func (r *RestaurantRepository) Upsert(_ context.Context, restaurant search.RestaurantDetail) error {
-	if strings.TrimSpace(restaurant.RestaurantID) == "" {
+	if restaurant.RestaurantID == 0 {
 		return errs.New(errs.CodeInvalidArgument, "restaurant_id is required")
 	}
 	r.mu.Lock()

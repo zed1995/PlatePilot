@@ -9,7 +9,7 @@ import (
 	"github.com/zed/platepilot/shared/domain/evidence"
 )
 
-func knowledgeFixture(id, restaurantID string, scope evidence.RetrievalScope, embedding []float32) evidence.KnowledgeDocument {
+func knowledgeFixture(id int64, restaurantID int64, scope evidence.RetrievalScope, embedding []float32) evidence.KnowledgeDocument {
 	return evidence.KnowledgeDocument{
 		DocumentID:   id,
 		RestaurantID: restaurantID,
@@ -29,19 +29,19 @@ func TestKnowledgeFindEvidenceIsScopedToRestaurantAndScope(t *testing.T) {
 	repo := NewKnowledgeRepository()
 	ctx := context.Background()
 	docs := []evidence.KnowledgeDocument{
-		knowledgeFixture("ev-r1", "r1", evidence.ScopeEvidence, []float32{1, 0}),
-		knowledgeFixture("profile-r1", "r1", evidence.ScopeRestaurant, []float32{1, 0}),
-		knowledgeFixture("ev-r2", "r2", evidence.ScopeEvidence, []float32{1, 0}),
+		knowledgeFixture(1, 1, evidence.ScopeEvidence, []float32{1, 0}),
+		knowledgeFixture(2, 1, evidence.ScopeRestaurant, []float32{1, 0}),
+		knowledgeFixture(3, 2, evidence.ScopeEvidence, []float32{1, 0}),
 	}
 	if err := repo.UpsertDocuments(ctx, docs); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
 
-	got, err := repo.FindEvidenceByRestaurant(ctx, "r1")
+	got, err := repo.FindEvidenceByRestaurant(ctx, 1)
 	if err != nil {
 		t.Fatalf("find: %v", err)
 	}
-	if len(got) != 1 || got[0].EvidenceID != "ev-r1" {
+	if len(got) != 1 || got[0].EvidenceID != 1 {
 		t.Fatalf("evidence must be scoped to one restaurant and the evidence scope, got %+v", got)
 	}
 	if got[0].Source != "google_local_2021" || got[0].SnapshotAt.IsZero() {
@@ -52,12 +52,12 @@ func TestKnowledgeFindEvidenceIsScopedToRestaurantAndScope(t *testing.T) {
 func TestKnowledgeInactiveDocumentsAreExcluded(t *testing.T) {
 	repo := NewKnowledgeRepository()
 	ctx := context.Background()
-	doc := knowledgeFixture("ev-1", "r1", evidence.ScopeEvidence, []float32{1, 0})
+	doc := knowledgeFixture(1, 1, evidence.ScopeEvidence, []float32{1, 0})
 	doc.IsActive = false
 	if err := repo.UpsertDocuments(ctx, []evidence.KnowledgeDocument{doc}); err != nil {
 		t.Fatal(err)
 	}
-	got, err := repo.FindEvidenceByRestaurant(ctx, "r1")
+	got, err := repo.FindEvidenceByRestaurant(ctx, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,9 +70,9 @@ func TestKnowledgeVectorSearchOrdersBySimilarityAndRespectsScope(t *testing.T) {
 	repo := NewKnowledgeRepository()
 	ctx := context.Background()
 	docs := []evidence.KnowledgeDocument{
-		knowledgeFixture("close", "r1", evidence.ScopeEvidence, []float32{1, 0}),
-		knowledgeFixture("far", "r1", evidence.ScopeEvidence, []float32{0, 1}),
-		knowledgeFixture("other-scope", "r1", evidence.ScopeRestaurant, []float32{1, 0}),
+		knowledgeFixture(1, 1, evidence.ScopeEvidence, []float32{1, 0}),
+		knowledgeFixture(2, 1, evidence.ScopeEvidence, []float32{0, 1}),
+		knowledgeFixture(3, 1, evidence.ScopeRestaurant, []float32{1, 0}),
 	}
 	if err := repo.UpsertDocuments(ctx, docs); err != nil {
 		t.Fatal(err)
@@ -85,8 +85,8 @@ func TestKnowledgeVectorSearchOrdersBySimilarityAndRespectsScope(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("scope filter returned %d docs, want 2", len(got))
 	}
-	if got[0].EvidenceID != "close" {
-		t.Fatalf("closest document should rank first, got %s", got[0].EvidenceID)
+	if got[0].EvidenceID != 1 {
+		t.Fatalf("closest document should rank first, got %d", got[0].EvidenceID)
 	}
 	if got[0].Score <= got[1].Score {
 		t.Fatalf("scores must be descending: %v", []float64{got[0].Score, got[1].Score})
@@ -97,17 +97,17 @@ func TestKnowledgeVectorSearchFilters(t *testing.T) {
 	repo := NewKnowledgeRepository()
 	ctx := context.Background()
 	docs := []evidence.KnowledgeDocument{
-		knowledgeFixture("a", "r1", evidence.ScopeEvidence, []float32{1, 0}),
-		knowledgeFixture("b", "r2", evidence.ScopeEvidence, []float32{1, 0}),
+		knowledgeFixture(1, 1, evidence.ScopeEvidence, []float32{1, 0}),
+		knowledgeFixture(2, 2, evidence.ScopeEvidence, []float32{1, 0}),
 	}
 	if err := repo.UpsertDocuments(ctx, docs); err != nil {
 		t.Fatal(err)
 	}
-	got, err := repo.VectorSearch(ctx, evidence.ScopeEvidence, []float32{1, 0}, 10, map[string]any{"restaurant_id": "r2"})
+	got, err := repo.VectorSearch(ctx, evidence.ScopeEvidence, []float32{1, 0}, 10, map[string]any{"restaurant_id": int64(2)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0].EvidenceID != "b" {
+	if len(got) != 1 || got[0].EvidenceID != 2 {
 		t.Fatalf("restaurant_id filter not applied: %+v", got)
 	}
 }
@@ -124,7 +124,7 @@ func TestKnowledgeVectorSearchValidatesInput(t *testing.T) {
 
 func TestKnowledgeUpsertDocumentsRequiresID(t *testing.T) {
 	repo := NewKnowledgeRepository()
-	err := repo.UpsertDocuments(context.Background(), []evidence.KnowledgeDocument{{RestaurantID: "r1"}})
+	err := repo.UpsertDocuments(context.Background(), []evidence.KnowledgeDocument{{RestaurantID: 1}})
 	if errs.CodeOf(err) != errs.CodeInvalidArgument {
 		t.Fatalf("want invalid_argument, got %v", err)
 	}

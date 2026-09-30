@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -162,4 +163,132 @@ func deref(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+func TestProgressReportsCompressedByteRatio(t *testing.T) {
+	// Many rows, so the reader must advance well past the gzip header before
+	// the first row is yielded.
+	lines := make([]string, 0, 500)
+	for i := 0; i < 500; i++ {
+		lines = append(lines, `{"gmap_id":"g`+strings.Repeat("x", 200)+`","n":`+strconv.Itoa(i)+`}`)
+	}
+	path := filepath.Join(t.TempDir(), "many.json.gz")
+	writeGz(t, path, lines)
+
+	reader, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer reader.Close()
+
+	read, total := reader.Progress()
+	if total <= 0 {
+		t.Fatalf("total = %d, want the file size", total)
+	}
+	if read <= 0 || read > total {
+		t.Fatalf("read = %d, want 0 < read <= total (%d)", read, total)
+	}
+
+	// Drain the file: progress must be monotonic and end at the full size.
+	prev := read
+	for reader.Next() {
+		var record Meta
+		if err := reader.Decode(&record); err != nil {
+			t.Fatalf("Decode: %v", err)
+		}
+		if reader.LineNo()%100 != 0 {
+			continue
+		}
+		cur, curTotal := reader.Progress()
+		if cur < prev {
+			t.Fatalf("progress went backwards: %d then %d", prev, cur)
+		}
+		if curTotal != total {
+			t.Fatalf("total changed mid-stream: %d then %d", total, curTotal)
+		}
+		prev = cur
+	}
+	read, total = reader.Progress()
+	if read != total {
+		t.Errorf("after EOF read = %d, want total = %d", read, total)
+	}
+}
+
+func TestProgressOnEmptyGzipFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "empty.json.gz")
+	writeGz(t, path, nil)
+
+	reader, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer reader.Close()
+	if reader.Next() {
+		t.Error("empty file should yield no rows")
+	}
+	read, total := reader.Progress()
+	if total <= 0 {
+		t.Errorf("total = %d, want > 0", total)
+	}
+	if read != total {
+		t.Errorf("read = %d, want total = %d on an empty stream", read, total)
+	}
+}
+
+func TestReviewDecodesPicsInSourceShape(t *testing.T) {
+	// The source spells pics as [{"url": ["https://..."]}]. A typed []string
+	// field made every review carrying a photo fail to decode, which silently
+	// dropped ~2.4% of the corpus at the import boundary.
+	line := `{"gmap_id":"a","time":1614600000000,"rating":5,"pics":[{"url":["https://example.com/p.jpg"]}]}`
+	var record Review
+	if err := json.Unmarshal([]byte(line), &record); err != nil {
+		t.Fatalf("pics in the source shape must decode: %v", err)
+	}
+	if record.GmapID != "a" || record.Rating != 5 {
+		t.Errorf("record = %+v", record)
+	}
+	if len(record.Pics) == 0 {
+		t.Error("pics should be preserved as raw JSON")
+	}
+}
+
+func TestReviewDecodesAlternatePicsShapes(t *testing.T) {
+	// Defensive: other shapes must not fail the whole record either.
+	for _, line := range []string{
+		`{"gmap_id":"a","pics":null}`,
+		`{"gmap_id":"a","pics":[]}`,
+		`{"gmap_id":"a","pics":["https://example.com/x.jpg"]}`,
+		`{"gmap_id":"a","pics":{"url":"https://example.com/x.jpg"}}`,
+		`{"gmap_id":"a"}`,
+	} {
+		var record Review
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Errorf("line %s: %v", line, err)
+		}
+	}
+}
+
+func TestReviewOmitsRawIdentityFieldsWhenCleared(t *testing.T) {
+	// A nil json.RawMessage marshals as the literal "null", so omitempty is the
+	// only thing that keeps pics and resp out of the written record.
+	record := Review{GmapID: "a", Rating: 5}
+	out, err := json.Marshal(&record)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	text := string(out)
+	for _, field := range []string{"pics", "resp"} {
+		if strings.Contains(text, field) {
+			t.Errorf("cleared field %q survived: %s", field, text)
+		}
+	}
+	// The string identity fields carry no data once cleared, which is the
+	// property that matters: no reviewer identity reaches the curated layer.
+	var round Review
+	if err := json.Unmarshal(out, &round); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if round.UserID != "" || round.Name != "" {
+		t.Errorf("identity leaked: user_id=%q name=%q", round.UserID, round.Name)
+	}
 }

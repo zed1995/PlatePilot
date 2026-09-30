@@ -20,7 +20,7 @@ func baseConfig() Config {
 			WriteTimeout:    30 * time.Second,
 			ShutdownTimeout: 10 * time.Second,
 		},
-		Mongo: sharedcfg.MongoConfig{Database: "platepilot", Timeout: 10 * time.Second},
+		Postgres: sharedcfg.PostgresConfig{Database: "platepilot", Timeout: 10 * time.Second},
 		Embedding: sharedcfg.EmbeddingConfig{
 			BaseURL:    "http://localhost:11434",
 			Model:      "qwen3-embedding:0.6b",
@@ -123,7 +123,7 @@ func TestRedactedRemovesSecrets(t *testing.T) {
 	cfg := baseConfig()
 	cfg.Chat.APIKey = "super-secret"
 	cfg.Chat.ExtraHeaders = map[string]string{"Authorization": "Bearer super-secret"}
-	cfg.Mongo.URI = "mongodb+srv://user:pass@cluster.example/"
+	cfg.Postgres.DSN = "postgres://platepilot:hunter2@localhost:55432/platepilot"
 
 	redacted := cfg.Redacted()
 	if redacted.Chat.APIKey != "***" {
@@ -132,8 +132,8 @@ func TestRedactedRemovesSecrets(t *testing.T) {
 	if redacted.Chat.ExtraHeaders["Authorization"] != "***" {
 		t.Errorf("extra headers not redacted: %v", redacted.Chat.ExtraHeaders)
 	}
-	if strings.Contains(redacted.Mongo.URI, "pass") {
-		t.Errorf("mongo credentials not redacted: %q", redacted.Mongo.URI)
+	if strings.Contains(redacted.Postgres.DSN, "hunter2") {
+		t.Errorf("postgres credentials not redacted: %q", redacted.Postgres.DSN)
 	}
 	if cfg.Chat.APIKey != "super-secret" {
 		t.Error("Redacted mutated the receiver")
@@ -143,9 +143,9 @@ func TestRedactedRemovesSecrets(t *testing.T) {
 func TestSummaryOmitsSecrets(t *testing.T) {
 	cfg := baseConfig()
 	cfg.Chat.APIKey = "super-secret"
-	cfg.Mongo.URI = "mongodb+srv://user:pass@cluster.example/"
+	cfg.Postgres.DSN = "postgres://platepilot:hunter2@localhost:55432/platepilot"
 	rendered := fmt.Sprint(cfg.Redacted().Summary())
-	if strings.Contains(rendered, "super-secret") || strings.Contains(rendered, "pass") {
+	if strings.Contains(rendered, "super-secret") || strings.Contains(rendered, "hunter2") {
 		t.Fatalf("summary leaked a secret: %s", rendered)
 	}
 }

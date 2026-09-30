@@ -88,7 +88,7 @@ func EligibleForDemo(r restaurant.Restaurant) bool {
 
 // SelectActiveForDemo returns the ids that should carry is_active_for_demo=true.
 // Selection is deterministic: score descending, then source_record_id ascending.
-func SelectActiveForDemo(all []restaurant.Restaurant, target int) []string {
+func SelectActiveForDemo(all []restaurant.Restaurant, target int) []int64 {
 	eligible := make([]restaurant.Restaurant, 0, len(all))
 	for _, r := range all {
 		if EligibleForDemo(r) {
@@ -108,7 +108,7 @@ func SelectActiveForDemo(all []restaurant.Restaurant, target int) []string {
 	if target > len(eligible) {
 		target = len(eligible)
 	}
-	out := make([]string, 0, target)
+	out := make([]int64, 0, target)
 	for _, r := range eligible[:target] {
 		out = append(out, r.ID)
 	}

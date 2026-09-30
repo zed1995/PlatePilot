@@ -1,6 +1,6 @@
 // Package curate turns raw Google Local records into curated domain DTOs.
 //
-// Every function here is a pure function: no I/O, no Mongo, no clock except
+// Every function here is a pure function: no I/O, no database, no clock except
 // values passed in. That keeps the transformation rules unit-testable and
 // reproducible.
 package curate

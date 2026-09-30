@@ -9,8 +9,8 @@ import (
 
 func TestKnowledgeDocumentJSONRoundTrip(t *testing.T) {
 	original := KnowledgeDocument{
-		DocumentID:          "doc-1",
-		RestaurantID:        "r1",
+		DocumentID:          1,
+		RestaurantID:        2,
 		Scope:               ScopeEvidence,
 		DocType:             DocTypeRestaurantReviewSummary,
 		Title:               "Service",
@@ -37,8 +37,8 @@ func TestKnowledgeDocumentJSONRoundTrip(t *testing.T) {
 
 func TestToEvidenceCarriesSourceAndSnapshot(t *testing.T) {
 	doc := KnowledgeDocument{
-		DocumentID:   "doc-1",
-		RestaurantID: "r1",
+		DocumentID:   1,
+		RestaurantID: 2,
 		Scope:        ScopeEvidence,
 		DocType:      DocTypeRestaurantReviewSummary,
 		Title:        "Service",
@@ -48,7 +48,7 @@ func TestToEvidenceCarriesSourceAndSnapshot(t *testing.T) {
 	}
 	ev := doc.ToEvidence(0.87)
 
-	if ev.EvidenceID != "doc-1" || ev.RestaurantID != "r1" {
+	if ev.EvidenceID != 1 || ev.RestaurantID != 2 {
 		t.Fatalf("identity not preserved: %+v", ev)
 	}
 	if ev.Source != "google_local_2021" {

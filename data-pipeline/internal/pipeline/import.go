@@ -3,7 +3,12 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,7 +19,6 @@ import (
 	"github.com/zed/platepilot/shared/domain/errs"
 	"github.com/zed/platepilot/shared/domain/restaurant"
 	"github.com/zed/platepilot/shared/domain/review"
-	"github.com/zed/platepilot/shared/idgen"
 	"github.com/zed/platepilot/shared/port"
 )
 
@@ -37,16 +41,29 @@ type Stores struct {
 
 // ImportOptions controls one import invocation.
 type ImportOptions struct {
-	Stage        string
-	Limit        int
-	BatchSize    int
-	DataDir      string
+	Stage     string
+	Limit     int
+	BatchSize int
+	DataDir   string
+	// ReviewFile overrides the review source file name inside DataDir. It lets
+	// the importer read a prefiltered corpus (produced by `prefilter`) without
+	// renaming it to match the raw source name. Empty uses ReviewFileName.
+	ReviewFile   string
 	DryRun       bool
 	MinTextChars int
 	DemoTarget   int
+	// ProgressOut receives the in-place progress line for the streaming stages.
+	// Nil disables progress output, which is what the tests and --quiet use.
+	ProgressOut io.Writer
 	// ServiceArea is "south,west,north,east". Empty uses the NYC default.
-	ServiceArea  string
-	SkipFileHash bool
+	ServiceArea string
+	// BoundaryFile is the administrative boundary geometry used to label
+	// borough_guess. Empty disables boundaries and falls back to boxes.
+	BoundaryFile string
+	// RequireBoundaries turns a missing or unrecognised boundary file into an
+	// error instead of a silent fallback to approximate labels.
+	RequireBoundaries bool
+	SkipFileHash      bool
 }
 
 // DefaultImportOptions fills options from configuration.
@@ -64,12 +81,14 @@ func DefaultImportOptions(cfg config.Config) ImportOptions {
 		demoTarget = curate.DefaultDemoRestaurants
 	}
 	return ImportOptions{
-		Stage:        review.StageAll,
-		BatchSize:    batch,
-		DataDir:      cfg.Pipeline.DataDir,
-		MinTextChars: minChars,
-		DemoTarget:   demoTarget,
-		ServiceArea:  cfg.Pipeline.ServiceArea,
+		Stage:             review.StageAll,
+		BatchSize:         batch,
+		DataDir:           cfg.Pipeline.DataDir,
+		MinTextChars:      minChars,
+		DemoTarget:        demoTarget,
+		ServiceArea:       cfg.Pipeline.ServiceArea,
+		BoundaryFile:      cfg.Pipeline.BoundaryFile,
+		RequireBoundaries: cfg.Pipeline.RequireBoundaries,
 	}
 }
 
@@ -114,7 +133,7 @@ func RunImport(ctx context.Context, stores Stores, opts ImportOptions) ([]review
 }
 
 // auditStore returns the audit store to use, or nil when the run is a
-// dry-run (a dry-run must leave no trace in Atlas).
+// dry-run (a dry-run must leave no trace in the database).
 func auditStore(stores Stores, opts ImportOptions) port.PipelineStore {
 	if opts.DryRun {
 		return nil
@@ -158,6 +177,10 @@ func runMeta(ctx context.Context, stores Stores, opts ImportOptions) (review.Bat
 	if err != nil {
 		return review.BatchReport{}, errs.Wrap(errs.CodeInvalidArgument, "invalid service area", err)
 	}
+	boroughs, err := loadBoroughs(opts)
+	if err != nil {
+		return review.BatchReport{}, err
+	}
 	path := filepath.Join(opts.DataDir, MetaFileName)
 	reader, err := raw.Open(path)
 	if err != nil {
@@ -167,9 +190,14 @@ func runMeta(ctx context.Context, stores Stores, opts ImportOptions) (review.Bat
 
 	observedAt := SnapshotObservedAt
 	col := report.New(auditStore(stores, opts), review.StageMeta, curate.CurationVersion, MetaFileName, time.Now().UTC())
+	if boroughs != nil {
+		col.SetBoundaryVersion(boroughs.Version())
+	}
 	if err := col.Start(ctx); err != nil {
 		return col.Report(), err
 	}
+	progress := newProgressPrinter(review.StageMeta, reader, opts.ProgressOut)
+	defer func() { progress.Finish(col.Report().RowsRead, progressSnapshot(col.Report())) }()
 	if !opts.DryRun && !opts.SkipFileHash {
 		if hash, err := raw.FileSHA256(path); err == nil {
 			col.SetSourceSHA256(hash)
@@ -185,7 +213,7 @@ func runMeta(ctx context.Context, stores Stores, opts ImportOptions) (review.Bat
 		}
 		if !opts.DryRun {
 			if stores.Restaurants == nil {
-				return errs.New(errs.CodeInvalidArgument, "no restaurant store configured; set MONGO_URI or use --dry-run")
+				return errs.New(errs.CodeInvalidArgument, "no restaurant store configured; set POSTGRES_DSN or use --dry-run")
 			}
 			written, err := stores.Restaurants.UpsertRestaurants(ctx, batch)
 			if err != nil {
@@ -206,15 +234,17 @@ func runMeta(ctx context.Context, stores Stores, opts ImportOptions) (review.Bat
 			return col.Report(), err
 		}
 		col.RowRead()
+		progress.Tick(col.Report().RowsRead, progressSnapshot(col.Report()))
 
 		var record raw.Meta
 		if err := reader.Decode(&record); err != nil {
 			col.Reject(review.StageMeta, reader.LineNo(), "decode_error", "")
 			continue
 		}
-		result, err := curate.NormalizeMeta(record, idgen.NewUUID(), curate.MetaOptions{
+		result, err := curate.NormalizeMeta(record, curate.MetaOptions{
 			ObservedAt:  observedAt,
 			ServiceArea: area,
+			Boroughs:    boroughs,
 		})
 		switch {
 		case errors.Is(err, curate.ErrFiltered):
@@ -255,20 +285,26 @@ func runMeta(ctx context.Context, stores Stores, opts ImportOptions) (review.Bat
 
 func runReview(ctx context.Context, stores Stores, opts ImportOptions) (review.BatchReport, error) {
 	if stores.Restaurants == nil {
-		return review.BatchReport{}, errs.New(errs.CodeInvalidArgument, "review import needs a restaurant store; set MONGO_URI")
+		return review.BatchReport{}, errs.New(errs.CodeInvalidArgument, "review import needs a restaurant store; set POSTGRES_DSN")
 	}
-	path := filepath.Join(opts.DataDir, ReviewFileName)
+	reviewFile := opts.ReviewFile
+	if reviewFile == "" {
+		reviewFile = ReviewFileName
+	}
+	path := filepath.Join(opts.DataDir, reviewFile)
 	reader, err := raw.Open(path)
 	if err != nil {
-		return review.BatchReport{}, errs.Wrap(errs.CodeNotFound, "open review file "+path, err)
+		return review.BatchReport{}, errs.Wrap(errs.CodeNotFound, "open review file "+path+notFoundHint(opts.DataDir, reviewFile), err)
 	}
 	defer reader.Close()
 
 	observedAt := SnapshotObservedAt
-	col := report.New(auditStore(stores, opts), review.StageReview, curate.CurationVersion, ReviewFileName, time.Now().UTC())
+	col := report.New(auditStore(stores, opts), review.StageReview, curate.CurationVersion, reviewFile, time.Now().UTC())
 	if err := col.Start(ctx); err != nil {
 		return col.Report(), err
 	}
+	progress := newProgressPrinter(review.StageReview, reader, opts.ProgressOut)
+	defer func() { progress.Finish(col.Report().RowsRead, progressSnapshot(col.Report())) }()
 	if !opts.DryRun && !opts.SkipFileHash {
 		if hash, err := raw.FileSHA256(path); err == nil {
 			col.SetSourceSHA256(hash)
@@ -312,7 +348,7 @@ func runReview(ctx context.Context, stores Stores, opts ImportOptions) (review.B
 				continue
 			}
 			col.Accepted(1)
-			if dedup.Observe(normalized.ID) {
+			if dedup.Observe(curate.ReviewDedupKey(item.record.GmapID, item.record.UserID, item.record.Time, normalized.TextHash)) {
 				col.Deduped(1)
 			}
 			curated = append(curated, normalized)
@@ -340,6 +376,7 @@ func runReview(ctx context.Context, stores Stores, opts ImportOptions) (review.B
 			return col.Report(), err
 		}
 		col.RowRead()
+		progress.Tick(col.Report().RowsRead, progressSnapshot(col.Report()))
 		var record raw.Review
 		if err := reader.Decode(&record); err != nil {
 			col.Reject(review.StageReview, reader.LineNo(), "decode_error", "")
@@ -369,7 +406,7 @@ func runReview(ctx context.Context, stores Stores, opts ImportOptions) (review.B
 
 func runStats(ctx context.Context, stores Stores, opts ImportOptions) (review.BatchReport, error) {
 	if stores.Restaurants == nil || stores.Reviews == nil {
-		return review.BatchReport{}, errs.New(errs.CodeInvalidArgument, "stats rebuild needs Mongo; set MONGO_URI")
+		return review.BatchReport{}, errs.New(errs.CodeInvalidArgument, "stats rebuild needs a restaurant store; set POSTGRES_DSN")
 	}
 	col := report.New(auditStore(stores, opts), review.StageStats, curate.CurationVersion, "", time.Now().UTC())
 	if err := col.Start(ctx); err != nil {
@@ -393,7 +430,7 @@ func runStats(ctx context.Context, stores Stores, opts ImportOptions) (review.Ba
 		for _, id := range chunk {
 			current, err := stores.Restaurants.GetByID(ctx, id)
 			if err != nil {
-				col.Reject(review.StageStats, 0, reasonOf(err), id)
+				col.Reject(review.StageStats, 0, reasonOf(err), strconv.FormatInt(id, 10))
 				continue
 			}
 			rollup := counts[id]
@@ -404,7 +441,7 @@ func runStats(ctx context.Context, stores Stores, opts ImportOptions) (review.Ba
 				continue
 			}
 			if err := stores.Restaurants.UpdateReviewStats(ctx, id, stats, computed); err != nil {
-				col.Reject(review.StageStats, 0, reasonOf(err), id)
+				col.Reject(review.StageStats, 0, reasonOf(err), strconv.FormatInt(id, 10))
 				continue
 			}
 			col.Accepted(1)
@@ -419,7 +456,7 @@ func runStats(ctx context.Context, stores Stores, opts ImportOptions) (review.Ba
 
 func runScore(ctx context.Context, stores Stores, opts ImportOptions) (review.BatchReport, error) {
 	if stores.Restaurants == nil {
-		return review.BatchReport{}, errs.New(errs.CodeInvalidArgument, "scoring needs a restaurant store; set MONGO_URI")
+		return review.BatchReport{}, errs.New(errs.CodeInvalidArgument, "scoring needs a restaurant store; set POSTGRES_DSN")
 	}
 	col := report.New(auditStore(stores, opts), "score", curate.CurationVersion, "", time.Now().UTC())
 	if err := col.Start(ctx); err != nil {
@@ -432,12 +469,12 @@ func runScore(ctx context.Context, stores Stores, opts ImportOptions) (review.Ba
 		return col.Report(), err
 	}
 	activeIDs := curate.SelectActiveForDemo(all, opts.DemoTarget)
-	activeSet := make(map[string]bool, len(activeIDs))
+	activeSet := make(map[int64]bool, len(activeIDs))
 	for _, id := range activeIDs {
 		activeSet[id] = true
 	}
-	scores := make(map[string]float64, len(all))
-	active := make(map[string]bool, len(all))
+	scores := make(map[int64]float64, len(all))
+	active := make(map[int64]bool, len(all))
 	for _, r := range all {
 		scores[r.ID] = curate.KnowledgeScore(r).Score
 		active[r.ID] = activeSet[r.ID]
@@ -456,6 +493,36 @@ func runScore(ctx context.Context, stores Stores, opts ImportOptions) (review.Ba
 	return col.Report(), nil
 }
 
+// notFoundHint explains the most common cause of a missing review file: the
+// corpus was prefiltered, which writes a differently named file. Without this,
+// "open review file ...: no such file" leaves the reader guessing which flag or
+// rename they are supposed to apply.
+func notFoundHint(dataDir, reviewFile string) string {
+	if reviewFile != ReviewFileName {
+		return ""
+	}
+	filtered := filepath.Join(dataDir, DefaultFilteredReviewFile)
+	if _, err := os.Stat(filtered); err != nil {
+		return ""
+	}
+	return fmt.Sprintf("\n  hint: %s exists, so this is a prefiltered corpus; "+
+		"import it with --data-dir=%s --review-file=%s",
+		filtered, dataDir, DefaultFilteredReviewFile)
+}
+
+// progressSnapshot extracts the live counters for the progress line without
+// copying the much wider full batch report.
+func progressSnapshot(r review.BatchReport) ProgressSnapshot {
+	return ProgressSnapshot{
+		Accepted:  r.Accepted,
+		Written:   r.Written,
+		Deduped:   r.Deduped,
+		Filtered:  r.Filtered,
+		Rejected:  r.Rejected,
+		Unmatched: r.Unmatched,
+	}
+}
+
 // codeOf extracts the shared error code, defaulting to internal.
 func codeOf(err error) string {
 	if err == nil {
@@ -471,4 +538,35 @@ func reasonOf(err error) string {
 		return "invalid"
 	}
 	return string(code)
+}
+
+// loadBoroughs resolves the boundary geometry used to label borough_guess.
+//
+// A missing boundary file degrades to approximate bounding boxes rather than
+// failing the import, because the geometry is auxiliary fact data fetched
+// separately from the corpus. That fallback is only safe while nobody notices:
+// the boxes mislabel roughly 10% of restaurants, so the resolved version is
+// returned too and recorded on the batch report. RequireBoundaries exists for
+// scheduled runs that must never silently produce approximate labels.
+func loadBoroughs(opts ImportOptions) (*curate.Boundaries, error) {
+	if strings.TrimSpace(opts.BoundaryFile) == "" {
+		if opts.RequireBoundaries {
+			return nil, errs.New(errs.CodeInvalidArgument,
+				"boundary file is required but PIPELINE_BOUNDARY_FILE is empty")
+		}
+		return nil, nil
+	}
+	boundaries, err := curate.LoadBoundaries(opts.BoundaryFile)
+	switch {
+	case err == nil:
+		return boundaries, nil
+	case opts.RequireBoundaries:
+		return nil, err
+	default:
+		slog.Warn("borough labels fall back to approximate bounding boxes",
+			slog.String("boundary_file", opts.BoundaryFile),
+			slog.String("reason", err.Error()),
+			slog.String("fix", "see data/boundaries/README.md"))
+		return nil, nil
+	}
 }

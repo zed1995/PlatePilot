@@ -43,7 +43,7 @@ func TestRestaurantDetailJSONRoundTrip(t *testing.T) {
 	price := 2
 	rating := 4.5
 	original := RestaurantDetail{
-		RestaurantID: "r1",
+		RestaurantID: 1,
 		Name:         "Joe's Pizza",
 		Address:      "7 Carmine St",
 		Cuisines:     []string{"pizza"},

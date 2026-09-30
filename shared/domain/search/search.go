@@ -16,7 +16,7 @@ type RestaurantFilter struct {
 
 // RestaurantCandidate is a ranked search result.
 type RestaurantCandidate struct {
-	RestaurantID string   `json:"restaurant_id"`
+	RestaurantID int64    `json:"restaurant_id"`
 	Name         string   `json:"name"`
 	Address      string   `json:"address,omitempty"`
 	Score        float64  `json:"score"`
@@ -31,9 +31,9 @@ type SearchQuery struct {
 }
 
 // RestaurantDetail is the minimal restaurant projection needed by M0. Fields
-// are expected to grow in M1 once the Atlas collections are defined.
+// are expected to grow in M1 once the tables are defined.
 type RestaurantDetail struct {
-	RestaurantID string            `json:"restaurant_id"`
+	RestaurantID int64             `json:"restaurant_id"`
 	Name         string            `json:"name"`
 	Address      string            `json:"address,omitempty"`
 	Cuisines     []string          `json:"cuisines,omitempty"`

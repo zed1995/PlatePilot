@@ -26,7 +26,7 @@ func clearEnv(t *testing.T, keys ...string) {
 func TestLoadDefaults(t *testing.T) {
 	clearEnv(t,
 		"PIPELINE_DATA_DIR", "PIPELINE_BATCH_SIZE", "PIPELINE_WORKERS",
-		"APP_ENV", "LOG_LEVEL", "MONGO_URI",
+		"APP_ENV", "LOG_LEVEL", "POSTGRES_DSN",
 	)
 	cfg, err := Load()
 	if err != nil {
@@ -74,7 +74,7 @@ func TestValidateRejectsBadPipelineValues(t *testing.T) {
 	cfg := Config{
 		App: sharedcfg.AppConfig{Env: sharedcfg.EnvDev},
 		Log: sharedcfg.LogConfig{Level: "info"},
-		Mongo: sharedcfg.MongoConfig{
+		Postgres: sharedcfg.PostgresConfig{
 			Database: "platepilot",
 		},
 		Embedding: sharedcfg.EmbeddingConfig{
@@ -111,13 +111,24 @@ func TestValidateAcceptsDefaults(t *testing.T) {
 	}
 }
 
-func TestRedactedHidesMongoCredentials(t *testing.T) {
-	cfg := Config{Mongo: sharedcfg.MongoConfig{URI: "mongodb+srv://user:pass@cluster.example/db"}}
+func TestRedactedHidesPostgresCredentials(t *testing.T) {
+	const dsn = "postgres://platepilot:hunter2@localhost:55432/platepilot"
+	cfg := Config{Postgres: sharedcfg.PostgresConfig{DSN: dsn}}
 	redacted := cfg.Redacted()
-	if strings.Contains(redacted.Mongo.URI, "pass") {
-		t.Fatalf("credentials not redacted: %q", redacted.Mongo.URI)
+	if strings.Contains(redacted.Postgres.DSN, "hunter2") {
+		t.Fatalf("credentials not redacted: %q", redacted.Postgres.DSN)
 	}
-	if cfg.Mongo.URI != "mongodb+srv://user:pass@cluster.example/db" {
+	if cfg.Postgres.DSN != dsn {
 		t.Error("Redacted mutated the receiver")
+	}
+}
+
+// A libpq keyword/value DSN carries the password too, and is the form pgx
+// documents, so it must be redacted as well.
+func TestRedactedHidesKeywordDSNCredentials(t *testing.T) {
+	const dsn = "host=localhost dbname=platepilot user=platepilot password=hunter2"
+	cfg := Config{Postgres: sharedcfg.PostgresConfig{DSN: dsn}}
+	if strings.Contains(cfg.Redacted().Postgres.DSN, "hunter2") {
+		t.Fatalf("keyword/value credentials not redacted: %q", cfg.Redacted().Postgres.DSN)
 	}
 }

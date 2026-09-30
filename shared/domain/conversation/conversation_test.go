@@ -24,8 +24,8 @@ func TestConversationAndCheckpointJSONRoundTrip(t *testing.T) {
 		State:                StateAwaitingConfirmation,
 		PendingAction:        "confirm_reservation",
 		MissingSlots:         []string{"party_size"},
-		EvidenceIDs:          []string{"ev-1", "ev-2"},
-		SelectedRestaurantID: "r1",
+		EvidenceIDs:          []int64{1, 2},
+		SelectedRestaurantID: 1,
 		CreatedAt:            now,
 	}
 

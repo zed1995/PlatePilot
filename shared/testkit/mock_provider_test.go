@@ -98,12 +98,12 @@ func TestMockEmbeddingProviderDefaultDimension(t *testing.T) {
 
 func TestMockRerankProviderReverses(t *testing.T) {
 	provider := &MockRerankProvider{}
-	in := []search.RestaurantCandidate{{RestaurantID: "a"}, {RestaurantID: "b"}, {RestaurantID: "c"}}
+	in := []search.RestaurantCandidate{{RestaurantID: 1}, {RestaurantID: 2}, {RestaurantID: 3}}
 	out, err := provider.Rerank(context.Background(), "quiet", in)
 	if err != nil {
 		t.Fatalf("rerank: %v", err)
 	}
-	if out[0].RestaurantID != "c" || out[2].RestaurantID != "a" {
+	if out[0].RestaurantID != 3 || out[2].RestaurantID != 1 {
 		t.Fatalf("unexpected order: %+v", out)
 	}
 	if provider.Calls != 1 {

@@ -15,7 +15,9 @@ import (
 const domainImportAllowPrefix = "github.com/zed/platepilot/shared/domain"
 
 // TestDomainLayerHasNoFrameworkOrVendorDependencies enforces the PRD's rule that
-// the domain layer depends on no Mongo, Eino, Hertz, Ollama, or vendor SDK.
+// the domain layer depends on no database driver, Eino, Hertz, Ollama, or vendor
+// SDK. It is the test that made the Atlas-to-PostgreSQL migration cheap: the 798
+// lines of domain DTOs never named a storage engine.
 func TestDomainLayerHasNoFrameworkOrVendorDependencies(t *testing.T) {
 	var checked int
 	err := filepath.WalkDir(".", func(path string, entry os.DirEntry, err error) error {
@@ -120,5 +122,40 @@ func TestServicesDoNotDependOnEachOther(t *testing.T) {
 		if walkErr != nil {
 			t.Fatalf("walk %s: %v", base, walkErr)
 		}
+	}
+}
+
+// TestDomainLayerDoesNotNameAStorageEngine is a narrower, more legible guard
+// than the import check above: the domain must not even mention a storage engine
+// by name in a comment or a type, because that is how "MongoDB" or "Atlas" tends
+// to creep back into a supposedly backend-neutral layer.
+func TestDomainLayerDoesNotNameAStorageEngine(t *testing.T) {
+	banned := []string{"mongo", "atlas", "postgres", "postgis", "pgvector", "sql"}
+	err := filepath.WalkDir(".", func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || !strings.HasSuffix(path, ".go") {
+			return nil
+		}
+		// This file names every banned term in order to search for them, so
+		// scanning it would always fail.
+		if strings.HasSuffix(path, "architecture_test.go") {
+			return nil
+		}
+		body, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		lower := strings.ToLower(string(body))
+		for _, term := range banned {
+			if strings.Contains(lower, term) {
+				t.Errorf("%s mentions %q; the domain layer must stay storage-agnostic", path, term)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk domain packages: %v", err)
 	}
 }

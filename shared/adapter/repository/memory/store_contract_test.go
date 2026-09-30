@@ -8,7 +8,7 @@ import (
 )
 
 // TestMemoryStoresSatisfyContract proves the in-memory write stores honour the
-// same behaviour contract the Mongo adapter must satisfy.
+// same behaviour contract the Postgres adapter must satisfy.
 func TestMemoryStoresSatisfyContract(t *testing.T) {
 	contract.Run(t, func(t *testing.T) contract.Stores {
 		return contract.Stores{

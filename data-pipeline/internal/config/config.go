@@ -1,7 +1,7 @@
 // Package config loads and validates data-pipeline configuration.
 //
 // The data pipeline is a batch, CLI-driven service: it shares the logging,
-// Mongo, and embedding settings with the chat service and adds its own batch
+// PostgreSQL, and embedding settings with the chat service and adds its own batch
 // knobs.
 package config
 
@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/zed/platepilot/data-pipeline/internal/pipeline/curate"
 	sharedcfg "github.com/zed/platepilot/shared/config"
 )
 
@@ -22,6 +23,9 @@ const DefaultDataDir = "data/raw/google_local"
 const (
 	DefaultMinReviewChars = 20
 	DefaultDemoTarget     = 3000
+	// DefaultBoundaryFile is the borough geometry used for borough_guess.
+	DefaultBoundaryFile = curate.DefaultBoundaryFile
+
 	// DefaultServiceArea is the NYC five-borough bounding box,
 	// "south,west,north,east". The shipped meta file is US-wide.
 	DefaultServiceArea = "40.49,-74.26,40.93,-73.68"
@@ -31,7 +35,7 @@ const (
 type Config struct {
 	App       sharedcfg.AppConfig
 	Log       sharedcfg.LogConfig
-	Mongo     sharedcfg.MongoConfig
+	Postgres  sharedcfg.PostgresConfig
 	Embedding sharedcfg.EmbeddingConfig
 	Timeout   sharedcfg.TimeoutConfig
 	Pipeline  PipelineConfig
@@ -53,6 +57,14 @@ type PipelineConfig struct {
 	// The source file is US-wide, so this is what keeps the corpus local.
 	// Empty means the default NYC box.
 	ServiceArea string
+	// BoundaryFile is the administrative boundary geometry used to label each
+	// place with its borough. Empty disables boundary labelling and leaves
+	// borough_guess empty. A path that does not exist falls back to approximate
+	// bounding boxes unless RequireBoundaries is set.
+	BoundaryFile string
+	// RequireBoundaries makes a missing or altered boundary file a hard error
+	// instead of a silent fallback to approximate labels.
+	RequireBoundaries bool
 }
 
 // Load reads configuration from the environment, layering .env underneath when
@@ -65,16 +77,18 @@ func Load() (Config, error) {
 	cfg := Config{
 		App:       l.App(),
 		Log:       l.Log(),
-		Mongo:     l.Mongo(),
+		Postgres:  l.Postgres(),
 		Embedding: l.Embedding(),
 		Timeout:   l.Timeout(),
 		Pipeline: PipelineConfig{
-			DataDir:        l.String("PIPELINE_DATA_DIR", DefaultDataDir),
-			BatchSize:      l.Int("PIPELINE_BATCH_SIZE", 1000),
-			Workers:        l.Int("PIPELINE_WORKERS", 4),
-			MinReviewChars: l.Int("PIPELINE_MIN_REVIEW_CHARS", DefaultMinReviewChars),
-			DemoTarget:     l.Int("PIPELINE_DEMO_TARGET", DefaultDemoTarget),
-			ServiceArea:    l.String("PIPELINE_BBOX", DefaultServiceArea),
+			DataDir:           l.String("PIPELINE_DATA_DIR", DefaultDataDir),
+			BatchSize:         l.Int("PIPELINE_BATCH_SIZE", 1000),
+			Workers:           l.Int("PIPELINE_WORKERS", 4),
+			MinReviewChars:    l.Int("PIPELINE_MIN_REVIEW_CHARS", DefaultMinReviewChars),
+			DemoTarget:        l.Int("PIPELINE_DEMO_TARGET", DefaultDemoTarget),
+			ServiceArea:       l.String("PIPELINE_BBOX", DefaultServiceArea),
+			BoundaryFile:      l.String("PIPELINE_BOUNDARY_FILE", curate.DefaultBoundaryFile),
+			RequireBoundaries: l.Bool("PIPELINE_REQUIRE_BOUNDARIES", false),
 		},
 	}
 	if err := l.Err(); err != nil {
@@ -88,7 +102,7 @@ func (c Config) Validate() error {
 	return sharedcfg.Combine(
 		c.App.Validate(),
 		c.Log.Validate(),
-		c.Mongo.Validate(),
+		c.Postgres.Validate(),
 		c.Embedding.Validate(),
 		c.Pipeline.validate(),
 	)
@@ -116,30 +130,32 @@ func (c PipelineConfig) validate() []string {
 
 // Redacted returns a copy with secrets replaced so it is safe to log.
 func (c Config) Redacted() Config {
-	c.Mongo.URI = sharedcfg.RedactURI(c.Mongo.URI)
+	c.Postgres.DSN = sharedcfg.RedactURI(c.Postgres.DSN)
 	return c
 }
 
 // Summary returns a log-friendly, secret-free view of the configuration.
 func (c Config) Summary() map[string]any {
 	return map[string]any{
-		"app_env":                   c.App.Env,
-		"log_level":                 c.Log.Level,
-		"mongo_enabled":             c.Mongo.Enabled(),
-		"mongo_database":            c.Mongo.Database,
-		"mongo_timeout":             c.Mongo.Timeout.String(),
-		"mongo_connect_timeout":     c.Mongo.ConnectTimeout.String(),
-		"mongo_max_pool_size":       c.Mongo.MaxPoolSize,
-		"mongo_min_pool_size":       c.Mongo.MinPoolSize,
-		"embedding_provider":        c.Embedding.Provider,
-		"embedding_model":           c.Embedding.Model,
-		"embedding_dimensions":      c.Embedding.Dimensions,
-		"request_timeout":           c.Timeout.Request.String(),
-		"pipeline_data_dir":         c.Pipeline.DataDir,
-		"pipeline_batch_size":       c.Pipeline.BatchSize,
-		"pipeline_workers":          c.Pipeline.Workers,
-		"pipeline_min_review_chars": c.Pipeline.MinReviewChars,
-		"pipeline_demo_target":      c.Pipeline.DemoTarget,
-		"pipeline_service_area":     c.Pipeline.ServiceArea,
+		"app_env":                     c.App.Env,
+		"log_level":                   c.Log.Level,
+		"postgres_enabled":            c.Postgres.Enabled(),
+		"postgres_database":           c.Postgres.Database,
+		"postgres_timeout":            c.Postgres.Timeout.String(),
+		"postgres_connect_timeout":    c.Postgres.ConnectTimeout.String(),
+		"postgres_max_pool_size":      c.Postgres.MaxPoolSize,
+		"postgres_min_pool_size":      c.Postgres.MinPoolSize,
+		"embedding_provider":          c.Embedding.Provider,
+		"embedding_model":             c.Embedding.Model,
+		"embedding_dimensions":        c.Embedding.Dimensions,
+		"request_timeout":             c.Timeout.Request.String(),
+		"pipeline_data_dir":           c.Pipeline.DataDir,
+		"pipeline_batch_size":         c.Pipeline.BatchSize,
+		"pipeline_workers":            c.Pipeline.Workers,
+		"pipeline_min_review_chars":   c.Pipeline.MinReviewChars,
+		"pipeline_demo_target":        c.Pipeline.DemoTarget,
+		"pipeline_service_area":       c.Pipeline.ServiceArea,
+		"pipeline_boundary_file":      c.Pipeline.BoundaryFile,
+		"pipeline_require_boundaries": c.Pipeline.RequireBoundaries,
 	}
 }

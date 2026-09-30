@@ -8,8 +8,8 @@ import (
 	"sort"
 	"time"
 
+	"github.com/zed/platepilot/shared/domain/errs"
 	"github.com/zed/platepilot/shared/domain/review"
-	"github.com/zed/platepilot/shared/idgen"
 	"github.com/zed/platepilot/shared/port"
 )
 
@@ -21,6 +21,10 @@ type Collector struct {
 	report     review.BatchReport
 	rejections []review.Rejection
 	missing    map[string]int64
+	// batchID is the database-assigned identity, known only after Start. Until
+	// then it is zero, which is why Reject buffers instead of writing.
+	batchID int64
+	started bool
 }
 
 // New returns a collector for one stage.
@@ -28,7 +32,6 @@ func New(store port.PipelineStore, stage, curationVersion, sourceFile string, st
 	return &Collector{
 		store: store,
 		report: review.BatchReport{
-			BatchID:         idgen.NewUUID(),
 			Stage:           stage,
 			CurationVersion: curationVersion,
 			SourceFile:      sourceFile,
@@ -39,18 +42,35 @@ func New(store port.PipelineStore, stage, curationVersion, sourceFile string, st
 	}
 }
 
-// BatchID returns the generated batch identifier.
-func (c *Collector) BatchID() string { return c.report.BatchID }
+// BatchID returns the database-assigned batch identifier, or zero before Start.
+func (c *Collector) BatchID() int64 { return c.batchID }
 
 // SetSourceSHA256 records the source file hash.
 func (c *Collector) SetSourceSHA256(hash string) { c.report.SourceSHA256 = hash }
 
-// Start writes the running batch record.
+// SetBoundaryVersion records which administrative boundary release produced the
+// borough labels in this batch. It is empty when the run fell back to the
+// approximate bounding boxes, so an audit record can never imply exact labels
+// it did not compute.
+func (c *Collector) SetBoundaryVersion(version string) { c.report.BoundaryVersion = version }
+
+// Start writes the running batch record and adopts the id the database gave it.
+//
+// The id is assigned by an identity column, so it cannot be known before the
+// insert. Rejections buffered before this point are re-stamped in Finish, which
+// is the only place they are written.
 func (c *Collector) Start(ctx context.Context) error {
+	c.started = true
 	if c.store == nil {
 		return nil
 	}
-	return c.store.StartBatch(ctx, c.report)
+	id, err := c.store.StartBatch(ctx, c.report)
+	if err != nil {
+		return err
+	}
+	c.batchID = id
+	c.report.BatchID = id
+	return nil
 }
 
 // RowRead counts one decoded (or undecodable) source line.
@@ -59,7 +79,7 @@ func (c *Collector) RowRead() { c.report.RowsRead++ }
 // Accepted counts records that passed curation.
 func (c *Collector) Accepted(n int64) { c.report.Accepted += n }
 
-// Written counts documents persisted to Atlas.
+// Written counts rows persisted to the database.
 func (c *Collector) Written(n int) { c.report.Written += int64(n) }
 
 // Deduped counts duplicate source records collapsed into one document.
@@ -78,7 +98,7 @@ func (c *Collector) MissingField(field string) { c.missing[field]++ }
 func (c *Collector) Reject(stage string, lineNo int64, reason, sourceRecordID string) {
 	c.report.Rejected++
 	c.rejections = append(c.rejections, review.Rejection{
-		BatchID:        c.report.BatchID,
+		BatchID:        c.batchID,
 		Stage:          stage,
 		LineNo:         lineNo,
 		Reason:         reason,
@@ -103,10 +123,19 @@ func (c *Collector) Finish(ctx context.Context, status, errorCode string, now ti
 	if c.store == nil {
 		return nil
 	}
+	if !c.started {
+		return errs.New(errs.CodeInternal, "report: finish called before start")
+	}
 	if err := c.store.FinishBatch(ctx, c.report); err != nil {
 		return err
 	}
 	if len(c.rejections) > 0 {
+		// The batch id is only known after Start, so anything rejected while
+		// reading was buffered without it. Stamp it now rather than making
+		// every reject path reach through the store.
+		for i := range c.rejections {
+			c.rejections[i].BatchID = c.batchID
+		}
 		return c.store.RecordRejections(ctx, c.rejections)
 	}
 	return nil

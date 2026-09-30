@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -12,17 +13,22 @@ import (
 	"github.com/zed/platepilot/shared/domain/review"
 )
 
-// RestaurantStore is an in-memory port.RestaurantStore. It mirrors the Mongo
+// RestaurantStore is an in-memory port.RestaurantStore. It mirrors the Postgres
 // adapter's semantics (uniqueness by source_record_id, stable _id across
 // re-imports) so that the same contract suite can drive both.
 type RestaurantStore struct {
 	mu       sync.RWMutex
 	bySource map[string]restaurant.Restaurant
+	byID     map[int64]string
+	nextID   int64
 }
 
 // NewRestaurantStore returns an empty in-memory restaurant store.
 func NewRestaurantStore() *RestaurantStore {
-	return &RestaurantStore{bySource: make(map[string]restaurant.Restaurant)}
+	return &RestaurantStore{
+		bySource: make(map[string]restaurant.Restaurant),
+		byID:     make(map[int64]string),
+	}
 }
 
 // UpsertRestaurant inserts or replaces a restaurant keyed by source_record_id.
@@ -55,7 +61,7 @@ func (s *RestaurantStore) upsertLocked(r restaurant.Restaurant) {
 	now := time.Now().UTC()
 	if existing, ok := s.bySource[r.SourceRecordID]; ok {
 		// Preserve stable identity and creation time across re-imports, exactly
-		// like a Mongo $setOnInsert on _id and created_at.
+		// like an INSERT ... ON CONFLICT DO NOTHING on id and created_at.
 		r.ID = existing.ID
 		if !existing.CreatedAt.IsZero() {
 			r.CreatedAt = existing.CreatedAt
@@ -73,6 +79,13 @@ func (s *RestaurantStore) upsertLocked(r restaurant.Restaurant) {
 		r.IsActiveForDemo = existing.IsActiveForDemo
 		r.Rating.ComputedAvg = existing.Rating.ComputedAvg
 		r.Rating.RatingCountForComputedAvg = existing.Rating.RatingCountForComputedAvg
+	} else {
+		// The database assigns ids from an identity column, so a re-import
+		// never proposes one. The store mints them the same way: a small
+		// positive counter, with the caller-supplied id ignored.
+		s.nextID++
+		r.ID = s.nextID
+		s.byID[r.ID] = r.SourceRecordID
 	}
 	if r.CreatedAt.IsZero() {
 		r.CreatedAt = now
@@ -82,13 +95,14 @@ func (s *RestaurantStore) upsertLocked(r restaurant.Restaurant) {
 }
 
 // GetByID returns the restaurant for an internal id or not_found.
-func (s *RestaurantStore) GetByID(_ context.Context, restaurantID string) (restaurant.Restaurant, error) {
+func (s *RestaurantStore) GetByID(_ context.Context, restaurantID int64) (restaurant.Restaurant, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if _, r, ok := s.sourceByIDLocked(restaurantID); ok {
-		return r, nil
+	key, ok := s.byID[restaurantID]
+	if !ok {
+		return restaurant.Restaurant{}, errs.Newf(errs.CodeNotFound, "restaurant %d not found", restaurantID)
 	}
-	return restaurant.Restaurant{}, errs.Newf(errs.CodeNotFound, "restaurant %q not found", restaurantID)
+	return s.bySource[key], nil
 }
 
 // ListRestaurants returns restaurants ordered by source_record_id.
@@ -106,6 +120,19 @@ func (s *RestaurantStore) ListRestaurants(_ context.Context, limit int) ([]resta
 	return out, nil
 }
 
+// ListSourceRecordIDs returns every gmap_id, sorted, mirroring the Postgres
+// adapter's projection-only ordering.
+func (s *RestaurantStore) ListSourceRecordIDs(_ context.Context) ([]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]string, 0, len(s.bySource))
+	for id := range s.bySource {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
 // GetBySourceRecordID returns the restaurant for a gmap_id or not_found.
 func (s *RestaurantStore) GetBySourceRecordID(_ context.Context, sourceRecordID string) (restaurant.Restaurant, error) {
 	s.mu.RLock()
@@ -118,10 +145,10 @@ func (s *RestaurantStore) GetBySourceRecordID(_ context.Context, sourceRecordID 
 }
 
 // MapSourceRecordIDs resolves gmap_ids to restaurant ids in bulk.
-func (s *RestaurantStore) MapSourceRecordIDs(_ context.Context, sourceRecordIDs []string) (map[string]string, error) {
+func (s *RestaurantStore) MapSourceRecordIDs(_ context.Context, sourceRecordIDs []string) (map[string]int64, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	out := make(map[string]string, len(sourceRecordIDs))
+	out := make(map[string]int64, len(sourceRecordIDs))
 	for _, sourceRecordID := range sourceRecordIDs {
 		if r, ok := s.bySource[sourceRecordID]; ok {
 			out[sourceRecordID] = r.ID
@@ -131,12 +158,12 @@ func (s *RestaurantStore) MapSourceRecordIDs(_ context.Context, sourceRecordIDs 
 }
 
 // UpdateReviewStats writes the materialised review stats for one restaurant.
-func (s *RestaurantStore) UpdateReviewStats(_ context.Context, restaurantID string, stats restaurant.ReviewStats, computed restaurant.Rating) error {
+func (s *RestaurantStore) UpdateReviewStats(_ context.Context, restaurantID int64, stats restaurant.ReviewStats, computed restaurant.Rating) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key, r, ok := s.sourceByIDLocked(restaurantID)
 	if !ok {
-		return errs.Newf(errs.CodeNotFound, "restaurant %q not found", restaurantID)
+		return errs.Newf(errs.CodeNotFound, "restaurant %d not found", restaurantID)
 	}
 	r.ReviewStats = stats
 	r.Rating.ComputedAvg = computed.ComputedAvg
@@ -147,7 +174,7 @@ func (s *RestaurantStore) UpdateReviewStats(_ context.Context, restaurantID stri
 }
 
 // UpdateScores writes knowledge_score and is_active_for_demo for a batch.
-func (s *RestaurantStore) UpdateScores(_ context.Context, scores map[string]float64, active map[string]bool) error {
+func (s *RestaurantStore) UpdateScores(_ context.Context, scores map[int64]float64, active map[int64]bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for id, score := range scores {
@@ -200,19 +227,15 @@ func (s *RestaurantStore) CountActiveForDemo(_ context.Context) (int64, error) {
 	return n, nil
 }
 
-func (s *RestaurantStore) sourceByIDLocked(id string) (string, restaurant.Restaurant, bool) {
-	for key, r := range s.bySource {
-		if r.ID == id {
-			return key, r, true
-		}
+func (s *RestaurantStore) sourceByIDLocked(id int64) (string, restaurant.Restaurant, bool) {
+	key, ok := s.byID[id]
+	if !ok {
+		return "", restaurant.Restaurant{}, false
 	}
-	return "", restaurant.Restaurant{}, false
+	return key, s.bySource[key], true
 }
 
 func validateRestaurant(r restaurant.Restaurant) error {
-	if strings.TrimSpace(r.ID) == "" {
-		return errs.New(errs.CodeInvalidArgument, "restaurant_id is required")
-	}
 	if strings.TrimSpace(r.SourceRecordID) == "" {
 		return errs.New(errs.CodeInvalidArgument, "source_record_id is required")
 	}
@@ -222,34 +245,57 @@ func validateRestaurant(r restaurant.Restaurant) error {
 // ReviewStore is an in-memory port.ReviewStore.
 type ReviewStore struct {
 	mu   sync.RWMutex
-	byID map[string]review.Review
+	byID map[int64]review.Review
+	// byKey maps the (restaurant_id, text_hash, rating, reviewed_at)
+	// idempotency key onto the review id, mirroring the unique index the
+	// Postgres schema declares. Review ids are assigned by the store, so this
+	// key is the only thing that makes a re-import idempotent.
+	byKey  map[string]int64
+	nextID int64
 }
 
 // NewReviewStore returns an empty in-memory review store.
 func NewReviewStore() *ReviewStore {
-	return &ReviewStore{byID: make(map[string]review.Review)}
+	return &ReviewStore{
+		byID:  make(map[int64]review.Review),
+		byKey: make(map[string]int64),
+	}
 }
 
-// UpsertReviews upserts a batch keyed by review ID.
+// UpsertReviews upserts a batch keyed by the review idempotency key.
 func (s *ReviewStore) UpsertReviews(_ context.Context, items []review.Review) (int, error) {
 	for _, r := range items {
-		if strings.TrimSpace(r.ID) == "" {
-			return 0, errs.New(errs.CodeInvalidArgument, "review_id is required")
-		}
-		if strings.TrimSpace(r.RestaurantID) == "" {
+		if r.RestaurantID == 0 {
 			return 0, errs.New(errs.CodeInvalidArgument, "restaurant_id is required")
 		}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, r := range items {
+		key := reviewKey(r)
+		if existingID, ok := s.byKey[key]; ok {
+			// A re-import updates the row that already carries this review
+			// instead of writing a second copy, exactly like the ON CONFLICT
+			// DO UPDATE the Postgres upsert performs.
+			r.ID = existingID
+			s.byID[existingID] = r
+			continue
+		}
+		s.nextID++
+		r.ID = s.nextID
 		s.byID[r.ID] = r
+		s.byKey[key] = r.ID
 	}
 	return len(items), nil
 }
 
+// reviewKey renders the (restaurant_id, text_hash, rating, reviewed_at) key.
+func reviewKey(r review.Review) string {
+	return fmt.Sprintf("%d\x00%s\x00%d\x00%s", r.RestaurantID, r.TextHash, r.Rating, r.ReviewedAt.UTC().Format(time.RFC3339Nano))
+}
+
 // ListByRestaurant returns a restaurant's reviews, newest first.
-func (s *ReviewStore) ListByRestaurant(_ context.Context, restaurantID string, limit int) ([]review.Review, error) {
+func (s *ReviewStore) ListByRestaurant(_ context.Context, restaurantID int64, limit int) ([]review.Review, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := make([]review.Review, 0)
@@ -271,7 +317,7 @@ func (s *ReviewStore) ListByRestaurant(_ context.Context, restaurantID string, l
 }
 
 // CountByRestaurant returns the rollup for one restaurant.
-func (s *ReviewStore) CountByRestaurant(_ context.Context, restaurantID string) (review.Counts, error) {
+func (s *ReviewStore) CountByRestaurant(_ context.Context, restaurantID int64) (review.Counts, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	items := make([]review.Review, 0)
@@ -284,10 +330,10 @@ func (s *ReviewStore) CountByRestaurant(_ context.Context, restaurantID string) 
 }
 
 // AggregateStats returns rollups for the given restaurant IDs.
-func (s *ReviewStore) AggregateStats(_ context.Context, restaurantIDs []string) (map[string]review.Counts, error) {
+func (s *ReviewStore) AggregateStats(_ context.Context, restaurantIDs []int64) (map[int64]review.Counts, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	grouped := make(map[string][]review.Review, len(restaurantIDs))
+	grouped := make(map[int64][]review.Review, len(restaurantIDs))
 	for _, id := range restaurantIDs {
 		grouped[id] = nil
 	}
@@ -296,7 +342,7 @@ func (s *ReviewStore) AggregateStats(_ context.Context, restaurantIDs []string) 
 			grouped[r.RestaurantID] = append(grouped[r.RestaurantID], r)
 		}
 	}
-	out := make(map[string]review.Counts, len(grouped))
+	out := make(map[int64]review.Counts, len(grouped))
 	for id, items := range grouped {
 		out[id] = computeCounts(items)
 	}
@@ -304,18 +350,18 @@ func (s *ReviewStore) AggregateStats(_ context.Context, restaurantIDs []string) 
 }
 
 // RestaurantIDsWithReviews returns the distinct restaurant IDs that have reviews.
-func (s *ReviewStore) RestaurantIDsWithReviews(_ context.Context) ([]string, error) {
+func (s *ReviewStore) RestaurantIDsWithReviews(_ context.Context) ([]int64, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	seen := make(map[string]struct{})
+	seen := make(map[int64]struct{})
 	for _, r := range s.byID {
 		seen[r.RestaurantID] = struct{}{}
 	}
-	out := make([]string, 0, len(seen))
+	out := make([]int64, 0, len(seen))
 	for id := range seen {
 		out = append(out, id)
 	}
-	sort.Strings(out)
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
 	return out, nil
 }
 
@@ -348,36 +394,46 @@ func computeCounts(items []review.Review) review.Counts {
 // PipelineStore is an in-memory port.PipelineStore.
 type PipelineStore struct {
 	mu         sync.RWMutex
-	batches    map[string]review.BatchReport
-	rejections map[string][]review.Rejection
+	batches    map[int64]review.BatchReport
+	rejections map[int64][]review.Rejection
+	nextID     int64
 }
 
 // NewPipelineStore returns an empty in-memory pipeline store.
 func NewPipelineStore() *PipelineStore {
 	return &PipelineStore{
-		batches:    make(map[string]review.BatchReport),
-		rejections: make(map[string][]review.Rejection),
+		batches:    make(map[int64]review.BatchReport),
+		rejections: make(map[int64][]review.Rejection),
 	}
 }
 
-// StartBatch records a running batch report.
-func (s *PipelineStore) StartBatch(_ context.Context, report review.BatchReport) error {
-	if strings.TrimSpace(report.BatchID) == "" {
-		return errs.New(errs.CodeInvalidArgument, "batch_id is required")
+// StartBatch records a running batch report and returns its assigned id.
+//
+// The id comes from an identity column in Postgres, so it cannot be known
+// before the insert; the caller adopts the returned value and every rejection
+// of the run has to reference it.
+func (s *PipelineStore) StartBatch(_ context.Context, report review.BatchReport) (int64, error) {
+	if strings.TrimSpace(report.Stage) == "" {
+		return 0, errs.New(errs.CodeInvalidArgument, "stage is required")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.nextID++
+	report.BatchID = s.nextID
 	s.batches[report.BatchID] = report
-	return nil
+	return report.BatchID, nil
 }
 
 // FinishBatch replaces a batch report with its final state.
 func (s *PipelineStore) FinishBatch(_ context.Context, report review.BatchReport) error {
-	if strings.TrimSpace(report.BatchID) == "" {
+	if report.BatchID == 0 {
 		return errs.New(errs.CodeInvalidArgument, "batch_id is required")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if _, ok := s.batches[report.BatchID]; !ok {
+		return errs.Newf(errs.CodeNotFound, "batch %d not found", report.BatchID)
+	}
 	s.batches[report.BatchID] = report
 	return nil
 }
@@ -413,12 +469,12 @@ func (s *PipelineStore) ListBatches(_ context.Context, limit int) ([]review.Batc
 }
 
 // BatchDetail returns one batch and its rejections.
-func (s *PipelineStore) BatchDetail(_ context.Context, batchID string) (review.BatchReport, []review.Rejection, error) {
+func (s *PipelineStore) BatchDetail(_ context.Context, batchID int64) (review.BatchReport, []review.Rejection, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	b, ok := s.batches[batchID]
 	if !ok {
-		return review.BatchReport{}, nil, errs.Newf(errs.CodeNotFound, "batch %q not found", batchID)
+		return review.BatchReport{}, nil, errs.Newf(errs.CodeNotFound, "batch %d not found", batchID)
 	}
 	return b, append([]review.Rejection(nil), s.rejections[batchID]...), nil
 }

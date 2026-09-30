@@ -8,7 +8,7 @@ package pipeline
 const maxDedupTracking = 2_000_000
 
 // dedupTracker counts source records collapsed by a deterministic key within a
-// single run (duplicates in the input stream, not rows already in Atlas).
+// single run (duplicates in the input stream, not rows already stored).
 type dedupTracker struct {
 	seen  map[string]struct{}
 	max   int

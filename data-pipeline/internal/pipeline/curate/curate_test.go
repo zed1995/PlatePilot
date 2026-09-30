@@ -198,18 +198,18 @@ func TestScrubPII(t *testing.T) {
 	}
 }
 
-func TestReviewIDIsDeterministic(t *testing.T) {
+func TestReviewDedupKeyIsDeterministic(t *testing.T) {
 	hash := TextHash("Great pizza")
-	a := ReviewID("gmap-1", "user-1", 1614600000000, hash)
-	b := ReviewID("gmap-1", "user-1", 1614600000000, hash)
+	a := ReviewDedupKey("gmap-1", "user-1", 1614600000000, hash)
+	b := ReviewDedupKey("gmap-1", "user-1", 1614600000000, hash)
 	if a != b {
-		t.Fatalf("ReviewID not deterministic: %q vs %q", a, b)
+		t.Fatalf("ReviewDedupKey not deterministic: %q vs %q", a, b)
 	}
-	if c := ReviewID("gmap-1", "user-2", 1614600000000, hash); c == a {
-		t.Error("different user_id must produce a different review id")
+	if c := ReviewDedupKey("gmap-1", "user-2", 1614600000000, hash); c == a {
+		t.Error("different user_id must produce a different dedup key")
 	}
 	if !strings.HasPrefix(a, "sha256:") || len(a) != len("sha256:")+64 {
-		t.Errorf("unexpected review id shape: %q", a)
+		t.Errorf("unexpected dedup key shape: %q", a)
 	}
 	// Whitespace-only differences must not change the text hash.
 	if TextHash("a  b\n c") != TextHash("a b c") {
@@ -239,11 +239,11 @@ func sampleMeta() raw.Meta {
 
 func TestNormalizeMeta(t *testing.T) {
 	observed := time.Date(2021, 9, 1, 0, 0, 0, 0, time.UTC)
-	r, err := NormalizeMeta(sampleMeta(), "id-1", MetaOptions{ObservedAt: observed, ServiceArea: NYCServiceArea})
+	r, err := NormalizeMeta(sampleMeta(), MetaOptions{ObservedAt: observed, ServiceArea: NYCServiceArea})
 	if err != nil {
 		t.Fatalf("NormalizeMeta: %v", err)
 	}
-	if r.ID != "id-1" || r.SourceRecordID != "gmap-1" || r.Name != "Joe's Pizza" {
+	if r.ID != 0 || r.SourceRecordID != "gmap-1" || r.Name != "Joe's Pizza" {
 		t.Fatalf("identity = %+v", r)
 	}
 	if r.Location == nil || r.Location.Longitude != -74.002 || r.BoroughGuess != "manhattan" {
@@ -279,25 +279,25 @@ func TestNormalizeMetaFilterAndReject(t *testing.T) {
 
 	notFood := sampleMeta()
 	notFood.Category = []string{"Museum"}
-	if _, err := NormalizeMeta(notFood, "id", MetaOptions{ObservedAt: observed, ServiceArea: NYCServiceArea}); !errors.Is(err, ErrFiltered) {
+	if _, err := NormalizeMeta(notFood, MetaOptions{ObservedAt: observed, ServiceArea: NYCServiceArea}); !errors.Is(err, ErrFiltered) {
 		t.Errorf("non-food want ErrFiltered, got %v", err)
 	}
 
 	noGmap := sampleMeta()
 	noGmap.GmapID = ""
-	if _, err := NormalizeMeta(noGmap, "id", MetaOptions{ObservedAt: observed, ServiceArea: NYCServiceArea}); err == nil {
+	if _, err := NormalizeMeta(noGmap, MetaOptions{ObservedAt: observed, ServiceArea: NYCServiceArea}); err == nil {
 		t.Error("missing gmap_id should be rejected")
 	}
 
 	badCoords := sampleMeta()
 	badCoords.Latitude = nil
-	if _, err := NormalizeMeta(badCoords, "id", MetaOptions{ObservedAt: observed, ServiceArea: NYCServiceArea}); err == nil {
+	if _, err := NormalizeMeta(badCoords, MetaOptions{ObservedAt: observed, ServiceArea: NYCServiceArea}); err == nil {
 		t.Error("missing coordinates should be rejected")
 	}
 
 	noName := sampleMeta()
 	noName.Name = "  "
-	if _, err := NormalizeMeta(noName, "id", MetaOptions{ObservedAt: observed, ServiceArea: NYCServiceArea}); err == nil {
+	if _, err := NormalizeMeta(noName, MetaOptions{ObservedAt: observed, ServiceArea: NYCServiceArea}); err == nil {
 		t.Error("missing name should be rejected")
 	}
 }
@@ -307,7 +307,7 @@ func TestNormalizeMetaFiltersOutsideServiceArea(t *testing.T) {
 	opts := MetaOptions{ObservedAt: observed, ServiceArea: NYCServiceArea}
 
 	inside := sampleMeta()
-	if _, err := NormalizeMeta(inside, "id", opts); err != nil {
+	if _, err := NormalizeMeta(inside, opts); err != nil {
 		t.Fatalf("NYC place should be accepted: %v", err)
 	}
 
@@ -319,7 +319,7 @@ func TestNormalizeMetaFiltersOutsideServiceArea(t *testing.T) {
 		outside := sampleMeta()
 		outside.Latitude = &coords[0]
 		outside.Longitude = &coords[1]
-		if _, err := NormalizeMeta(outside, "id", opts); !errors.Is(err, ErrFiltered) {
+		if _, err := NormalizeMeta(outside, opts); !errors.Is(err, ErrFiltered) {
 			t.Errorf("%s place want ErrFiltered, got %v", name, err)
 		}
 	}
@@ -328,7 +328,7 @@ func TestNormalizeMetaFiltersOutsideServiceArea(t *testing.T) {
 	unscoped := sampleMeta()
 	unscoped.Latitude = ptr(34.05)
 	unscoped.Longitude = ptr(-118.24)
-	if _, err := NormalizeMeta(unscoped, "id", MetaOptions{ObservedAt: observed}); err != nil {
+	if _, err := NormalizeMeta(unscoped, MetaOptions{ObservedAt: observed}); err != nil {
 		t.Errorf("zero area should disable filtering, got %v", err)
 	}
 }
@@ -355,19 +355,27 @@ func TestNormalizeReviewBlanksShortText(t *testing.T) {
 	opts := ReviewOptions{MinTextChars: 20, ObservedAt: observed}
 
 	long := raw.Review{UserID: "u1", GmapID: "gmap-1", Rating: 5, Time: at.UnixMilli(), Text: ptr("Great pizza and very fast service, would return.")}
-	got, err := NormalizeReview(long, "id-1", opts)
+	got, err := NormalizeReview(long, 1, opts)
 	if err != nil {
 		t.Fatalf("NormalizeReview: %v", err)
 	}
 	if got.Text == "" || got.Rating != 5 || !got.ReviewedAt.Equal(at) {
 		t.Fatalf("review = %+v", got)
 	}
-	if got.ID == "" || got.TextHash == "" {
-		t.Errorf("review identity missing: %+v", got)
+	if got.ID != 0 || got.TextHash == "" {
+		t.Errorf("review id should be DB-assigned (zero) and text hash present: %+v", got)
+	}
+	if got.RestaurantID != 1 {
+		t.Errorf("restaurant id = %d want 1", got.RestaurantID)
+	}
+	// The database assigns reviews.id, so an unresolved restaurant must be
+	// rejected rather than written with a zero foreign key.
+	if _, err := NormalizeReview(long, 0, opts); err == nil {
+		t.Error("review with unresolved restaurant_id was accepted")
 	}
 
 	short := raw.Review{UserID: "u1", GmapID: "gmap-1", Rating: 4, Time: at.UnixMilli(), Text: ptr("ok")}
-	got, err = NormalizeReview(short, "id-1", opts)
+	got, err = NormalizeReview(short, 1, opts)
 	if err != nil {
 		t.Fatalf("NormalizeReview short: %v", err)
 	}
@@ -383,7 +391,7 @@ func TestNormalizeReviewBlanksShortText(t *testing.T) {
 		{UserID: "u", GmapID: "gmap-1", Rating: 3, Time: 0},
 		{UserID: "u", Rating: 3, Time: at.UnixMilli()},
 	} {
-		if _, err := NormalizeReview(bad, "id-1", opts); err == nil {
+		if _, err := NormalizeReview(bad, 1, opts); err == nil {
 			t.Errorf("invalid review accepted: %+v", bad)
 		}
 	}
@@ -409,7 +417,7 @@ func TestSnapshotStatus(t *testing.T) {
 
 func TestKnowledgeScoreAndSelection(t *testing.T) {
 	rich := restaurant.Restaurant{
-		ID:             "rich",
+		ID:             1,
 		SourceRecordID: "g-1",
 		Description:    "Nice place",
 		Address:        "1 St",
@@ -419,14 +427,14 @@ func TestKnowledgeScoreAndSelection(t *testing.T) {
 		ReviewStats:    restaurant.ReviewStats{TextReviewCount: 500},
 	}
 	poor := restaurant.Restaurant{
-		ID:             "poor",
+		ID:             2,
 		SourceRecordID: "g-2",
 		Name:           "Bare",
 		SnapshotStatus: restaurant.StatusOpen,
 		Location:       &restaurant.GeoPoint{},
 	}
 	closed := restaurant.Restaurant{
-		ID:             "closed",
+		ID:             3,
 		SourceRecordID: "g-3",
 		SnapshotStatus: restaurant.StatusPermanentlyClosed,
 		Location:       &restaurant.GeoPoint{},
@@ -443,10 +451,10 @@ func TestKnowledgeScoreAndSelection(t *testing.T) {
 	if len(active) != 2 {
 		t.Fatalf("active = %v want 2 (closed excluded, target below the minimum)", active)
 	}
-	if !contains(active, "rich") || !contains(active, "poor") {
+	if !containsID(active, 1) || !containsID(active, 2) {
 		t.Errorf("active = %v", active)
 	}
-	if contains(active, "closed") {
+	if containsID(active, 3) {
 		t.Error("permanently closed restaurant must not be selected")
 	}
 	// Determinism.
@@ -501,6 +509,15 @@ func TestMissingMetaFields(t *testing.T) {
 	}
 }
 
+func containsID(values []int64, want int64) bool {
+	for _, v := range values {
+		if v == want {
+			return true
+		}
+	}
+	return false
+}
+
 func contains(values []string, want string) bool {
 	for _, v := range values {
 		if v == want {
@@ -508,4 +525,40 @@ func contains(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// Regression: a review contained a literal NUL byte, which PostgreSQL rejects
+// (SQLSTATE 22021) while a document store accepts silently. Scrubbing happens in
+// the curation layer so the rule applies to every backend.
+func TestScrubPIIRemovesControlCharacters(t *testing.T) {
+	cases := map[string]string{
+		"LAST RESORT—\x00Worst service": "LAST RESORT—Worst service",
+		"line\nbreak\ttab":              "line\nbreak\ttab",
+		"carriage\r\nreturn":            "carriage\r\nreturn",
+		"bell\a and del\x7f":            "bell and del",
+		"vertical\x0btab and form\x0c":  "verticaltab and form",
+		"paragraph sep\u2028here":       "paragraph sephere",
+		"clean text":                    "clean text",
+		"":                              "",
+	}
+	for in, want := range cases {
+		if got := ScrubPII(in); got != want {
+			t.Errorf("ScrubPII(%q) = %q want %q", in, got, want)
+		}
+	}
+}
+
+// ScrubPII must still mask PII after the control-character pass, so neither rule
+// can shadow the other.
+func TestScrubPIIStillMasksAfterStripping(t *testing.T) {
+	got := ScrubPII("mail me at a\x00b@example.com or call 212-555-0199")
+	if strings.Contains(got, "a@b.example.com") {
+		t.Errorf("email survived scrubbing: %q", got)
+	}
+	if strings.Contains(got, "212-555-0199") {
+		t.Errorf("phone survived scrubbing: %q", got)
+	}
+	if strings.ContainsRune(got, '\x00') {
+		t.Errorf("NUL survived scrubbing: %q", got)
+	}
 }

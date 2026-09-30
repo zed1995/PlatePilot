@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/zed/platepilot/data-pipeline/internal/pipeline"
+	"github.com/zed/platepilot/shared/domain/restaurant"
 	"github.com/zed/platepilot/shared/domain/review"
 	"github.com/zed/platepilot/shared/testkit"
 )
@@ -160,7 +161,7 @@ func TestRunImportIsIdempotent(t *testing.T) {
 	}
 	first, _ := restaurants.ListRestaurants(ctx, 0)
 	ids, _ := reviews.RestaurantIDsWithReviews(ctx)
-	beforeCounts := make(map[string]review.Counts, len(ids))
+	beforeCounts := make(map[int64]review.Counts, len(ids))
 	for _, id := range ids {
 		counts, _ := reviews.CountByRestaurant(ctx, id)
 		beforeCounts[id] = counts
@@ -177,7 +178,7 @@ func TestRunImportIsIdempotent(t *testing.T) {
 	for _, id := range ids {
 		counts, _ := reviews.CountByRestaurant(ctx, id)
 		if counts.StoredCount != beforeCounts[id].StoredCount {
-			t.Errorf("review count for %s grew from %d to %d", id, beforeCounts[id].StoredCount, counts.StoredCount)
+			t.Errorf("review count for %d grew from %d to %d", id, beforeCounts[id].StoredCount, counts.StoredCount)
 		}
 	}
 }
@@ -246,5 +247,63 @@ func TestRunImportCountsDuplicateRecords(t *testing.T) {
 	counts, _ := reviews.CountByRestaurant(ctx, all[0].ID)
 	if counts.StoredCount != 1 {
 		t.Errorf("reviews = %d want 1", counts.StoredCount)
+	}
+}
+
+func TestImportReviewFileOverride(t *testing.T) {
+	// The prefilter writes a differently named corpus, so the importer must be
+	// able to read it without the operator renaming the file by hand.
+	ctx := context.Background()
+	dir := t.TempDir()
+	store := filepath.Join(dir, pipeline.DefaultFilteredReviewFile)
+
+	reviews := []string{
+		`{"gmap_id": "gmap-1", "user_id": "u1", "name": "Jane", "time": 1614600000000, "rating": 5, "text": "Great pizza and very fast service, would return."}`,
+	}
+	writeGzJSONL(t, store, reviews)
+	// The raw default name must be absent, so only the override can succeed.
+	if _, err := os.Stat(filepath.Join(dir, pipeline.ReviewFileName)); !os.IsNotExist(err) {
+		t.Fatal("fixture should not contain the default review file name")
+	}
+
+	stores, restaurants, reviewStore, _ := memoryStores()
+	seed := []restaurant.Restaurant{{
+		SourceRecordID: "gmap-1", Name: "Joe's Pizza",
+		Location: &restaurant.GeoPoint{Longitude: -74.002, Latitude: 40.730},
+	}}
+	if _, err := restaurants.UpsertRestaurants(ctx, seed); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// Restaurant ids are now assigned by the store on insert, so resolve the
+	// seeded id through the same source-record map the importer uses.
+	ids, err := restaurants.MapSourceRecordIDs(ctx, []string{"gmap-1"})
+	if err != nil {
+		t.Fatalf("map source record ids: %v", err)
+	}
+	seededID, ok := ids["gmap-1"]
+	if !ok {
+		t.Fatal("seeded restaurant id not resolvable from gmap-1")
+	}
+
+	reports, err := pipeline.RunImport(ctx, stores, pipeline.ImportOptions{
+		Stage: "review", DataDir: dir, ReviewFile: pipeline.DefaultFilteredReviewFile,
+		BatchSize: 10, MinTextChars: 20,
+	})
+	if err != nil {
+		t.Fatalf("RunImport with override: %v", err)
+	}
+	if len(reports) != 1 {
+		t.Fatalf("reports = %d want 1", len(reports))
+	}
+	report := reports[0]
+	if report.Accepted != 1 || report.Written != 1 {
+		t.Fatalf("report = %+v, want 1 accepted and written", report)
+	}
+	// The batch report must record the file actually read, not the default name.
+	if report.SourceFile != pipeline.DefaultFilteredReviewFile {
+		t.Errorf("SourceFile = %q want %q", report.SourceFile, pipeline.DefaultFilteredReviewFile)
+	}
+	if got, _ := reviewStore.CountByRestaurant(ctx, seededID); got.StoredCount != 1 {
+		t.Errorf("stored reviews = %d want 1", got.StoredCount)
 	}
 }

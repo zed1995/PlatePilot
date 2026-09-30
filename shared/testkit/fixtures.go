@@ -1,6 +1,7 @@
 package testkit
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/zed/platepilot/shared/domain/conversation"
@@ -17,7 +18,7 @@ import (
 var FixedSnapshotAt = time.Date(2021, 9, 1, 0, 0, 0, 0, time.UTC)
 
 // SampleRestaurant returns a deterministic restaurant fixture.
-func SampleRestaurant(id, name string) search.RestaurantDetail {
+func SampleRestaurant(id int64, name string) search.RestaurantDetail {
 	price := 2
 	rating := 4.5
 	return search.RestaurantDetail{
@@ -34,7 +35,7 @@ func SampleRestaurant(id, name string) search.RestaurantDetail {
 }
 
 // SampleKnowledgeDocument returns a deterministic knowledge document fixture.
-func SampleKnowledgeDocument(id, restaurantID string, scope evidence.RetrievalScope, content string) evidence.KnowledgeDocument {
+func SampleKnowledgeDocument(id, restaurantID int64, scope evidence.RetrievalScope, content string) evidence.KnowledgeDocument {
 	return evidence.KnowledgeDocument{
 		DocumentID:   id,
 		RestaurantID: restaurantID,
@@ -98,7 +99,7 @@ func SampleMemory(userID, content string) memory.Memory {
 }
 
 // SampleCuratedRestaurant returns a deterministic curated restaurant fixture.
-func SampleCuratedRestaurant(id, sourceRecordID, name string) restaurant.Restaurant {
+func SampleCuratedRestaurant(id int64, sourceRecordID, name string) restaurant.Restaurant {
 	price := 2
 	avg := 4.5
 	return restaurant.Restaurant{
@@ -126,7 +127,7 @@ func SampleCuratedRestaurant(id, sourceRecordID, name string) restaurant.Restaur
 }
 
 // SampleReview returns a deterministic curated review fixture.
-func SampleReview(id, restaurantID, text string) review.Review {
+func SampleReview(id, restaurantID int64, text string) review.Review {
 	return review.Review{
 		ID:               id,
 		RestaurantID:     restaurantID,
@@ -134,7 +135,7 @@ func SampleReview(id, restaurantID, text string) review.Review {
 		ReviewedAt:       FixedSnapshotAt,
 		Text:             text,
 		Language:         "en",
-		TextHash:         "sha256:" + id,
+		TextHash:         fmt.Sprintf("sha256:%d", id),
 		SourceObservedAt: FixedSnapshotAt,
 	}
 }

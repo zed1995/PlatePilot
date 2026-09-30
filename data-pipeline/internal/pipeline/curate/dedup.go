@@ -19,13 +19,16 @@ func TextHash(text string) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
-// ReviewID is the deterministic identity of a review:
+// ReviewDedupKey is the deterministic key used to collapse duplicate reviews
+// within a single import run:
 //
 //	sha256(gmap_id + user_id + time + text_hash)
 //
 // The reviewer's raw user_id only ever participates here; it is never stored in
-// a curated collection.
-func ReviewID(gmapID, userID string, unixMilli int64, textHash string) string {
+// a curated collection. It is *not* the review's primary key: reviews.id is an
+// identity column assigned by the database, and re-import idempotency is
+// enforced by the unique index on (restaurant_id, text_hash, rating, reviewed_at).
+func ReviewDedupKey(gmapID, userID string, unixMilli int64, textHash string) string {
 	h := sha256.New()
 	h.Write([]byte(gmapID))
 	h.Write([]byte{0})

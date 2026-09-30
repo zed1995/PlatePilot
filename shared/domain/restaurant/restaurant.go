@@ -2,7 +2,7 @@
 // data pipeline and read by the retrieval/agent layers.
 //
 // The package is part of the pure domain layer: it depends only on the standard
-// library, so Mongo, BSON, or vendor types can never leak into it.
+// library, so driver or vendor types can never leak into it.
 package restaurant
 
 import "time"
@@ -23,7 +23,7 @@ const SourceGoogleLocal2021 = "google_local_2021"
 
 // Restaurant is the curated master document: one document per place.
 type Restaurant struct {
-	ID             string      `json:"restaurant_id"`
+	ID             int64       `json:"restaurant_id"`
 	Source         string      `json:"source"`
 	SourceRecordID string      `json:"source_record_id"`
 	Name           string      `json:"name"`

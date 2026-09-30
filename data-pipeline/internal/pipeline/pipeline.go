@@ -28,15 +28,15 @@ func Embed(_ context.Context, _ config.Config) error {
 }
 
 // ConfigSummary summarises the pipeline configuration without touching any
-// data. It is safe to run before Atlas is reachable.
+// data. It is safe to run before the database is reachable.
 func ConfigSummary(cfg config.Config) string {
 	return fmt.Sprintf(
-		"data dir: %s (batch=%d, workers=%d)\nmongo: enabled=%t database=%s\nembedding: provider=%q model=%q dimensions=%d",
+		"data dir: %s (batch=%d, workers=%d)\npostgres: enabled=%t database=%s\nembedding: provider=%q model=%q dimensions=%d",
 		cfg.Pipeline.DataDir,
 		cfg.Pipeline.BatchSize,
 		cfg.Pipeline.Workers,
-		cfg.Mongo.Enabled(),
-		cfg.Mongo.Database,
+		cfg.Postgres.Enabled(),
+		cfg.Postgres.Database,
 		cfg.Embedding.Provider,
 		cfg.Embedding.Model,
 		cfg.Embedding.Dimensions,

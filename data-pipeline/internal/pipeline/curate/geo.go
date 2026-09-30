@@ -6,8 +6,12 @@ import (
 	"strings"
 )
 
-// Approximate borough boxes for NYC. The dataset has no administrative boundary,
-// so borough_guess is a coarse containment test and must be documented as such.
+// nycBoroughs are the fallback bounding boxes for NYC, used only when no
+// boundary geometry is loaded. They are a coarse containment test kept solely so
+// a missing boundary file degrades instead of failing the import. Measured
+// against the real boundaries they disagree on roughly 10% of restaurants and
+// label part of New Jersey and Long Island as boroughs, which is why they are
+// never used when geometry is present.
 type boroughBox struct {
 	name           string
 	minLat, maxLat float64
@@ -35,14 +39,55 @@ func ValidCoordinates(lat, lon *float64) bool {
 	return !(*lat == 0 && *lon == 0)
 }
 
-// BoroughGuess returns the first matching NYC borough box, or "" if none match.
-func BoroughGuess(lat, lon float64) string {
+// boroughResolver decides which borough a coordinate falls in.
+//
+// The real implementation is a point-in-polygon test against the NYC
+// Department of City Planning borough boundaries (water areas included). The
+// bounding boxes are only consulted when no geometry is loaded.
+type boroughResolver struct {
+	boundaries *Boundaries
+}
+
+func newBoroughResolver(boundaries *Boundaries) boroughResolver {
+	return boroughResolver{boundaries: boundaries}
+}
+
+// borough returns the borough label, or "" when the coordinate is outside every
+// loaded area and outside the fallback boxes.
+func (r boroughResolver) borough(lat, lon float64) string {
+	if r.boundaries != nil {
+		// With real geometry available the fallback must not run: a point just
+		// outside a borough boundary is genuinely "not in a borough", and
+		// widening it back to a rectangle would reintroduce the New Jersey and
+		// Long Island false positives.
+		return r.boundaries.BoroughAt(lat, lon)
+	}
 	for _, box := range nycBoroughs {
 		if lat >= box.minLat && lat <= box.maxLat && lon >= box.minLon && lon <= box.maxLon {
 			return box.name
 		}
 	}
 	return ""
+}
+
+// Exact reports whether labels come from real boundary geometry rather than the
+// fallback boxes. The import report records this so a corpus can be interpreted.
+func (r boroughResolver) Exact() bool {
+	return r.boundaries != nil && r.boundaries.AreaCount() > 0
+}
+
+// version returns the boundary release identifier, or "" for the fallback.
+func (r boroughResolver) version() string {
+	return r.boundaries.Version()
+}
+
+// BoroughGuess returns the first matching NYC borough box, or "" if none match.
+//
+// Deprecated: this is the fallback-only entry point kept for tests and callers
+// that have no boundary geometry. The importer passes a resolver through
+// MetaOptions so labels come from real administrative boundaries.
+func BoroughGuess(lat, lon float64) string {
+	return newBoroughResolver(nil).borough(lat, lon)
 }
 
 // ServiceArea is the geographic scope for ingesting places. The Google Local

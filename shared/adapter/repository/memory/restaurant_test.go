@@ -11,7 +11,7 @@ import (
 	"github.com/zed/platepilot/shared/domain/search"
 )
 
-func newRestaurant(id, name, neighborhood string, cuisines []string, price int, rating float64, openNow string) search.RestaurantDetail {
+func newRestaurant(id int64, name, neighborhood string, cuisines []string, price int, rating float64, openNow string) search.RestaurantDetail {
 	return search.RestaurantDetail{
 		RestaurantID: id,
 		Name:         name,
@@ -29,13 +29,13 @@ func seedRestaurants(t *testing.T, repo *RestaurantRepository) {
 	t.Helper()
 	ctx := context.Background()
 	fixtures := []search.RestaurantDetail{
-		newRestaurant("r1", "Quiet Pizza", "Greenwich Village", []string{"pizza", "italian"}, 2, 4.6, "true"),
-		newRestaurant("r2", "Loud Sushi", "SoHo", []string{"sushi", "japanese"}, 3, 4.8, "false"),
-		newRestaurant("r3", "Budget Tacos", "SoHo", []string{"mexican"}, 1, 4.1, "true"),
+		newRestaurant(1, "Quiet Pizza", "Greenwich Village", []string{"pizza", "italian"}, 2, 4.6, "true"),
+		newRestaurant(2, "Loud Sushi", "SoHo", []string{"sushi", "japanese"}, 3, 4.8, "false"),
+		newRestaurant(3, "Budget Tacos", "SoHo", []string{"mexican"}, 1, 4.1, "true"),
 	}
 	for _, fixture := range fixtures {
 		if err := repo.Upsert(ctx, fixture); err != nil {
-			t.Fatalf("seed upsert %s: %v", fixture.RestaurantID, err)
+			t.Fatalf("seed upsert %d: %v", fixture.RestaurantID, err)
 		}
 	}
 }
@@ -44,7 +44,7 @@ func TestRestaurantGetByID(t *testing.T) {
 	repo := NewRestaurantRepository()
 	seedRestaurants(t, repo)
 
-	got, err := repo.GetByID(context.Background(), "r1")
+	got, err := repo.GetByID(context.Background(), 1)
 	if err != nil {
 		t.Fatalf("GetByID: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestRestaurantGetByID(t *testing.T) {
 
 func TestRestaurantGetByIDNotFoundUsesSentinel(t *testing.T) {
 	repo := NewRestaurantRepository()
-	_, err := repo.GetByID(context.Background(), "missing")
+	_, err := repo.GetByID(context.Background(), 987654321)
 	if !errors.Is(err, errs.ErrNotFound) {
 		t.Fatalf("want errs.ErrNotFound, got %v", err)
 	}
@@ -64,7 +64,7 @@ func TestRestaurantGetByIDNotFoundUsesSentinel(t *testing.T) {
 func TestRestaurantUpsertIsIdempotent(t *testing.T) {
 	repo := NewRestaurantRepository()
 	ctx := context.Background()
-	restaurant := newRestaurant("r1", "Quiet Pizza", "SoHo", []string{"pizza"}, 2, 4.6, "true")
+	restaurant := newRestaurant(1, "Quiet Pizza", "SoHo", []string{"pizza"}, 2, 4.6, "true")
 
 	for i := 0; i < 3; i++ {
 		if err := repo.Upsert(ctx, restaurant); err != nil {
@@ -97,12 +97,12 @@ func TestRestaurantSearchAppliesHardFilters(t *testing.T) {
 	cases := []struct {
 		name   string
 		filter search.RestaurantFilter
-		want   []string
+		want   []int64
 	}{
-		{"cuisine", search.RestaurantFilter{Cuisines: []string{"pizza"}}, []string{"r1"}},
-		{"price", search.RestaurantFilter{PriceLevels: priceThree}, []string{"r2"}},
-		{"neighborhood", search.RestaurantFilter{Neighborhood: "soho"}, []string{"r2", "r3"}},
-		{"combined", search.RestaurantFilter{Cuisines: []string{"mexican"}, PriceLevels: []int{1}}, []string{"r3"}},
+		{"cuisine", search.RestaurantFilter{Cuisines: []string{"pizza"}}, []int64{1}},
+		{"price", search.RestaurantFilter{PriceLevels: priceThree}, []int64{2}},
+		{"neighborhood", search.RestaurantFilter{Neighborhood: "soho"}, []int64{2, 3}},
+		{"combined", search.RestaurantFilter{Cuisines: []string{"mexican"}, PriceLevels: []int{1}}, []int64{3}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -152,7 +152,7 @@ func TestRestaurantSearchMissingAttributeIsUnknownNotFalse(t *testing.T) {
 	repo := NewRestaurantRepository()
 	ctx := context.Background()
 	// No "open_now" attribute at all: an unknown hard condition must not match.
-	restaurant := newRestaurant("r9", "Mystery Diner", "SoHo", []string{"diner"}, 2, 4.0, "true")
+	restaurant := newRestaurant(9, "Mystery Diner", "SoHo", []string{"diner"}, 2, 4.0, "true")
 	delete(restaurant.Attributes, "open_now")
 	if err := repo.Upsert(ctx, restaurant); err != nil {
 		t.Fatal(err)
@@ -176,7 +176,7 @@ func TestRestaurantSearchRanksTextMatchesAndHonoursTopK(t *testing.T) {
 	if err != nil {
 		t.Fatalf("search: %v", err)
 	}
-	if len(got) == 0 || got[0].RestaurantID != "r1" {
+	if len(got) == 0 || got[0].RestaurantID != 1 {
 		t.Fatalf("text search should rank the name match first, got %v", candidateIDs(got))
 	}
 	if len(got[0].Reasons) == 0 {
@@ -196,7 +196,7 @@ func TestRestaurantSearchDefaultTopKIsBounded(t *testing.T) {
 	repo := NewRestaurantRepository()
 	ctx := context.Background()
 	for i := 0; i < 25; i++ {
-		restaurant := newRestaurant(string(rune('a'+i)), "Diner", "SoHo", []string{"diner"}, 2, 4.0, "true")
+		restaurant := newRestaurant(int64(i+1), "Diner", "SoHo", []string{"diner"}, 2, 4.0, "true")
 		if err := repo.Upsert(ctx, restaurant); err != nil {
 			t.Fatal(err)
 		}
@@ -211,14 +211,14 @@ func TestRestaurantSearchDefaultTopKIsBounded(t *testing.T) {
 }
 
 // sortedCopy returns a sorted copy so assertions do not depend on tie-break order.
-func sortedCopy(in []string) []string {
-	out := append([]string(nil), in...)
-	sort.Strings(out)
+func sortedCopy(in []int64) []int64 {
+	out := append([]int64(nil), in...)
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
 	return out
 }
 
-func candidateIDs(candidates []search.RestaurantCandidate) []string {
-	ids := make([]string, 0, len(candidates))
+func candidateIDs(candidates []search.RestaurantCandidate) []int64 {
+	ids := make([]int64, 0, len(candidates))
 	for _, candidate := range candidates {
 		ids = append(ids, candidate.RestaurantID)
 	}

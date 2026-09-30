@@ -67,7 +67,7 @@ func TestLoaderCollectsEveryProblem(t *testing.T) {
 
 func TestLoaderCompositeDefaults(t *testing.T) {
 	for _, key := range []string{
-		"APP_ENV", "LOG_LEVEL", "MONGO_URI", "MONGO_DATABASE",
+		"APP_ENV", "LOG_LEVEL", "POSTGRES_DSN", "POSTGRES_DATABASE",
 		"EMBEDDING_PROVIDER", "EMBEDDING_MODEL", "EMBEDDING_DIMENSIONS",
 	} {
 		t.Setenv(key, "")
@@ -81,8 +81,11 @@ func TestLoaderCompositeDefaults(t *testing.T) {
 	if got := l.Log().Level; got != "info" {
 		t.Errorf("LOG_LEVEL default = %q", got)
 	}
-	if got := l.Mongo().Database; got != "platepilot" {
-		t.Errorf("MONGO_DATABASE default = %q", got)
+	if got := l.Postgres().Database; got != "platepilot" {
+		t.Errorf("POSTGRES_DATABASE default = %q", got)
+	}
+	if got := l.Postgres().DSN; got != "" {
+		t.Errorf("POSTGRES_DSN default = %q, want empty", got)
 	}
 	if got := l.Embedding().Model; got != "qwen3-embedding:0.6b" {
 		t.Errorf("EMBEDDING_MODEL default = %q", got)
@@ -105,11 +108,11 @@ func TestSubConfigValidation(t *testing.T) {
 	if problems := (LogConfig{Level: "loud"}).Validate(); len(problems) != 1 {
 		t.Errorf("bad LOG_LEVEL should report one problem, got %v", problems)
 	}
-	if problems := (MongoConfig{URI: "mongodb://x"}).Validate(); len(problems) == 0 {
-		t.Error("Mongo with empty database should report a problem")
+	if problems := (PostgresConfig{DSN: "postgres://x"}).Validate(); len(problems) == 0 {
+		t.Error("Postgres with empty database should report a problem")
 	}
-	if problems := (MongoConfig{}).Validate(); len(problems) != 0 {
-		t.Error("disabled Mongo should report no problems")
+	if problems := (PostgresConfig{}).Validate(); len(problems) != 0 {
+		t.Error("disabled Postgres should report no problems")
 	}
 	if problems := (EmbeddingConfig{Provider: "ollama", Dimensions: 0}).Validate(); len(problems) == 0 {
 		t.Error("embedding with zero dimensions should report a problem")
@@ -165,9 +168,9 @@ func TestRedaction(t *testing.T) {
 	if got := Redact("super-secret"); got != "***" {
 		t.Errorf("secret should be redacted, got %q", got)
 	}
-	uri := "mongodb+srv://user:pass@cluster.example/db"
+	uri := "postgres://platepilot:hunter2@cluster.example/platepilot"
 	redacted := RedactURI(uri)
-	if strings.Contains(redacted, "pass") || strings.Contains(redacted, "user") {
+	if strings.Contains(redacted, "hunter2") || strings.Contains(redacted, "platepilot:") {
 		t.Errorf("credentials not removed: %q", redacted)
 	}
 	if !strings.Contains(redacted, "cluster.example") {
@@ -175,5 +178,37 @@ func TestRedaction(t *testing.T) {
 	}
 	if got := RedactURI("not a uri"); got != "***" {
 		t.Errorf("unparseable uri should be fully redacted, got %q", got)
+	}
+}
+
+func TestRedactKeywordDSN(t *testing.T) {
+	// A libpq keyword/value DSN must lose the password but keep the host, so a
+	// log line stays useful for debugging.
+	got := RedactURI("host=localhost port=55432 dbname=platepilot user=platepilot password=hunter2 sslmode=disable")
+	if strings.Contains(got, "hunter2") {
+		t.Errorf("password not redacted: %q", got)
+	}
+	if !strings.Contains(got, "host=localhost") {
+		t.Errorf("host should be preserved: %q", got)
+	}
+	if !strings.Contains(got, "dbname=platepilot") {
+		t.Errorf("dbname should be preserved: %q", got)
+	}
+
+	// Arbitrary text must still be redacted wholesale rather than passed through.
+	for _, opaque := range []string{"not a uri", "some free text", "a=b"} {
+		if got := RedactURI(opaque); got != "***" {
+			t.Errorf("RedactURI(%q) = %q, want ***", opaque, got)
+		}
+	}
+}
+
+func TestRedactPostgresURL(t *testing.T) {
+	got := RedactURI("postgres://platepilot:hunter2@localhost:55432/platepilot?sslmode=disable")
+	if strings.Contains(got, "hunter2") || strings.Contains(got, "platepilot:") {
+		t.Errorf("credentials not removed: %q", got)
+	}
+	if !strings.Contains(got, "localhost:55432") {
+		t.Errorf("host should be preserved: %q", got)
 	}
 }

@@ -45,6 +45,11 @@ type Reader struct {
 	scanner *bufio.Scanner
 	lineNo  int64
 	err     error
+	// counter measures compressed bytes read from the file. A gzip stream is
+	// not seekable and the total line count is unknown up front, so
+	// consumed/file-size is the only honest completion signal for a
+	// multi-gigabyte import.
+	counter *countingReader
 }
 
 // Open opens a gzip JSONL file for streaming.
@@ -53,14 +58,32 @@ func Open(path string) (*Reader, error) {
 	if err != nil {
 		return nil, err
 	}
-	gz, err := gzip.NewReader(file)
+	// Counting the *compressed* side (the file, not the gzip stream) is what
+	// makes progress meaningful: the on-disk size is known before the first
+	// byte is decompressed, so consumed/size is a true completion ratio.
+	counter := &countingReader{r: file}
+	gz, err := gzip.NewReader(counter)
 	if err != nil {
 		_ = file.Close()
 		return nil, fmt.Errorf("open gzip %s: %w", path, err)
 	}
 	scanner := bufio.NewScanner(gz)
 	scanner.Buffer(make([]byte, 0, 1<<20), maxLineBytes)
-	return &Reader{path: path, file: file, gz: gz, scanner: scanner}, nil
+	return &Reader{path: path, file: file, gz: gz, scanner: scanner, counter: counter}, nil
+}
+
+// countingReader tracks how many compressed bytes have been pulled from the
+// underlying file. gzip.NewReader reads its header eagerly, so the count is
+// already above zero before the first Next call.
+type countingReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
 }
 
 // Next advances to the next non-empty line. It returns false at EOF or on a
@@ -88,6 +111,21 @@ func (r *Reader) Path() string { return r.path }
 
 // Err returns the terminal read error, if any.
 func (r *Reader) Err() error { return r.err }
+
+// Progress reports how far the read has advanced. total is the compressed file
+// size in bytes; a zero total disables percentage reporting. Both values are
+// snapshot copies, so a caller may print them from another goroutine.
+func (r *Reader) Progress() (read, total int64) {
+	if r.counter == nil {
+		return 0, 0
+	}
+	if r.file != nil {
+		if info, err := r.file.Stat(); err == nil {
+			total = info.Size()
+		}
+	}
+	return r.counter.n, total
+}
 
 // Decode unmarshals the current line into v.
 func (r *Reader) Decode(v any) error {
