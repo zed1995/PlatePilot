@@ -14,6 +14,7 @@ type (
 	RestaurantStore        = memrepo.RestaurantStore
 	ReviewStore            = memrepo.ReviewStore
 	PipelineStore          = memrepo.PipelineStore
+	KnowledgeStore         = memrepo.KnowledgeStore
 )
 
 // NewRestaurantRepository returns an empty in-memory restaurant repository.
@@ -54,4 +55,9 @@ func NewReviewStore() *memrepo.ReviewStore {
 // NewPipelineStore returns an empty in-memory pipeline audit store.
 func NewPipelineStore() *memrepo.PipelineStore {
 	return memrepo.NewPipelineStore()
+}
+
+// NewKnowledgeStore returns an empty in-memory knowledge document store.
+func NewKnowledgeStore() *memrepo.KnowledgeStore {
+	return memrepo.NewKnowledgeStore()
 }

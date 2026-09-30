@@ -24,6 +24,19 @@ const (
 	CodeProviderTimeout     Code = "provider_timeout"
 	CodeProviderUnavailable Code = "provider_unavailable"
 	CodeInternal            Code = "internal"
+
+	// Embedding codes cover the M2 vector pipeline. Transport-level failures
+	// deliberately reuse CodeProviderTimeout and CodeProviderUnavailable above;
+	// these exist only for the cases that are specific to embedding output,
+	// where the distinction between "the provider was down" and "the provider
+	// answered with something unusable" decides whether a retry can help.
+	CodeEmbeddingEmpty             Code = "embedding_empty"
+	CodeEmbeddingDimensionMismatch Code = "embedding_dimension_mismatch"
+	CodeEmbeddingNaN               Code = "embedding_nan"
+	CodeEmbeddingInf               Code = "embedding_inf"
+	CodeEmbeddingZeroVector        Code = "embedding_zero_vector"
+	CodeEmbeddingDuplicate         Code = "embedding_duplicate"
+	CodeEmbeddingModelMismatch     Code = "embedding_model_mismatch"
 )
 
 var httpStatusByCode = map[Code]int{
@@ -35,6 +48,14 @@ var httpStatusByCode = map[Code]int{
 	CodeProviderTimeout:     http.StatusGatewayTimeout,
 	CodeProviderUnavailable: http.StatusBadGateway,
 	CodeInternal:            http.StatusInternalServerError,
+
+	CodeEmbeddingEmpty:             http.StatusBadRequest,
+	CodeEmbeddingDimensionMismatch: http.StatusBadRequest,
+	CodeEmbeddingNaN:               http.StatusUnprocessableEntity,
+	CodeEmbeddingInf:               http.StatusUnprocessableEntity,
+	CodeEmbeddingZeroVector:        http.StatusUnprocessableEntity,
+	CodeEmbeddingDuplicate:         http.StatusUnprocessableEntity,
+	CodeEmbeddingModelMismatch:     http.StatusConflict,
 }
 
 // Error is the canonical error type used across PlatePilot.
@@ -140,4 +161,12 @@ var (
 	ErrProviderTimeout     = New(CodeProviderTimeout, "provider timeout")
 	ErrProviderUnavailable = New(CodeProviderUnavailable, "provider unavailable")
 	ErrInternal            = New(CodeInternal, "internal error")
+
+	ErrEmbeddingEmpty             = New(CodeEmbeddingEmpty, "embedding is empty")
+	ErrEmbeddingDimensionMismatch = New(CodeEmbeddingDimensionMismatch, "embedding dimension mismatch")
+	ErrEmbeddingNaN               = New(CodeEmbeddingNaN, "embedding contains NaN")
+	ErrEmbeddingInf               = New(CodeEmbeddingInf, "embedding contains Inf")
+	ErrEmbeddingZeroVector        = New(CodeEmbeddingZeroVector, "embedding is a zero vector")
+	ErrEmbeddingDuplicate         = New(CodeEmbeddingDuplicate, "embedding duplicates an earlier vector")
+	ErrEmbeddingModelMismatch     = New(CodeEmbeddingModelMismatch, "embedding model does not match stored documents")
 )

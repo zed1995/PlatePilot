@@ -252,13 +252,23 @@ type ReviewStore struct {
 	// key is the only thing that makes a re-import idempotent.
 	byKey  map[string]int64
 	nextID int64
+	// summaries is keyed by (restaurant_id, topic), mirroring the composite
+	// primary key of review_summaries.
+	summaries map[summaryKey]review.Summary
+}
+
+// summaryKey identifies one topic rollup of one restaurant.
+type summaryKey struct {
+	restaurantID int64
+	topic        string
 }
 
 // NewReviewStore returns an empty in-memory review store.
 func NewReviewStore() *ReviewStore {
 	return &ReviewStore{
-		byID:  make(map[int64]review.Review),
-		byKey: make(map[string]int64),
+		summaries: make(map[summaryKey]review.Summary),
+		byID:      make(map[int64]review.Review),
+		byKey:     make(map[string]int64),
 	}
 }
 
@@ -477,4 +487,80 @@ func (s *PipelineStore) BatchDetail(_ context.Context, batchID int64) (review.Ba
 		return review.BatchReport{}, nil, errs.Newf(errs.CodeNotFound, "batch %d not found", batchID)
 	}
 	return b, append([]review.Rejection(nil), s.rejections[batchID]...), nil
+}
+
+// MarkRepresentative flags the given reviews and clears the flag on every other
+// review of the same restaurants, mirroring the Postgres statement group.
+func (s *ReviewStore) MarkRepresentative(_ context.Context, reviewIDs []int64) (int, error) {
+	if len(reviewIDs) == 0 {
+		return 0, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	selected := make(map[int64]struct{}, len(reviewIDs))
+	for _, id := range reviewIDs {
+		selected[id] = struct{}{}
+	}
+	restaurants := make(map[int64]struct{})
+	for id := range selected {
+		if r, ok := s.byID[id]; ok {
+			restaurants[r.RestaurantID] = struct{}{}
+		}
+	}
+
+	changed := 0
+	for id, r := range s.byID {
+		if _, inRestaurant := restaurants[r.RestaurantID]; !inRestaurant {
+			continue
+		}
+		_, want := selected[id]
+		if r.IsRepresentative != want {
+			r.IsRepresentative = want
+			s.byID[id] = r
+			changed++
+		}
+	}
+	return changed, nil
+}
+
+// UpsertSummaries writes per-topic rollups keyed by (restaurant_id, topic).
+func (s *ReviewStore) UpsertSummaries(_ context.Context, items []review.Summary) (int, error) {
+	if len(items) == 0 {
+		return 0, nil
+	}
+	for i, item := range items {
+		if item.RestaurantID <= 0 {
+			return 0, errs.Newf(errs.CodeInvalidArgument,
+				"memory: summary %d has no restaurant id", i)
+		}
+		if strings.TrimSpace(item.Topic) == "" {
+			return 0, errs.Newf(errs.CodeInvalidArgument,
+				"memory: summary %d has no topic", i)
+		}
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, item := range items {
+		s.summaries[summaryKey{item.RestaurantID, item.Topic}] = item
+	}
+	return len(items), nil
+}
+
+// GetSummaries returns one restaurant's rollups, ordered by topic so the
+// generated documents are byte-stable across runs.
+func (s *ReviewStore) GetSummaries(_ context.Context, restaurantID int64) ([]review.Summary, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := make([]review.Summary, 0, len(s.summaries))
+	for key, item := range s.summaries {
+		if key.restaurantID == restaurantID {
+			out = append(out, item)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Topic < out[j].Topic })
+	return out, nil
 }

@@ -149,12 +149,25 @@ func NormalizeReview(r raw.Review, restaurantID int64, opts ReviewOptions) (revi
 	}
 	textHash := TextHash(text)
 
+	// Topics are derived here rather than in the M2 stage so that they are
+	// part of the curated record: they are a property of the text, they are
+	// needed to build the summary documents, and computing them once at import
+	// keeps the summary stage a pure function of what is already stored.
+	//
+	// A review whose text was dropped (too short) gets no topics, because
+	// there is nothing left to classify.
+	var topics []string
+	if text != "" {
+		topics = ClassifyTopics(text)
+	}
+
 	return review.Review{
 		RestaurantID:     restaurantID,
 		Rating:           r.Rating,
 		ReviewedAt:       at,
 		Text:             text,
 		TextHash:         textHash,
+		TopicTags:        topics,
 		SourceObservedAt: opts.ObservedAt,
 	}, nil
 }

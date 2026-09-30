@@ -3,6 +3,7 @@ package port
 import (
 	"context"
 
+	"github.com/zed/platepilot/shared/domain/evidence"
 	"github.com/zed/platepilot/shared/domain/restaurant"
 	"github.com/zed/platepilot/shared/domain/review"
 )
@@ -61,6 +62,21 @@ type ReviewStore interface {
 	// RestaurantIDsWithReviews returns restaurant IDs that have at least one
 	// stored review, so the pipeline can rebuild review_stats in batches.
 	RestaurantIDsWithReviews(ctx context.Context) ([]int64, error)
+
+	// MarkRepresentative flags reviews as representative.
+	//
+	// The flag is relative, not permanent: clearing the restaurant's other
+	// rows and setting the selected ones happens in the same call, because a
+	// review left flagged from an earlier selection would keep inflating the
+	// representative count.
+	MarkRepresentative(ctx context.Context, reviewIDs []int64) (int, error)
+
+	// UpsertSummaries writes per-topic review rollups. Re-running the summary
+	// stage replaces the rows for the given keys rather than accumulating.
+	UpsertSummaries(ctx context.Context, items []review.Summary) (int, error)
+
+	// GetSummaries returns the stored rollups for one restaurant.
+	GetSummaries(ctx context.Context, restaurantID int64) ([]review.Summary, error)
 }
 
 // PipelineStore persists ingestion audit records (batch reports + rejections).
@@ -72,4 +88,66 @@ type PipelineStore interface {
 	RecordRejections(ctx context.Context, items []review.Rejection) error
 	ListBatches(ctx context.Context, limit int) ([]review.BatchReport, error)
 	BatchDetail(ctx context.Context, batchID int64) (review.BatchReport, []review.Rejection, error)
+}
+
+// KnowledgeStore is the write-side port for the M2 retrieval documents.
+//
+// It is deliberately separate from KnowledgeRepository, which is the read
+// path the chat service uses: that one answers "what did we learn about this
+// restaurant", while this one owns versioning and vector writes for the
+// pipeline. Mixing them would put document lifecycle rules behind a port whose
+// job is to look things up.
+type KnowledgeStore interface {
+	// UpsertDocuments inserts new document versions and returns how many rows
+	// were inserted, updated, and skipped as already-present.
+	//
+	// Implementations must be idempotent on (restaurant_id, retrieval_scope,
+	// doc_type, content_hash): an unchanged re-run writes nothing. Changed
+	// content becomes a new version rather than overwriting the old row, so a
+	// citation issued before the change still resolves.
+	UpsertDocuments(ctx context.Context, docs []evidence.KnowledgeDocument) (UpsertResult, error)
+
+	// PendingDocuments returns active documents with no vector, oldest first,
+	// for the embedding stage to fill.
+	PendingDocuments(ctx context.Context, limit int) ([]evidence.KnowledgeDocument, error)
+
+	// SetEmbedding writes vectors for existing document ids and stamps the
+	// model and dimension that produced them.
+	//
+	// The dimensions argument is checked against the table's vector width by
+	// the database; the caller validates it first so a mismatch is reported
+	// against the configuration instead of the driver.
+	SetEmbedding(ctx context.Context, docIDs []int64, vectors [][]float32, model string, dimensions int) (int, error)
+
+	// ActivateDocuments switches which version of a (restaurant, scope,
+	// doc_type) group is live.
+	//
+	// Callers must deactivate the superseded rows and activate the new ones in
+	// the same transaction: a window where a group has no active row is a
+	// retrieval black hole, and a window where it has two is a contradiction
+	// the table cannot detect.
+	ActivateDocuments(ctx context.Context, docIDs []int64, active bool) (int, error)
+
+	// ListByRestaurant returns a restaurant's documents in one scope, newest
+	// version first. It exists for verification and debugging.
+	ListByRestaurant(ctx context.Context, restaurantID int64, scope evidence.RetrievalScope) ([]evidence.KnowledgeDocument, error)
+
+	// DistinctEmbeddingModels returns the distinct model identifiers currently
+	// recorded on active documents, so the embedding stage can refuse to mix
+	// two models in one live set.
+	DistinctEmbeddingModels(ctx context.Context) ([]EmbeddingModelInfo, error)
+}
+
+// UpsertResult reports what UpsertDocuments actually did.
+type UpsertResult struct {
+	Inserted int
+	Updated  int
+	Skipped  int
+}
+
+// EmbeddingModelInfo is one model/dimension pair present in the store.
+type EmbeddingModelInfo struct {
+	Model      string
+	Dimensions int
+	Documents  int
 }

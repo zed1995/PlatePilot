@@ -68,3 +68,26 @@ func TestErrorSerializesCodeAndMessageOnly(t *testing.T) {
 		t.Fatalf("unexpected error fields: %+v", err)
 	}
 }
+
+// A code without an httpStatusByCode entry silently degrades to 500, which
+// turns a client error into a server error. Every embedding code must have an
+// explicit mapping.
+func TestEveryEmbeddingCodeHasHTTPStatus(t *testing.T) {
+	codes := []Code{
+		CodeEmbeddingEmpty,
+		CodeEmbeddingDimensionMismatch,
+		CodeEmbeddingNaN,
+		CodeEmbeddingInf,
+		CodeEmbeddingZeroVector,
+		CodeEmbeddingDuplicate,
+		CodeEmbeddingModelMismatch,
+	}
+	for _, code := range codes {
+		if _, ok := httpStatusByCode[code]; !ok {
+			t.Errorf("embedding code %q has no HTTP status mapping", code)
+		}
+		if HTTPStatusOf(New(code, "x")) == http.StatusInternalServerError {
+			t.Errorf("embedding code %q maps to 500", code)
+		}
+	}
+}

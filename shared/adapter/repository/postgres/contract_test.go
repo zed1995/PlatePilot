@@ -12,17 +12,26 @@ import (
 	sharedcfg "github.com/zed/platepilot/shared/config"
 )
 
-// dsn returns the connection string for the test database, or skips.
+// defaultTestDSN is the scratch database the suite is allowed to destroy.
+//
+// It is deliberately a different database from the one the pipeline uses.
+// newStores calls client.Drop, which drops every table: pointing the default
+// at the development database would mean a routine `go test ./...` silently
+// deleted the imported corpus. Making the throwaway name the default means the
+// safe path is also the path taken when nothing is configured.
+const defaultTestDSN = "postgres://platepilot:platepilot@localhost:55432/platepilot_contract_test?sslmode=disable"
+
+// dsn returns the connection string for the throwaway test database.
 //
 // The suite needs a real PostgreSQL with pgvector and PostGIS: the adapter's
 // whole value is that those extensions do the work, so an in-memory double would
-// test nothing that matters. Set PLATEPILOT_TEST_POSTGRES_DSN to point at one
-// (the compose service is the intended source).
+// test nothing that matters. Point PLATEPILOT_TEST_POSTGRES_DSN at a scratch
+// database to override; do not point it at a database holding real data.
 func dsn(t *testing.T) string {
 	t.Helper()
 	value := os.Getenv("PLATEPILOT_TEST_POSTGRES_DSN")
 	if value == "" {
-		value = "postgres://platepilot:platepilot@localhost:55432/platepilot?sslmode=disable"
+		value = defaultTestDSN
 	}
 	return value
 }
@@ -55,6 +64,7 @@ func newStores(t *testing.T) contract.Stores {
 		Restaurants: postgres.NewRestaurantStore(client),
 		Reviews:     postgres.NewReviewStore(client),
 		Pipeline:    postgres.NewPipelineStore(client),
+		Knowledge:   postgres.NewKnowledgeStore(client),
 	}
 }
 

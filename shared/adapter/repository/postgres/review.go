@@ -2,10 +2,12 @@ package postgres
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/zed/platepilot/shared/domain/errs"
 	"github.com/zed/platepilot/shared/domain/review"
 )
 
@@ -308,6 +310,139 @@ func (s *ReviewStore) RestaurantIDsWithReviews(ctx context.Context) ([]int64, er
 	}
 	if err := rows.Err(); err != nil {
 		return nil, operationError("postgres: iterate restaurant ids", err)
+	}
+	return out, nil
+}
+
+// MarkRepresentative flags the given reviews and clears the flag on every other
+// review of the same restaurants.
+//
+// Clearing and setting happen in one statement group so the flag can never be
+// observed on a stale selection: a leftover flag from a previous run would keep
+// contributing to representative_review_count and would make the M1 partial
+// index return reviews that are no longer the chosen ones.
+func (s *ReviewStore) MarkRepresentative(ctx context.Context, reviewIDs []int64) (int, error) {
+	if len(reviewIDs) == 0 {
+		return 0, nil
+	}
+	ctx, cancel := s.client.withTimeout(ctx)
+	defer cancel()
+
+	tag, err := s.client.pool.Exec(ctx, `
+		WITH targets AS (
+			SELECT DISTINCT restaurant_id FROM reviews WHERE id = ANY($1)
+		)
+		UPDATE reviews r
+		SET is_representative = r.id = ANY($1)
+		WHERE r.restaurant_id IN (SELECT restaurant_id FROM targets)`,
+		reviewIDs)
+	if err != nil {
+		return 0, operationError("postgres: mark representative reviews", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+// UpsertSummaries writes per-topic rollups keyed by (restaurant_id, topic).
+func (s *ReviewStore) UpsertSummaries(ctx context.Context, items []review.Summary) (int, error) {
+	if len(items) == 0 {
+		return 0, nil
+	}
+
+	restaurantIDs := make([]int64, len(items))
+	topics := make([]string, len(items))
+	sentiments := make([]float64, len(items))
+	ratios := make([]float64, len(items))
+	summaries := make([]string, len(items))
+	counts := make([]int32, len(items))
+	validFrom := make([]time.Time, len(items))
+	validTo := make([]*time.Time, len(items))
+	generatedBy := make([]string, len(items))
+
+	for i, item := range items {
+		if item.RestaurantID <= 0 {
+			return 0, errs.Newf(errs.CodeInvalidArgument, "postgres: summary %d has no restaurant id", i)
+		}
+		if strings.TrimSpace(item.Topic) == "" {
+			return 0, errs.Newf(errs.CodeInvalidArgument, "postgres: summary %d has no topic", i)
+		}
+		if strings.TrimSpace(item.GeneratedBy) == "" {
+			return 0, errs.Newf(errs.CodeInvalidArgument, "postgres: summary %d has no generated_by", i)
+		}
+		restaurantIDs[i] = item.RestaurantID
+		topics[i] = item.Topic
+		sentiments[i] = item.Sentiment
+		ratios[i] = item.PositiveRatio
+		summaries[i] = item.Summary
+		counts[i] = int32(item.EvidenceCount)
+		validFrom[i] = item.ValidFrom
+		// valid_to is nullable: an open-ended summary is one that has not been
+		// superseded. The zero time means "still valid", which is different
+		// from "valid until the epoch".
+		if !item.ValidTo.IsZero() {
+			validTo[i] = &item.ValidTo
+		}
+		generatedBy[i] = item.GeneratedBy
+	}
+
+	ctx, cancel := s.client.withTimeout(ctx)
+	defer cancel()
+
+	tag, err := s.client.pool.Exec(ctx, `
+		INSERT INTO review_summaries (
+			restaurant_id, topic, sentiment, positive_ratio, summary,
+			evidence_count, valid_from, valid_to, generated_by)
+		SELECT * FROM unnest(
+			$1::bigint[], $2::text[], $3::double precision[], $4::double precision[],
+			$5::text[], $6::integer[], $7::timestamptz[], $8::timestamptz[], $9::text[])
+		ON CONFLICT (restaurant_id, topic) DO UPDATE SET
+			sentiment      = EXCLUDED.sentiment,
+			positive_ratio = EXCLUDED.positive_ratio,
+			summary        = EXCLUDED.summary,
+			evidence_count = EXCLUDED.evidence_count,
+			valid_from     = EXCLUDED.valid_from,
+			valid_to       = EXCLUDED.valid_to,
+			generated_by   = EXCLUDED.generated_by,
+			generated_at   = now()`,
+		restaurantIDs, topics, sentiments, ratios, summaries, counts, validFrom, validTo, generatedBy)
+	if err != nil {
+		return 0, operationError("postgres: upsert review summaries", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
+
+// GetSummaries returns the stored rollups for one restaurant, ordered by topic
+// so the generated documents are byte-stable across runs.
+func (s *ReviewStore) GetSummaries(ctx context.Context, restaurantID int64) ([]review.Summary, error) {
+	ctx, cancel := s.client.withTimeout(ctx)
+	defer cancel()
+
+	rows, err := s.client.pool.Query(ctx, `
+		SELECT restaurant_id, topic, sentiment, positive_ratio, summary,
+		       evidence_count, valid_from, valid_to, generated_by, generated_at
+		FROM review_summaries
+		WHERE restaurant_id = $1
+		ORDER BY topic`, restaurantID)
+	if err != nil {
+		return nil, operationError("postgres: get review summaries", err)
+	}
+	defer rows.Close()
+
+	out := make([]review.Summary, 0, 8)
+	for rows.Next() {
+		var item review.Summary
+		var validTo *time.Time
+		if err := rows.Scan(&item.RestaurantID, &item.Topic, &item.Sentiment,
+			&item.PositiveRatio, &item.Summary, &item.EvidenceCount,
+			&item.ValidFrom, &validTo, &item.GeneratedBy, &item.GeneratedAt); err != nil {
+			return nil, operationError("postgres: scan review summary", err)
+		}
+		if validTo != nil {
+			item.ValidTo = *validTo
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, operationError("postgres: iterate review summaries", err)
 	}
 	return out, nil
 }

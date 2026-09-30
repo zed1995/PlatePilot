@@ -15,6 +15,7 @@ func TestMemoryStoresSatisfyContract(t *testing.T) {
 			Restaurants: memory.NewRestaurantStore(),
 			Reviews:     memory.NewReviewStore(),
 			Pipeline:    memory.NewPipelineStore(),
+			Knowledge:   memory.NewKnowledgeStore(),
 		}
 	})
 }
