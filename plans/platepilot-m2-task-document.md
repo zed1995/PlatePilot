@@ -992,9 +992,8 @@ M2 的并行空间小于 M1，因为 M2-06 依赖 M2-03/04 的产物。可行的
 - [x] 不绕过领域接口直接调用厂商 API（`ollama` 类型不逃逸 `shared/adapter/embedding/ollama`）。
 - [x] 文档或注释说明关键设计（尤其是版本切换顺序与 HNSW 过滤限制）。
 - [x] 通过 `go test ./...`、`go vet ./...`、`go test -race ./...`。
-- [ ] 相关验收标准可以实际演示。← **待数据库与模型服务恢复后**（见 §6.3 当前状态）
-      其中"续跑不重算"与"模型缺失不写入向量"两条已由单元测试覆盖（E.18），
-      剩下的是需要真实库与模型的计数类结论。
+- [x] 相关验收标准可以实际演示。已在真实 PostgreSQL（36,133 家餐厅 /
+      8,727,344 条评论）与真实 `qwen3-embedding:0.6b` 上跑通，见 §6.3.0。
 
 > **`batch_id` 日志为什么是硬要求**：审计行是一次运行唯一的持久记录，
 > 日志里没有 `batch_id` 就无法把一行输出对应回某次具体的运行。
@@ -1004,10 +1003,11 @@ M2 的并行空间小于 M1，因为 M2-06 依赖 M2-03/04 的产物。可行的
 
 实施计划 §9 的 4 条：
 
-- [ ] `retrieval_scope='restaurant'` 的活跃文档覆盖 ≥ 500 家餐厅。
-- [ ] `retrieval_scope='evidence'` 的活跃文档 ≥ 5,000 条。
-- [ ] 所有向量均为 1024 维（`vector_dims` 全为 1024）。
-- [ ] 向量检索能返回正确 scope（两个 scope 各自 100% 命中）。
+- [x] `retrieval_scope='restaurant'` 的活跃文档覆盖 ≥ 500 家餐厅。**实测 3,000。**
+- [x] `retrieval_scope='evidence'` 的活跃文档 ≥ 5,000 条。**实测 8,775。**
+- [x] 所有向量均为 1024 维（`vector_dims` 全为 1024）。**实测 11,775 全部为 1024。**
+- [x] 向量检索能返回正确 scope（两个 scope 各自 100% 命中）。
+      **实测：restaurant 查询返回 20/20 restaurant，evidence 查询返回 3/3 evidence。**
 
 本文档补充的扩充分项。**行为已由契约/单元测试覆盖，但计数类结论需要真实全量数据**，
 两者在下面分开标注：
@@ -1037,17 +1037,30 @@ M2 的并行空间小于 M1，因为 M2-06 依赖 M2-03/04 的产物。可行的
 - [x] 模型不存在时报 `provider_unavailable` 且不写入任何向量
       （`TestRunEmbedWritesNothingWhenTheModelIsMissing`）
 
-**需要真实数据库才能确认（见 §6.4）**
+**已在真实数据库上确认（11,775 篇活跃文档 / 3,000 家餐厅）**
 
-- [ ] `retrieval_scope='restaurant'` 覆盖 ≥ 500 家餐厅
-- [ ] `retrieval_scope='evidence'` 活跃文档 ≥ 5,000 条
-- [ ] 所有向量均为 1024 维
-- [ ] 向量检索能返回正确 scope
-- [ ] 无异常向量（库侧兜底查询）
-- [ ] borough partial HNSW 命中（`EXPLAIN` 非 Seq Scan）
-- [ ] `representative_review_count` 与 `embedded_review_count` 有真实值，与库一致
-- [ ] `knowledge_documents.content` 无邮箱 / 电话命中
-- [ ] `reviews.is_representative` 不再恒为 false，且代表评论选择可重复
+- [x] `retrieval_scope='restaurant'` 覆盖 ≥ 500 家餐厅 —— **3,000**
+- [x] `retrieval_scope='evidence'` 活跃文档 ≥ 5,000 条 —— **8,775**
+- [x] 所有向量均为 1024 维 —— `vector_dims <> 1024` 为 **0**
+- [x] 零向量检测 —— `vector_norm = 0` 为 **0**
+- [x] 活跃文档都有模型元数据 —— 缺口 **0**
+- [x] 组内版本号不重复 —— 重复组 **0**
+- [x] borough partial HNSW 命中 —— 真实规模下 `Index Scan using
+      knowledge_documents_hnsw_manhattan`（11,775 行时）
+- [x] `representative_review_count` 与库一致 —— 不一致行 **0**
+- [x] `knowledge_documents.content` 无邮箱命中（**0**）/ 无真实电话命中（**0**）
+- [x] `reviews.is_representative` 不再恒为 false —— **51,313** 条被选中
+- [x] 向量检索返回正确 scope —— restaurant 20/20、evidence 3/3
+- [x] `embedded_review_count` 已回写且与文档一致
+- [x] 代表评论选择可重复 —— 对餐厅 6751 二次 `build-documents --scope=evidence`
+      后，`is_representative` 的 id 集合哈希不变（`8a642e38...`），
+      文档 `content_hash` 集合哈希也不变（没有产生新版本），
+      仍是 4 活跃 / 4 总数
+
+**唯一的已知局限（非缺陷）**：`retrieval_scope='restaurant'` 只有 3,000 行，
+这个规模下 planner 对该 scope 选择顺序扫描；`evidence`（8,775 行）与
+borough 分区查询都会走 HNSW。这是 E.35 实测的交叉点决定的，
+M2-07 已明确"不新增 scope partial 索引"，等 M3 出现真实性能问题再加。
 
 ---
 
@@ -1116,68 +1129,75 @@ M2-01~M2-08 逐个 review 之后，又用覆盖率做了一轮定点审计，
 这是覆盖率审计的第四个"0% 才是真正的信号"的例子：
 前三个是**功能没写**，这个是**功能写了计划文档就以为写了**。
 
-### 6.4 尚未验证的部分（不可从沙箱内完成）
+### 6.4 原本未验证的部分（现已全部在真实环境验证）
 
-以下三项**必须**在真实 Postgres 与 Ollama 上跑过才能勾选 Gate B。
-它们不是"还没写"，而是"写了但从未执行过"，因此不能算通过：
+以下三项曾在"必须真实环境才能确认"清单上。权限恢复后全部跑过，
+结论记录在此，静态验证（`migration_audit_test.go`）作为回归防线保留。
 
-| 项 | 状态 | 需要的验证 |
+| 项 | 当时的结论 | 实际结果 |
 |---|---|---|
-| 迁移 `0003_embedding_audit.sql` | **从未 apply 过**（但结构已静态验证，见下） | 6 个新列能否在真实库上 apply；`ALTER TABLE` 的实际执行 |
-| `knowledge_index_test.go` 的 EXPLAIN 断言 | **断言本身已修好**（E.20/E.21），但**从未在真库上跑过** | planner 是否真的选 `knowledge_documents_hnsw_<borough>` 而非 Seq Scan |
-| Gate B 第 1、2 条数量门槛 | **需要全量跑** | ≥500 家餐厅 / ≥5,000 条 evidence；`--limit=200` 达不到 |
+| 迁移 `0003_embedding_audit.sql` | 从未 apply 过 | 已在 36,133 家餐厅的库上 apply，耗时 <1s。6 列类型与可空性全部正确；两条 M1 历史行读出 NULL 而非 0，正是"本阶段未参与"的设计意图 |
+| EXPLAIN 索引断言 | 断言修好了但没在真库跑过 | 三个断言全绿，但**首次运行即失败**——它们种的是 500 行而注释承诺 5000 行（E.35）。修正后按真实交叉点（50k 行）验证通过 |
+| Gate B 数量门槛 | `--limit=200` 达不到 | 全量 3,000 profile + 8,842 evidence，向量化 11,775 篇活跃文档，全部达标 |
 
-`knowledge_sql_test.go` 用正则静态校验了 `VectorSearch` 的占位符编号
-（无空洞、无未引用），这覆盖了 SQL 构造本身，**但不能替代**上面第 1、2 项——
-它们验证的是数据库行为，不是字符串逻辑。
+**跑真实环境时额外查出三个缺陷**（静态验证全绿的情况下），
+说明静态检查确实不能替代真库：
 
-#### 迁移 0003 的静态验证（`migration_audit_test.go`）
+| 缺陷 | 为什么静态验证看不出来 | 记录 |
+|---|---|---|
+| `SupersededDocumentIDs` 自连接未钉住调用方 id | SQL 语法完全合法，占位符编号连续 | E.33 |
+| `knowledgeColumns` 不含 embedding | 列在 SELECT 里是自洽的，扫描目标数也匹配 | E.34 |
+| `REQUEST_TIMEOUT=15s` 覆盖不了最长的文档 | 没有任何测试嵌入过真实长度的文档 | E.32 |
 
-既然迁移无法在沙箱内 apply，就把它内部的一致性变成可执行断言。
-新增 `shared/adapter/repository/postgres/migration_audit_test.go`，锁住四件事：
-
-1. **迁移声明的 6 个列**与 `review.BatchReport` 的 M2 字段一一对应，且都是可空的
-   （不可空会让从不设置它们的 M1 阶段插入失败）；
-2. **迁移加的每个列**都在 `batchInsertSQL` 里出现——否则迁移本身完全正确，
-   而下一次运行写批次时失败；
-3. **每个列在 UPDATE 里也被赋值**——否则运行开始时记录的值会在结束时丢失；
-4. **INSERT / UPDATE 的列序与位置参数一一对应**（第 n 个参数就是第 n 列），
-   并且 `batchArgs` 绑定的参数个数等于 INSERT 的列数。
-
-第 4 条是 Go 和 PostgreSQL 都不检查的东西：写错时 PG 报的是
-"column x is of type y but expression is of type z"，既不点名阶段也不点名字段。
-
-三种故障注入已验证这些断言不是空转：
-
-| 注入 | 捕获者 |
-|---|---|
-| 从 INSERT 删掉 `documents_embedded` | `TestBatchInsertMatchesTheMigratedColumns` + `batchArgs` 参数数不符 |
-| 交换 UPDATE 里 `documents_built` / `documents_rejected` 的占位符 | `TestBatchStatementsAgreeOnColumnAndParameterOrder/update` |
-| 把 `documents_built` 改成 `NOT NULL` | `TestMigration0003DefinesEveryAuditedColumn` |
-
-> 解析 `batchUpdateSQL` 时踩过一个坑：SET 子句里多数赋值是
-> `COALESCE($n, column)` 包着的，按逗号朴素切分会把一条赋值劈成两半，
-> 让列数与占位符数对不上——一条完全正确的 SQL 因此报错。
-> 现在按括号深度切分（`splitTopLevel`），且 UPDATE 只取 SET 子句、不含
-> `WHERE id = $1`。
-
-**这不能替代真实 apply**：类型兼容性、`jsonb` 列的实际写入、迁移在已有
-36225 家餐厅的库上的耗时，都仍然只有跑一次才知道。
+其中 E.33 最值得记：查询能执行、结果非空、类型正确，只是**集合错了**。
+契约测试在真库上第一次运行就抓到它，而在只有内存 adapter 时它一直绿。
 
 ### 6.5 恢复后的执行顺序
 
-```bash
-# Gate B 必须带 PLATEPILOT_REQUIRE_DB=1，否则需要数据库的测试会静默跳过（E.19）
-export PLATEPILOT_REQUIRE_DB=1
+**以下就是实际执行过的顺序，可以照抄**（M2 全量约 1 小时，其中
+向量化 55 分钟，瓶颈是本地 CPU 推理，约 35 篇/分钟）：
 
+```bash
+# 0. 前置：M1 的两个阶段必须先跑过，否则 selectRestaurants 返回空
 go run ./data-pipeline migrate                        # 应用 0003
+go run ./data-pipeline import --stage=score           # is_active_for_demo + knowledge_score
+go run ./data-pipeline import --stage=stats           # representative_review_count
+
+# 1. 小样本验证，确认无异常再放开
 go run ./data-pipeline build-documents --limit=200 --dry-run
 go run ./data-pipeline build-documents --limit=200     # 看 inserted / skipped
-go run ./data-pipeline embed --limit=200 --batch=32 --workers=4
-go run ./data-pipeline embed --limit=200               # 重跑应为 pending=0
-go run ./data-pipeline report --stage=embedding        # 批次报告可查
-# 确认无误后去掉 --limit 跑全量，再执行附录 C 的 10 条查询
+go run ./data-pipeline embed --limit=200 --batch=16 --workers=4
+go run ./data-pipeline embed --limit=200               # 重跑应为 documents=0
+
+# 2. 全量
+go run ./data-pipeline build-documents                 # restaurant scope
+go run ./data-pipeline build-documents --scope=evidence
+go run ./data-pipeline embed --batch=16 --workers=4    # 11,206 篇，约 55 分钟
+
+# 3. 验收
+go run ./data-pipeline report --stage=embedding
+psql "$DSN" -f <附录 C 的查询>
+
+# 4. 测试（Gate B 必须带 PLATEPILOT_REQUIRE_DB=1，否则需要数据库的测试
+#    会静默跳过，见 E.19）
+export PLATEPILOT_REQUIRE_DB=1
+export PLATEPILOT_TEST_POSTGRES_DSN="postgres://platepilot:platepilot@localhost:55432/platepilot_contract_test?sslmode=disable"
+go test ./... && go test -race ./...
 ```
+
+**第 0 步是这次实际踩到的**：库里有 36,133 家餐厅、872 万条评论，
+但 `is_active_for_demo` 全为 false，因为 M1 的 `score` / `stats`
+两个阶段从没在这份数据上跑过。`build-documents` 静默返回
+`restaurants=0`——不报错，只是没有输出。看起来像 M2 的 bug，
+实际是前置数据没就位。
+
+**`--batch=16` 而不是默认的 32**：见 E.32，本机实测吞吐与 batch
+大小无关，而 batch 32 的最长文档会撞超时。16 在
+"单次请求不超时"和"别把往返开太多"之间。
+
+**全量向量化会拒绝 67 篇**（`embedding_duplicate`）：这些餐厅的代表
+评论文档内容完全相同，向量逐位一致。质量门按设计拒绝它们而不是写入
+重复向量，`reject_reasons` 里记着 `{"embedding_duplicate": 67}`。
 
 ## 7. 与后续里程碑的衔接
 
