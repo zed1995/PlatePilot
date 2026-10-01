@@ -1088,6 +1088,46 @@ M2-01 ~ M2-08 的**代码**已全部实现，`go build` / `go vet` / `gofmt` 干
 
 期间发现 `REQUEST_TIMEOUT` 默认值在真实数据上必然超时，已修（见 E.32）。
 
+### 6.3.2 补跑 `review_summaries`：四类 evidence chunk 全部落地（见 E.36）
+
+上一节记的"8842 篇 evidence"只有三类——`restaurant_review_summary` 是 0 篇。
+根因是时序而非缺陷：09:06 导入 872 万条评论时 `curate/topics.go` 还不存在，
+`topic_tags` 从未落库。重跑 `import --stage=review`（509 秒，计数与首次逐项一致）
+后补齐，再 `build-documents --scope=evidence`（68 秒）+ `embed`（22 分钟）。
+
+| 指标 | 补跑前 | 补跑后 |
+|---|---|---|
+| `reviews.topic_tags` 非空 | 0 | 3,375,350（覆盖率 38.68%） |
+| `review_summaries` | 0 行 | 18,531 行 |
+| `restaurant_review_summary` 文档 | **0 篇** | 18,356 篇活跃 |
+| evidence chunk 总数 | 8,775 | **27,198** |
+
+主题分布（真实语料）：food 2,544,707 / service 1,818,283 / value 697,613 /
+ambience 691,449 / wait 542,424 / group_friendly 98,361 / kid_friendly 50,652。
+覆盖率 38.68% 是设计使然——命中不了任何主题词的评价返回空而不是兜底。
+
+**Gate B 最终自检（真实库 36,133 家餐厅 / 8,727,344 条评论 / 3,000 家 demo）**：
+
+| 检查 | 阈值 | 实测 |
+|---|---|---|
+| Q1 restaurant 覆盖 | ≥500 | **3,000** |
+| Q2 evidence chunk | ≥5,000 | **27,198** |
+| Q3 每餐厅 profile 恰好 1 个 | 0 违规 | **0** |
+| Q4 向量维度 | 全 1024 | **0 违规** |
+| Q5 活跃文档模型元数据 | 0 缺口 | **0** |
+| Q7 组内版本号重复 | 0 | **0** |
+| Q8 零向量 | 0 | **0** |
+| Q9 rep-count 一致 | 0 不一致 | **0** |
+| Q10 PII | 0 | 邮箱 **0**，真实电话 **0**（1 处 `[redacted-phone]` 源占位符，见 E.36） |
+| scope 隔离 | 不串 | restaurant→profile、evidence→evidence，**越界 0** |
+| 活跃无向量 | 0 | **0** |
+
+scope 隔离用真实 `VectorSearch` 代码路径验证（非手写 SQL）：以一篇 evidence
+文档的向量查询，restaurant scope 返回跨餐厅 profile（d=0.1227），
+evidence scope 返回同餐厅 attributes（**d=0.0000 精确命中自身**）。
+
+`go test ./...` 全绿（含 190 秒 postgres 契约测试，真库 + 真 socket）。
+
 原"唯一失败项"记录的是 ollama 的 `httptest` 用例受沙箱端口限制；
 权限恢复后该限制不复存在，这条记录已随之失效。
 
@@ -2128,6 +2168,77 @@ borough 是最紧的约束：每个分区索引只覆盖五分之一行，而 pg
 而 fixture 里所有文档都已带向量都已激活，返回空 → `t.Skip("no seeded documents")`。
 它一直是 SKIP，看起来无害，实际是 E.19 那一类问题的残留：断言放在
 一个不成立的前提上，于是永远不执行。改成直接读一篇活跃文档。
+
+### E.36 数据比代码早 8 小时：`ClassifyTopics` 上线时语料已经导完了（已修，非代码缺陷）
+
+M2-04 验收要求四类 evidence chunk，补跑后实测只落地三类：
+
+```
+restaurant_attributes             2978
+restaurant_hours                  2797
+restaurant_representative_reviews 3000
+restaurant_review_summary           0   ← 缺
+review_summaries 表                  0 行
+reviews.topic_tags            0 / 8,727,344
+```
+
+代码路径是完整的（`NormalizeReview` → `ClassifyTopics` → `reviewUpsertSQL`
+→ `SummarizeTopics` → `BuildSummaryDocuments`），逐段review 没找到断点。
+根因是时序：
+
+| 时间 | 事件 |
+|---|---|
+| 09:06 | `import --stage=review` 导入 872 万条评论，**当时 `curate/topics.go` 还不存在** |
+| 17:14 | commit `39d9017`，`ClassifyTopics` 首次进入代码库 |
+
+`topic_tags` 在导入时逐条算好并落库，代码后来补上不会回填已有行。
+每条评论的 `topic_tags` 都是 nil，于是 `SummarizeTopics` 分组为空、
+`BuildSummaryDocuments` 无输入——**每一层都正确，只是输入是空的**。
+
+修法是重跑 `import --stage=review`（upsert 覆盖，不删表，509秒），
+再 `build-documents --scope=evidence` + `embed`。
+
+**这次重跑推翻了两个此前的担心**：
+
+1. **"`is_representative` 会被重置为 false"** —— 没有发生。review 重跑后
+   `build-documents --scope=evidence` 重新执行了代表评论选择并写回，
+   最终仍是 51,313 条。副作用被下游步骤自动覆盖。
+2. **"文档 `content_hash` 会变化导致全部重新向量化"** —— 只有 profile 变了
+   （v1 是评分回填前建的，v2 标题多了 `，4.4星`，见 `profile.go:281`）。
+   其余三类 8,842 篇 `content_hash` 未变，被 `skipped`，原向量完好。
+
+> **`build-documents` 默认只跑 restaurant scope**（`documents.go:55`）。
+> 不带 `--scope=evidence` 会13 秒跑完、退出码 0、日志里只有
+> `restaurant_profile 3000`——看起来像"跑完了"，实际evidence 一篇没建。
+> 这个默认在运维路径上很容易误判，值得单独记一笔。
+
+**幂等不是一次到位，是收敛**。补跑后连续执行 `embed`：
+
+```
+第1 次  documents=21598 embedded=21548 rejected=50
+第2 次  documents=50    embedded=26   rejected=24
+第3 次  documents=24    embedded=15   rejected=9
+第4 次  documents=9     embedded=7    rejected=2
+第5 次  documents=2     embedded=1    rejected=1
+第6 次  documents=1     embedded=1    rejected=0
+第7 次  documents=0     ← 收敛
+```
+
+50→24→9→2→1→0 不是缺陷，是 `activatePage`（`embed.go:795`）整页切换的
+必然结果：新版本激活后，被它替换的旧版本才从"待嵌入"队列里退出来。
+每轮都在处理上一轮替换掉的上一轮。**判断幂等要看连续两次 `documents=0`，
+而不是第一次重跑就是 0。**
+
+**50篇 `embedding_duplicate` 全部未激活**，符合设计：连锁店共用描述导致
+多篇文档文本逐字相同，质量门拒绝重复向量。退役文档 131 条中 13 条无向量
+（正是被替换掉、从未嵌入的旧版本），其余 118 条保留原向量。
+
+**Q10 的一处误报值得记**：电话正则命中 1 条，内容是
+`Where long time delivery service 0000000000000000[redacted-phone]`。
+查源评论原文确认 Google 导出时即已脱敏为 `[redacted-phone]` 占位符，
+**不是管线泄漏**。排除占位符后真实电话为 0。断言若要长期有效，
+应写成`AND content NOT LIKE '%redacted-phone%'`，否则每次都会假红。
+
 
 ## 附录 A：环境变量（M2 相关）
 
