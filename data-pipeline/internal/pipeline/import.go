@@ -19,7 +19,7 @@ import (
 	"github.com/zed/platepilot/shared/domain/errs"
 	"github.com/zed/platepilot/shared/domain/restaurant"
 	"github.com/zed/platepilot/shared/domain/review"
-	"github.com/zed/platepilot/shared/port"
+	"github.com/zed/platepilot/shared/store"
 )
 
 // Source file names inside PIPELINE_DATA_DIR.
@@ -34,12 +34,12 @@ var SnapshotObservedAt = time.Date(2021, 9, 1, 0, 0, 0, 0, time.UTC)
 // Stores bundles the write-side ports the import stages need. A nil Pipeline
 // store turns auditing into a no-op, which is what --dry-run uses.
 type Stores struct {
-	Restaurants port.RestaurantStore
-	Reviews     port.ReviewStore
-	Pipeline    port.PipelineStore
+	Restaurants store.RestaurantStore
+	Reviews     store.ReviewStore
+	Pipeline    store.PipelineStore
 	// Knowledge is the M2 write side for retrieval documents. It is nil until
 	// M2 wires it, and the import stages never touch it.
-	Knowledge port.KnowledgeStore
+	Knowledge store.KnowledgeStore
 }
 
 // ImportOptions controls one import invocation.
@@ -137,7 +137,7 @@ func RunImport(ctx context.Context, stores Stores, opts ImportOptions) ([]review
 
 // auditStore returns the audit store to use, or nil when the run is a
 // dry-run (a dry-run must leave no trace in the database).
-func auditStore(stores Stores, opts ImportOptions) port.PipelineStore {
+func auditStore(stores Stores, opts ImportOptions) store.PipelineStore {
 	if opts.DryRun {
 		return nil
 	}

@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/zed/platepilot/shared/domain/requestctx"
+	"github.com/zed/platepilot/shared/requestctx"
 )
 
 // Canonical log field names shared across the codebase.

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/zed/platepilot/shared/domain/restaurant"
+	"github.com/zed/platepilot/shared/store"
 
 	"github.com/zed/platepilot/data-pipeline/internal/config"
 	"github.com/zed/platepilot/data-pipeline/internal/pipeline/curate"
@@ -17,7 +18,6 @@ import (
 	"github.com/zed/platepilot/shared/domain/errs"
 	"github.com/zed/platepilot/shared/domain/evidence"
 	"github.com/zed/platepilot/shared/domain/review"
-	"github.com/zed/platepilot/shared/port"
 )
 
 // DocumentsOptions controls one build-documents invocation.
@@ -223,7 +223,7 @@ func buildDocuments(
 // for places no query can reach.
 func selectRestaurants(
 	ctx context.Context,
-	store port.RestaurantStore,
+	store store.RestaurantStore,
 	opts DocumentsOptions,
 	offset, limit int,
 ) ([]restaurant.Restaurant, error) {

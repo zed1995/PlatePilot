@@ -7,12 +7,12 @@ import (
 	"time"
 
 	"github.com/zed/platepilot/data-pipeline/internal/config"
-	"github.com/zed/platepilot/shared/adapter/repository/memory"
 	sharedcfg "github.com/zed/platepilot/shared/config"
 	"github.com/zed/platepilot/shared/domain/errs"
 	"github.com/zed/platepilot/shared/domain/evidence"
 	"github.com/zed/platepilot/shared/domain/restaurant"
 	"github.com/zed/platepilot/shared/domain/review"
+	"github.com/zed/platepilot/shared/store/memory"
 	"github.com/zed/platepilot/shared/testkit"
 )
 

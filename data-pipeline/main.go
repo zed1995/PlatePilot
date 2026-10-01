@@ -19,10 +19,10 @@ import (
 
 	"github.com/zed/platepilot/data-pipeline/internal/config"
 	"github.com/zed/platepilot/data-pipeline/internal/pipeline"
-	"github.com/zed/platepilot/shared/adapter/repository/postgres"
 	"github.com/zed/platepilot/shared/domain/errs"
 	"github.com/zed/platepilot/shared/domain/review"
 	"github.com/zed/platepilot/shared/observability/logging"
+	"github.com/zed/platepilot/shared/store/postgres"
 )
 
 // version is overridden at build time with -ldflags "-X main.version=...".

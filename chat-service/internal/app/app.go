@@ -10,15 +10,18 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app/server"
 
+	adminapp "github.com/zed/platepilot/chat-service/internal/admin"
 	"github.com/zed/platepilot/chat-service/internal/config"
-	inspectapp "github.com/zed/platepilot/chat-service/internal/inspect"
+	"github.com/zed/platepilot/chat-service/internal/httpapi"
 	"github.com/zed/platepilot/chat-service/internal/retrieval"
-	"github.com/zed/platepilot/chat-service/internal/transport/httpapi"
-	"github.com/zed/platepilot/shared/adapter/embedding/fake"
-	"github.com/zed/platepilot/shared/adapter/embedding/ollama"
-	"github.com/zed/platepilot/shared/adapter/repository/postgres"
+	"github.com/zed/platepilot/shared/chat"
 	sharedcfg "github.com/zed/platepilot/shared/config"
-	"github.com/zed/platepilot/shared/port"
+	"github.com/zed/platepilot/shared/embedding"
+	"github.com/zed/platepilot/shared/embedding/fake"
+	"github.com/zed/platepilot/shared/embedding/ollama"
+	"github.com/zed/platepilot/shared/rerank"
+	"github.com/zed/platepilot/shared/store"
+	"github.com/zed/platepilot/shared/store/postgres"
 )
 
 // Deps holds the ports the application is assembled from.
@@ -29,17 +32,17 @@ import (
 // the exception: it is wired below because nothing else should know how to
 // build one.
 type Deps struct {
-	Chat          port.ChatProvider
-	ToolCalling   port.ToolCallingProvider
-	Structured    port.StructuredOutputProvider
-	Embedding     port.EmbeddingProvider
-	Rerank        port.RerankProvider
-	Restaurants   port.RestaurantRepository
-	Knowledge     port.KnowledgeRepository
-	Conversations port.ConversationRepository
-	Memories      port.MemoryRepository
-	Runs          port.RunRepository
-	Inspect        port.InspectStore
+	Chat          chat.ChatProvider
+	ToolCalling   chat.ToolCallingProvider
+	Structured    chat.StructuredOutputProvider
+	Embedding     embedding.EmbeddingProvider
+	Rerank        rerank.RerankProvider
+	Restaurants   store.RestaurantRepository
+	Knowledge     store.KnowledgeRepository
+	Conversations store.ConversationRepository
+	Memories      store.MemoryRepository
+	Runs          store.RunRepository
+	Admin         store.AdminStore
 }
 
 // App owns the assembled runtime.
@@ -79,8 +82,8 @@ func New(cfg config.Config, logger *slog.Logger, deps Deps, version string) (*Ap
 	// was supplied; with it absent the router simply leaves /admin/v1
 	// unregistered even if the switch is on.
 	var adminService httpapi.AdminService
-	if deps.Inspect != nil {
-		adminService = inspectapp.NewService(deps.Inspect, inspectapp.Config{
+	if deps.Admin != nil {
+		adminService = adminapp.NewService(deps.Admin, adminapp.Config{
 			DefaultPageSize:     cfg.Admin.DefaultPageSize,
 			MaxPageSize:         cfg.Admin.MaxPageSize,
 			MaxRejections:       cfg.Admin.MaxRejections,
@@ -166,7 +169,7 @@ func Connect(ctx context.Context, cfg config.Config, logger *slog.Logger, versio
 		// for both, and a second pool would only add a way to exhaust connections.
 		deps.Restaurants = postgres.NewRestaurantSearchRepository(client)
 		deps.Knowledge = postgres.NewKnowledgeReadRepository(client)
-		deps.Inspect = postgres.NewInspectStore(client)
+		deps.Admin = postgres.NewAdminStore(client)
 		logger.Info("postgres read store connected",
 			slog.String("database", client.DatabaseName()))
 	}
@@ -189,7 +192,7 @@ func Connect(ctx context.Context, cfg config.Config, logger *slog.Logger, versio
 // The fake provider is wired for the same reason the vector channel is skipped
 // without one: a search must be runnable before a model has been pulled, and a
 // hard failure here would mean no search at all.
-func buildEmbedding(cfg sharedcfg.EmbeddingConfig) (port.EmbeddingProvider, error) {
+func buildEmbedding(cfg sharedcfg.EmbeddingConfig) (embedding.EmbeddingProvider, error) {
 	if !cfg.Enabled() {
 		return nil, nil
 	}

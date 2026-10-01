@@ -3,7 +3,7 @@ package pipeline
 import (
 	"context"
 
-	"github.com/zed/platepilot/shared/adapter/repository/postgres"
+	"github.com/zed/platepilot/shared/store/postgres"
 )
 
 // MigrateOptions controls the migrate command.

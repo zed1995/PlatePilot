@@ -11,8 +11,10 @@ import (
 	"github.com/zed/platepilot/shared/domain/evidence"
 	"github.com/zed/platepilot/shared/domain/retrieval"
 	"github.com/zed/platepilot/shared/domain/search"
+	"github.com/zed/platepilot/shared/embedding"
 	"github.com/zed/platepilot/shared/observability/logging"
-	"github.com/zed/platepilot/shared/port"
+	"github.com/zed/platepilot/shared/rerank"
+	"github.com/zed/platepilot/shared/store"
 )
 
 // ServiceConfig is the retrieval layer's tunable behaviour.
@@ -63,7 +65,7 @@ var DefaultServiceConfig = ServiceConfig{
 	// looks like it ranked well and did not. Deployments that have not built a
 	// vector index turn it off at the configuration layer instead, which is
 	// where the decision to spend the embedding latency belongs.
-	EnableVector: true,
+	EnableVector:     true,
 	EmbeddingTimeout: 5 * time.Second,
 }
 
@@ -72,10 +74,10 @@ var DefaultServiceConfig = ServiceConfig{
 // It owns no state beyond its dependencies, so it is safe to share across
 // requests and cheap to construct in a test.
 type Service struct {
-	restaurants port.RestaurantRepository
-	knowledge   port.KnowledgeRepository
-	embedding   port.EmbeddingProvider
-	rerank      port.RerankProvider
+	restaurants store.RestaurantRepository
+	knowledge   store.KnowledgeRepository
+	embedding   embedding.EmbeddingProvider
+	rerank      rerank.RerankProvider
 	cfg         ServiceConfig
 	logger      *slog.Logger
 }
@@ -83,10 +85,10 @@ type Service struct {
 // Deps are the ports the service is assembled from. Embedding and rerank are
 // optional: a search without them still answers, degraded, and says so.
 type Deps struct {
-	Restaurants port.RestaurantRepository
-	Knowledge   port.KnowledgeRepository
-	Embedding   port.EmbeddingProvider
-	Rerank      port.RerankProvider
+	Restaurants store.RestaurantRepository
+	Knowledge   store.KnowledgeRepository
+	Embedding   embedding.EmbeddingProvider
+	Rerank      rerank.RerankProvider
 	Logger      *slog.Logger
 }
 
@@ -502,7 +504,7 @@ func (s *Service) vectorChannel(
 		return skipped("向量通道不可用：" + vectorFailureReason(err))
 	}
 
-	docs, err := s.knowledge.VectorSearch(ctx, port.VectorSearchRequest{
+	docs, err := s.knowledge.VectorSearch(ctx, store.VectorSearchRequest{
 		Scope:   evidence.ScopeRestaurant,
 		Query:   vector,
 		TopK:    depth,

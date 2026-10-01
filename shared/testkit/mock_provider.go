@@ -9,22 +9,24 @@ import (
 	"io"
 	"sync"
 
+	chatport "github.com/zed/platepilot/shared/chat"
 	"github.com/zed/platepilot/shared/domain/chat"
 	"github.com/zed/platepilot/shared/domain/search"
 	"github.com/zed/platepilot/shared/domain/tool"
-	"github.com/zed/platepilot/shared/port"
+	"github.com/zed/platepilot/shared/embedding"
+	"github.com/zed/platepilot/shared/rerank"
 )
 
 // Compile-time guarantees that the mocks satisfy the ports.
 var (
-	_ port.ChatProvider             = (*MockChatProvider)(nil)
-	_ port.ToolCallingProvider      = (*MockChatProvider)(nil)
-	_ port.StructuredOutputProvider = (*MockChatProvider)(nil)
-	_ port.EmbeddingProvider        = (*MockEmbeddingProvider)(nil)
-	_ port.RerankProvider           = (*MockRerankProvider)(nil)
+	_ chatport.ChatProvider             = (*MockChatProvider)(nil)
+	_ chatport.ToolCallingProvider      = (*MockChatProvider)(nil)
+	_ chatport.StructuredOutputProvider = (*MockChatProvider)(nil)
+	_ embedding.EmbeddingProvider       = (*MockEmbeddingProvider)(nil)
+	_ rerank.RerankProvider             = (*MockRerankProvider)(nil)
 )
 
-// MockChatProvider is a scriptable port.ChatProvider plus tool-calling and
+// MockChatProvider is a scriptable chatport.ChatProvider plus tool-calling and
 // structured-output ports. Recorded calls make assertions easy.
 type MockChatProvider struct {
 	mu sync.Mutex
@@ -59,7 +61,7 @@ func (m *MockChatProvider) Complete(_ context.Context, req chat.ChatRequest) (ch
 }
 
 // Stream returns a stream over the scripted chunks.
-func (m *MockChatProvider) Stream(_ context.Context, req chat.ChatRequest) (port.ChatStream, error) {
+func (m *MockChatProvider) Stream(_ context.Context, req chat.ChatRequest) (chatport.ChatStream, error) {
 	m.mu.Lock()
 	m.StreamCalls = append(m.StreamCalls, req)
 	err := m.Err
@@ -106,7 +108,7 @@ func (m *MockChatProvider) CompleteStructured(_ context.Context, req chat.Struct
 	return resp, nil
 }
 
-// sliceStream is an in-memory port.ChatStream.
+// sliceStream is an in-memory chatport.ChatStream.
 type sliceStream struct {
 	mu     sync.Mutex
 	chunks []chat.ChatChunk

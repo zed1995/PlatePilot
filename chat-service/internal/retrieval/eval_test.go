@@ -10,12 +10,12 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/zed/platepilot/shared/adapter/embedding/ollama"
-	"github.com/zed/platepilot/shared/adapter/repository/postgres"
 	sharedcfg "github.com/zed/platepilot/shared/config"
 	"github.com/zed/platepilot/shared/domain/evidence"
 	"github.com/zed/platepilot/shared/domain/retrieval"
 	"github.com/zed/platepilot/shared/domain/search"
+	"github.com/zed/platepilot/shared/embedding/ollama"
+	"github.com/zed/platepilot/shared/store/postgres"
 )
 
 // Gate C thresholds. They are constants rather than fixture values because they

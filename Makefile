@@ -81,7 +81,7 @@ test-race: ## Run tests with the race detector
 	go test -race $(PKG)
 
 test-postgres: ## Run the Postgres adapter contract suite (needs `make pg-up`)
-	go test ./shared/adapter/repository/postgres/... -count=1 -v
+	go test ./shared/store/postgres/... -count=1 -v
 
 # The retrieval fixtures assert against a live corpus, so they skip unless the
 # database is actually there: a green suite that quietly asserted nothing is
@@ -100,7 +100,7 @@ cover: ## Run tests with cross-package coverage (writes coverage.out)
 # The Postgres contract suite needs a live database; without one its tests skip
 # rather than fail, so `make test` stays runnable offline.
 test-offline: ## Run tests excluding those that need PostgreSQL
-	go test $(filter-out ./shared/adapter/repository/postgres/...,$(PKG))
+	go test $(filter-out ./shared/store/postgres/...,$(PKG))
 
 lint: ## Run golangci-lint (must be installed separately)
 	@command -v golangci-lint >/dev/null 2>&1 || { echo "golangci-lint not installed: https://golangci-lint.run/welcome/install/"; exit 1; }

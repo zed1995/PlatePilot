@@ -9,7 +9,7 @@ import (
 
 	"github.com/zed/platepilot/shared/domain/errs"
 	"github.com/zed/platepilot/shared/domain/evidence"
-	"github.com/zed/platepilot/shared/port"
+	"github.com/zed/platepilot/shared/store"
 )
 
 // evidenceService builds a service whose evidence path is wired.
@@ -80,8 +80,8 @@ func TestEvidenceForwardsTheTopicToTheStore(t *testing.T) {
 	knowledge := &stubKnowledge{recalled: []evidence.Evidence{
 		cite(1, 7, evidence.DocTypeRestaurantReviewSummary, 0.8),
 	}}
-	var got port.EvidenceRequest
-	knowledge.onRecall = func(req port.EvidenceRequest) { got = req }
+	var got store.EvidenceRequest
+	knowledge.onRecall = func(req store.EvidenceRequest) { got = req }
 
 	service := evidenceService(t, knowledge, &stubEmbedding{vector: []float32{1}})
 	if _, err := service.Evidence(context.Background(), EvidenceRequest{
@@ -103,8 +103,8 @@ func TestEvidenceSkipsEmbeddingWhenThereIsNoQuestion(t *testing.T) {
 	knowledge := &stubKnowledge{recalled: []evidence.Evidence{
 		cite(1, 7, evidence.DocTypeRestaurantAttributes, 0),
 	}}
-	var got port.EvidenceRequest
-	knowledge.onRecall = func(req port.EvidenceRequest) { got = req }
+	var got store.EvidenceRequest
+	knowledge.onRecall = func(req store.EvidenceRequest) { got = req }
 	embedding := &stubEmbedding{vector: []float32{1}}
 
 	service := evidenceService(t, knowledge, embedding)
@@ -279,8 +279,8 @@ func TestEvidenceRaisesAStoreFailure(t *testing.T) {
 // An absurd depth is clamped rather than honoured.
 func TestEvidenceClampsTheDepth(t *testing.T) {
 	knowledge := &stubKnowledge{}
-	var got port.EvidenceRequest
-	knowledge.onRecall = func(req port.EvidenceRequest) { got = req }
+	var got store.EvidenceRequest
+	knowledge.onRecall = func(req store.EvidenceRequest) { got = req }
 	service := evidenceService(t, knowledge, nil)
 
 	if _, err := service.Evidence(context.Background(), EvidenceRequest{

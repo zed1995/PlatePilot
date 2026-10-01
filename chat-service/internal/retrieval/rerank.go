@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/zed/platepilot/shared/domain/search"
-	"github.com/zed/platepilot/shared/port"
+	"github.com/zed/platepilot/shared/rerank"
 )
 
 // DefaultRerankTimeout bounds an optional reranking pass.
@@ -43,7 +43,7 @@ func ApplyRerank(
 	ctx context.Context,
 	query string,
 	candidates []search.RestaurantCandidate,
-	provider port.RerankProvider,
+	provider rerank.RerankProvider,
 ) RerankOutcome {
 	if provider == nil {
 		return RerankOutcome{Candidates: candidates}

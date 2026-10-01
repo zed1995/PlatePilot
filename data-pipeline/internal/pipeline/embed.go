@@ -13,12 +13,13 @@ import (
 	"github.com/zed/platepilot/data-pipeline/internal/pipeline/report"
 	sharedcfg "github.com/zed/platepilot/shared/config"
 
-	"github.com/zed/platepilot/shared/adapter/embedding/fake"
-	"github.com/zed/platepilot/shared/adapter/embedding/ollama"
 	"github.com/zed/platepilot/shared/domain/errs"
 	"github.com/zed/platepilot/shared/domain/evidence"
 	"github.com/zed/platepilot/shared/domain/review"
-	"github.com/zed/platepilot/shared/port"
+	"github.com/zed/platepilot/shared/embedding"
+	"github.com/zed/platepilot/shared/embedding/fake"
+	"github.com/zed/platepilot/shared/embedding/ollama"
+	"github.com/zed/platepilot/shared/store"
 )
 
 // EmbedOptions controls one embed invocation.
@@ -167,7 +168,7 @@ func ParseEmbedOptions(args []string, cfg config.Config) (EmbedOptions, error) {
 var newProvider = embeddingProvider
 
 // embeddingProvider constructs the configured provider.
-func embeddingProvider(cfg config.Config, opts EmbedOptions) (port.EmbeddingProvider, error) {
+func embeddingProvider(cfg config.Config, opts EmbedOptions) (embedding.EmbeddingProvider, error) {
 	switch cfg.Embedding.Provider {
 	case sharedcfg.ProviderFake:
 		return fake.New(cfg.Embedding.Dimensions), nil
@@ -288,7 +289,7 @@ func checkKnowledgeStores(stores Stores) error {
 func embedDocuments(
 	ctx context.Context,
 	stores Stores,
-	provider port.EmbeddingProvider,
+	provider embedding.EmbeddingProvider,
 	cfg config.Config,
 	opts EmbedOptions,
 	result *EmbedResult,
@@ -396,7 +397,7 @@ func embedDocuments(
 func embedPageConcurrently(
 	ctx context.Context,
 	stores Stores,
-	provider port.EmbeddingProvider,
+	provider embedding.EmbeddingProvider,
 	page []evidence.KnowledgeDocument,
 	cfg config.Config,
 	opts EmbedOptions,
@@ -514,7 +515,7 @@ func newIsolatedCollector() *report.Collector {
 func embedOneRestaurant(
 	ctx context.Context,
 	stores Stores,
-	provider port.EmbeddingProvider,
+	provider embedding.EmbeddingProvider,
 	cfg config.Config,
 	opts EmbedOptions,
 	restaurantID int64,
@@ -639,7 +640,7 @@ type staleModel struct {
 func staleModelDocuments(
 	ctx context.Context,
 	stores Stores,
-	existing []port.EmbeddingModelInfo,
+	existing []store.EmbeddingModelInfo,
 	cfg config.Config,
 	opts EmbedOptions,
 ) ([]staleModel, error) {
@@ -660,7 +661,7 @@ func staleModelDocuments(
 func embedBatch(
 	ctx context.Context,
 	stores Stores,
-	provider port.EmbeddingProvider,
+	provider embedding.EmbeddingProvider,
 	pending []evidence.KnowledgeDocument,
 	cfg config.Config,
 	opts EmbedOptions,
@@ -687,7 +688,7 @@ func embedBatch(
 func embedPending(
 	ctx context.Context,
 	stores Stores,
-	provider port.EmbeddingProvider,
+	provider embedding.EmbeddingProvider,
 	documents []pendingDocument,
 	cfg config.Config,
 	opts EmbedOptions,

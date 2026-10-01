@@ -15,7 +15,8 @@ import (
 	"github.com/zed/platepilot/shared/domain/errs"
 	"github.com/zed/platepilot/shared/domain/evidence"
 	"github.com/zed/platepilot/shared/domain/review"
-	"github.com/zed/platepilot/shared/port"
+	"github.com/zed/platepilot/shared/embedding"
+	"github.com/zed/platepilot/shared/store"
 )
 
 // fakeEmbeddingConfig is a configuration the fake provider satisfies, so the
@@ -152,7 +153,7 @@ func TestRunEmbedActivatesWhatItVectors(t *testing.T) {
 
 	// And it is therefore reachable by search.
 	hits, err := stores.Knowledge.VectorSearch(ctx, evidence.ScopeRestaurant,
-		storedEmbedding(t, stores, id), 5, port.VectorFilter{})
+		storedEmbedding(t, stores, id), 5, store.VectorFilter{})
 	if err != nil {
 		t.Fatalf("VectorSearch: %v", err)
 	}
@@ -480,9 +481,9 @@ func TestRunEmbedFailsWhenTheProviderFails(t *testing.T) {
 // --- test providers --------------------------------------------------------
 
 // stubProvider replaces the stage's provider constructor for one test.
-func stubProvider(p port.EmbeddingProvider) func() {
+func stubProvider(p embedding.EmbeddingProvider) func() {
 	previous := newProvider
-	newProvider = func(config.Config, EmbedOptions) (port.EmbeddingProvider, error) { return p, nil }
+	newProvider = func(config.Config, EmbedOptions) (embedding.EmbeddingProvider, error) { return p, nil }
 	return func() { newProvider = previous }
 }
 

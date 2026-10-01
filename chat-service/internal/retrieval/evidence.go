@@ -9,7 +9,7 @@ import (
 	"github.com/zed/platepilot/shared/domain/errs"
 	"github.com/zed/platepilot/shared/domain/evidence"
 	"github.com/zed/platepilot/shared/domain/retrieval"
-	"github.com/zed/platepilot/shared/port"
+	"github.com/zed/platepilot/shared/store"
 )
 
 // EvidenceRequest is one evidence recall: a question, the restaurants the answer
@@ -118,7 +118,7 @@ func (s *Service) Evidence(ctx context.Context, req EvidenceRequest) (EvidenceRe
 		}
 	}
 
-	items, err := s.knowledge.RecallEvidence(ctx, port.EvidenceRequest{
+	items, err := s.knowledge.RecallEvidence(ctx, store.EvidenceRequest{
 		RestaurantIDs: restaurantIDs,
 		Query:         vector,
 		Topic:         req.Topic,

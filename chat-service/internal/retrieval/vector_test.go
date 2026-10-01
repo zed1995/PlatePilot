@@ -10,19 +10,20 @@ import (
 	"github.com/zed/platepilot/shared/domain/evidence"
 	"github.com/zed/platepilot/shared/domain/retrieval"
 	"github.com/zed/platepilot/shared/domain/search"
-	"github.com/zed/platepilot/shared/port"
+	"github.com/zed/platepilot/shared/embedding"
+	"github.com/zed/platepilot/shared/store"
 )
 
 // stubKnowledge is a read-side knowledge repository a test can steer.
 type stubKnowledge struct {
-	docs       []port.ScoredDocument
+	docs       []store.ScoredDocument
 	err        error
-	got        port.VectorSearchRequest
+	got        store.VectorSearchRequest
 	recallCall int
 	recalled   []evidence.Evidence
 	recallErr  error
 	// onRecall observes the request the store received.
-	onRecall func(port.EvidenceRequest)
+	onRecall func(store.EvidenceRequest)
 }
 
 func (s *stubKnowledge) FindEvidenceByRestaurant(_ context.Context, _ int64, _ string) ([]evidence.Evidence, error) {
@@ -30,7 +31,7 @@ func (s *stubKnowledge) FindEvidenceByRestaurant(_ context.Context, _ int64, _ s
 }
 
 func (s *stubKnowledge) RecallEvidence(
-	_ context.Context, req port.EvidenceRequest,
+	_ context.Context, req store.EvidenceRequest,
 ) ([]evidence.Evidence, error) {
 	if len(req.RestaurantIDs) == 0 {
 		return nil, errs.New(errs.CodeRetrievalNoScope, "evidence recall needs restaurants")
@@ -41,7 +42,7 @@ func (s *stubKnowledge) RecallEvidence(
 	return s.recalled, s.recallErr
 }
 
-func (s *stubKnowledge) VectorSearch(_ context.Context, req port.VectorSearchRequest) ([]port.ScoredDocument, error) {
+func (s *stubKnowledge) VectorSearch(_ context.Context, req store.VectorSearchRequest) ([]store.ScoredDocument, error) {
 	s.recallCall++
 	s.got = req
 	return s.docs, s.err
@@ -83,12 +84,12 @@ func (s *stubEmbedding) EmbedQuery(_ context.Context, query string) ([]float32, 
 }
 
 var (
-	_ port.KnowledgeRepository = (*stubKnowledge)(nil)
-	_ port.EmbeddingProvider   = (*stubEmbedding)(nil)
+	_ store.KnowledgeRepository   = (*stubKnowledge)(nil)
+	_ embedding.EmbeddingProvider = (*stubEmbedding)(nil)
 )
 
-func scoredDoc(documentID, restaurantID int64, title string, distance float64) port.ScoredDocument {
-	return port.ScoredDocument{
+func scoredDoc(documentID, restaurantID int64, title string, distance float64) store.ScoredDocument {
+	return store.ScoredDocument{
 		KnowledgeDocument: evidence.KnowledgeDocument{
 			DocumentID:   documentID,
 			RestaurantID: restaurantID,
@@ -138,7 +139,7 @@ func TestVectorChannelRanksOnASoftCondition(t *testing.T) {
 			2: {Name: "Rooftop Garden", Borough: "manhattan", RatingCount: 10},
 		},
 	}
-	knowledge := &stubKnowledge{docs: []port.ScoredDocument{
+	knowledge := &stubKnowledge{docs: []store.ScoredDocument{
 		scoredDoc(1, 2, "Rooftop Garden", 0.10),
 		scoredDoc(2, 1, "Quiet Corner", 0.90),
 	}}
@@ -372,7 +373,7 @@ func TestVectorChannelEnrichesRecalledCandidates(t *testing.T) {
 		2: {Name: "Rooftop Garden", Address: "9 Rooftop Way", Borough: "manhattan",
 			Cuisines: []string{"italian"}, Rating: floatPtr(4.6), RatingCount: 220},
 	}}
-	knowledge := &stubKnowledge{docs: []port.ScoredDocument{
+	knowledge := &stubKnowledge{docs: []store.ScoredDocument{
 		scoredDoc(1, 2, "Rooftop Garden", 0.10),
 	}}
 	embedding := &stubEmbedding{vector: []float32{1, 0, 0}}

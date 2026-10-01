@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/zed/platepilot/shared/domain/search"
-	"github.com/zed/platepilot/shared/port"
+	"github.com/zed/platepilot/shared/rerank"
 )
 
 // stubRerank returns whatever the test tells it to.
@@ -27,7 +27,7 @@ func (s *stubRerank) Rerank(_ context.Context, _ string, candidates []search.Res
 	return s.out, nil
 }
 
-var _ port.RerankProvider = (*stubRerank)(nil)
+var _ rerank.RerankProvider = (*stubRerank)(nil)
 
 func sampleCandidates() []search.RestaurantCandidate {
 	return []search.RestaurantCandidate{

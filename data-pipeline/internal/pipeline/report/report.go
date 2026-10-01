@@ -11,14 +11,14 @@ import (
 
 	"github.com/zed/platepilot/shared/domain/errs"
 	"github.com/zed/platepilot/shared/domain/review"
-	"github.com/zed/platepilot/shared/port"
+	"github.com/zed/platepilot/shared/store"
 )
 
 // Collector accumulates one batch's counters and writes the audit records.
 // A nil store makes the collector a pure in-memory counter, which is what
 // --dry-run uses.
 type Collector struct {
-	store      port.PipelineStore
+	store      store.PipelineStore
 	report     review.BatchReport
 	rejections []review.Rejection
 	missing    map[string]int64
@@ -33,7 +33,7 @@ type Collector struct {
 }
 
 // New returns a collector for one stage.
-func New(store port.PipelineStore, stage, curationVersion, sourceFile string, startedAt time.Time) *Collector {
+func New(store store.PipelineStore, stage, curationVersion, sourceFile string, startedAt time.Time) *Collector {
 	return &Collector{
 		store: store,
 		report: review.BatchReport{

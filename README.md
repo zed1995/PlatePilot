@@ -347,8 +347,8 @@ make lint          # golangci-lint (if installed)
 
 ### Testing without a database
 
-The write ports have an in-memory implementation
-(`shared/adapter/repository/memory`) that both services and the tests use, so
+The write-side stores have an in-memory implementation
+(`shared/store/memory`) that both services and the tests use, so
 `make test` is fast and runs offline.
 
 The Postgres adapter is covered separately because the thing that makes it
@@ -516,10 +516,12 @@ RETRIEVAL_WEIGHT_QUALITY=0.2       # rating prior, shrunk by sample size
 ```
 chat-service/
   main.go                 # HTTP service entrypoint
-  internal/app/           # dependency assembly
+  internal/app/           # dependency assembly (the only place wiring concrete implementations)
   internal/config/        # chat-service configuration
+  internal/admin/         # admin console: read-only application layer
   internal/retrieval/     # read path: channel orchestration, fusion, rerank
-  internal/transport/     # Hertz routes, middleware, canonical errors
+  internal/httpapi/       # Hertz routes, handlers, middleware
+  internal/httperr/       # canonical HTTP error envelope
 data-pipeline/
   main.go                 # batch CLI (check-config / migrate / import / report / ...)
   internal/config/        # pipeline configuration
@@ -529,15 +531,18 @@ data-pipeline/
 shared/
   config/                 # env loading, validation errors, redaction
   domain/                 # pure domain DTOs (no framework or vendor dependencies)
-  port/                   # read-side repository + write-side store interfaces
-  adapter/
-    repository/memory/    # in-memory stores (offline contract tests)
-    repository/postgres/  # Postgres adapter: client, stores, migrations, geo
-    repository/contract/  # behaviour suite shared by memory and Postgres
+  store/                  # repository + store interfaces (read-side and write-side)
+    postgres/             # Postgres: client, stores, migrations, geo
+    memory/               # in-memory stores (offline contract tests)
+    contract/             # behaviour suite shared by memory and Postgres
+  chat/                   # ChatProvider interfaces (+ openai adapter, M4)
+  embedding/              # EmbeddingProvider interface + ollama / fake clients
+  rerank/                 # RerankProvider interface
+  requestctx/             # per-request context values (request id, log fields)
   observability/logging/  # structured JSON logging
   testkit/                # mocks, fixtures, in-memory repositories
 deploy/                   # docker-compose + PostgreSQL image (pgvector + PostGIS)
-web/                      # future frontend
+web/                      # admin console frontend
 ```
 
 ## Documents

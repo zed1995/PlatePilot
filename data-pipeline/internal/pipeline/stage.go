@@ -7,7 +7,7 @@ import (
 	"github.com/zed/platepilot/data-pipeline/internal/pipeline/curate"
 	"github.com/zed/platepilot/data-pipeline/internal/pipeline/report"
 	"github.com/zed/platepilot/shared/domain/review"
-	"github.com/zed/platepilot/shared/port"
+	"github.com/zed/platepilot/shared/store"
 )
 
 // newStageCollector opens an audit record for one M2 stage.
@@ -17,7 +17,7 @@ import (
 // a "succeeded" batch row behind would be indistinguishable from a real run in
 // the audit table.
 func newStageCollector(stores Stores, dryRun bool, stage string) *report.Collector {
-	var store port.PipelineStore
+	var store store.PipelineStore
 	if !dryRun {
 		store = stores.Pipeline
 	}
