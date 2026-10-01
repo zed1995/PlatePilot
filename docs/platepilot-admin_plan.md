@@ -1,6 +1,6 @@
 # PlatePilot Admin 控制台实施计划
 
-> 依据：`Docs/platepilot-admin-prd.md` v0.2
+> 依据：`docs/platepilot-admin-prd.md` v0.2
 > 范围：chat-service 只读 `/admin/v1` 端点 + `web/` 单前端工程（8 个页面）
 
 ## 一、代码库调研结论

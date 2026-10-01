@@ -542,7 +542,7 @@ web/                      # future frontend
 
 ## Documents
 
-- `Docs/platepilot-technical-prd.md`
-- `Docs/platepilot-implementation-plan.md`
-- `Docs/platepilot-m0-task-document.md`
-- `Docs/platepilot-m1-task-document.md`
+- `docs/platepilot-technical-prd.md`
+- `docs/platepilot-implementation-plan.md`
+- `docs/platepilot-m0-task-document.md`
+- `docs/platepilot-m1-task-document.md`

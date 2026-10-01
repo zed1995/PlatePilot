@@ -1,7 +1,7 @@
 # PlatePilot M1 数据底座任务文档
 
 > 日期：2026-09-30
-> 依据：`Docs/platepilot-implementation-plan.md`（§4 里程碑总览、§6 M1、§7 关键路径、§9 Gate A、§10 完成定义）与 `Docs/platepilot-technical-prd.md` v0.12（§2 当前数据基线、§4 数据架构与 Schema、§5 写入链路）
+> 依据：`docs/platepilot-implementation-plan.md`（§4 里程碑总览、§6 M1、§7 关键路径、§9 Gate A、§10 完成定义）与 `docs/platepilot-technical-prd.md` v0.12（§2 当前数据基线、§4 数据架构与 Schema、§5 写入链路）
 > 里程碑目标：把 Google Local 2021 原始数据变成**可重复导入、可幂等重建、可查询、可审计**的 PostgreSQL 内容底座
 > 退出条件（Gate A）：≥1,000 家餐厅、≥100,000 条评论成功关联；重复执行导入不产生重复数据；数据审计报告可生成；名称/地址模糊查询可用
 
@@ -1270,7 +1270,7 @@ M1 完成后，按实施计划 §14 进入 M2（Embedding 与知识文档）。�
 **接口稳定性要求**：M1 对 `shared/port/repository.go` 的扩展是 M2/M3 的契约。若后续必须再调整，需同步更新：
 
 - 本文档 §4.0 的接口形状。
-- `Docs/platepilot-implementation-plan.md` 对应任务的依赖与验收。
+- `docs/platepilot-implementation-plan.md` 对应任务的依赖与验收。
 - 所有实现（Postgres / 内存 / Mock）与契约测试。
 
 **M1 明确不做的事**（避免范围蔓延）：
@@ -1448,14 +1448,14 @@ boundaries              (M2 填充)
 
 ## 附录 D：参考文档
 
-- 实施计划：`Docs/platepilot-implementation-plan.md`
+- 实施计划：`docs/platepilot-implementation-plan.md`
   - §6 M1 任务表
   - §7 关键路径
   - §9 Gate A：数据门
   - §10 每项任务的完成定义
-- 技术 PRD：`Docs/platepilot-technical-prd.md` v0.12
+- 技术 PRD：`docs/platepilot-technical-prd.md` v0.12
   - §2 当前数据基线（§2.2 Meta schema、§2.3 Review schema、§2.5 数据限制）
   - §4 数据架构与 Schema（§4.2 表总览、§4.3/§4.4/§4.5/§4.6、§4.11 模糊检索索引）
   - §5 写入链路（Step 1–9）
 - 运维说明：`README.md`（启动命令、导入顺序、已知限制）
-- M0 任务文档：`Docs/platepilot-m0-task-document.md`（工程骨架、配置、日志、领域 DTO、Repository 接口）
+- M0 任务文档：`docs/platepilot-m0-task-document.md`（工程骨架、配置、日志、领域 DTO、Repository 接口）

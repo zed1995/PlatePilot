@@ -2,7 +2,7 @@
 
 > 版本：v0.2
 > 日期：2026-10-01
-> 依据：`Docs/platepilot-technical-prd.md` v0.12、`Docs/platepilot-implementation-plan.md` v0.7（§3.2 服务划分、§9 质量门、§10 完成定义）
+> 依据：`docs/platepilot-technical-prd.md` v0.12、`docs/platepilot-implementation-plan.md` v0.7（§3.2 服务划分、§9 质量门、§10 完成定义）
 > 定位：在 M4 之前，为 M2 写入产物与 M3 读取能力提供一套**只读**的可视化验证与 Debug 工具
 > 交付形态：`chat-service` 新增只读管理端点 + 前端工程 `web/`（单工程，后续 M6 的 Agent 聊天界面复用同一工程）
 

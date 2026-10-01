@@ -2,7 +2,7 @@
 
 > 版本：v0.7  
 > 日期：2026-09-30  
-> 依据文档：`Docs/platepilot-technical-prd.md` v0.12  
+> 依据文档：`docs/platepilot-technical-prd.md` v0.12  
 > 项目定位：Go + Eino Agent + OpenAI-Compatible Chat Provider + 本地 Qwen Embedding + PostgreSQL（pgvector + PostGIS + pg_trgm）  
 > 计划目标：把技术 PRD 拆成可独立执行、可验证、可并行推进的任务
 
