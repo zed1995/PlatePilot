@@ -6,10 +6,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 
 	"github.com/cloudwego/hertz/pkg/app/server"
 
 	"github.com/zed/platepilot/chat-service/internal/config"
+	inspectapp "github.com/zed/platepilot/chat-service/internal/inspect"
 	"github.com/zed/platepilot/chat-service/internal/retrieval"
 	"github.com/zed/platepilot/chat-service/internal/transport/httpapi"
 	"github.com/zed/platepilot/shared/adapter/embedding/fake"
@@ -37,6 +39,7 @@ type Deps struct {
 	Conversations port.ConversationRepository
 	Memories      port.MemoryRepository
 	Runs          port.RunRepository
+	Inspect        port.InspectStore
 }
 
 // App owns the assembled runtime.
@@ -72,6 +75,25 @@ func New(cfg config.Config, logger *slog.Logger, deps Deps, version string) (*Ap
 	}
 	app.search = searchService
 
+	// The administration application service is assembled only when a store
+	// was supplied; with it absent the router simply leaves /admin/v1
+	// unregistered even if the switch is on.
+	var adminService httpapi.AdminService
+	if deps.Inspect != nil {
+		adminService = inspectapp.NewService(deps.Inspect, inspectapp.Config{
+			DefaultPageSize:     cfg.Admin.DefaultPageSize,
+			MaxPageSize:         cfg.Admin.MaxPageSize,
+			MaxRejections:       cfg.Admin.MaxRejections,
+			EmbeddingModel:      cfg.Embedding.Model,
+			EmbeddingDimensions: cfg.Embedding.Dimensions,
+		})
+		logger.Info("admin console assembled",
+			slog.Bool("enabled", cfg.Admin.Enabled))
+	}
+	if cfg.Admin.Enabled {
+		warnNonLoopbackBind(logger, cfg.HTTP.Addr)
+	}
+
 	router := httpapi.NewRouter(httpapi.Config{
 		Addr:             cfg.HTTP.Addr,
 		ReadTimeout:      cfg.HTTP.ReadTimeout,
@@ -81,9 +103,29 @@ func New(cfg config.Config, logger *slog.Logger, deps Deps, version string) (*Ap
 		Logger:           logger,
 		Search:           searchService,
 		Evidence:         httpapi.NewEvidenceService(searchService),
+		Admin:            adminService,
+		AdminEnabled:     cfg.Admin.Enabled,
 	})
 	app.http = router
 	return app, nil
+}
+
+// warnNonLoopbackBind reminds the operator that enabling the console does not
+// relax the guard: on a concrete non-loopback bind address the routes exist
+// there but non-local peers are still refused.
+func warnNonLoopbackBind(logger *slog.Logger, addr string) {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return
+	}
+	if host == "" {
+		return // bound to every interface; the guard decides per peer
+	}
+	if ip := net.ParseIP(host); ip != nil && !ip.IsLoopback() {
+		logger.Warn("admin console enabled while HTTP binds a non-loopback address; "+
+			"non-local peers remain blocked by the loopback guard",
+			slog.String("addr", addr))
+	}
 }
 
 // retrievalConfig projects the service configuration onto the read path.
@@ -124,6 +166,7 @@ func Connect(ctx context.Context, cfg config.Config, logger *slog.Logger, versio
 		// for both, and a second pool would only add a way to exhaust connections.
 		deps.Restaurants = postgres.NewRestaurantSearchRepository(client)
 		deps.Knowledge = postgres.NewKnowledgeReadRepository(client)
+		deps.Inspect = postgres.NewInspectStore(client)
 		logger.Info("postgres read store connected",
 			slog.String("database", client.DatabaseName()))
 	}

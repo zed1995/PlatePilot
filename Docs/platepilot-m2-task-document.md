@@ -1,7 +1,7 @@
 # PlatePilot M2 Embedding 与知识文档任务文档
 
 > 日期：2026-09-30
-> 依据：`plans/platepilot-implementation-plan.md`（§4 里程碑总览、§6 M2、§7 关键路径、§9 Gate B、§10 完成定义）与 `plans/platepilot-technical-prd.md` v0.12（§4.7 `knowledge_documents`、§5 Step 7–9）
+> 依据：`Docs/platepilot-implementation-plan.md`（§4 里程碑总览、§6 M2、§7 关键路径、§9 Gate B、§10 完成定义）与 `Docs/platepilot-technical-prd.md` v0.12（§4.7 `knowledge_documents`、§5 Step 7–9）
 > 里程碑目标：把 M1 已落库的 36,133 家餐厅与 4,156,055 条评论，变成**可向量化、可按 scope 检索、可审计、可增量重建**的知识文档层
 > 退出条件（Gate B）：≥500 家餐厅生成餐厅级文档；≥5,000 条 evidence chunk 生成成功；所有向量均为 1024 维；向量检索能返回正确 scope
 
@@ -1256,7 +1256,7 @@ M2 完成后按实施计划 §14 进入 M3（两级检索）。衔接点：
 **接口稳定性要求**：M2 对 `port` 的扩展是 M3/M4 的契约。若必须再调整，需同步更新：
 
 - 本文档 §2.2、§4 各任务的接口形状。
-- `plans/platepilot-implementation-plan.md` 对应任务的依赖与验收。
+- `Docs/platepilot-implementation-plan.md` 对应任务的依赖与验收。
 - 所有实现（postgres / memory / fake）与契约测试。
 - `shared/domain/evidence/evidence.go` 的 DTO 字段。
 
@@ -2378,9 +2378,9 @@ SET LOCAL hnsw.ef_search = 100;
 
 ## 附录 D：参考文档
 
-- `plans/platepilot-implementation-plan.md` §6 M2、§7 关键路径、§8 并行建议、§9 Gate B
-- `plans/platepilot-technical-prd.md` §4.7 `knowledge_documents`、§5 Step 6–9
-- `plans/platepilot-m1-task-document.md` §0.1 实现状态、§4.0 领域与接口（写侧端口约定）
+- `Docs/platepilot-implementation-plan.md` §6 M2、§7 关键路径、§8 并行建议、§9 Gate B
+- `Docs/platepilot-technical-prd.md` §4.7 `knowledge_documents`、§5 Step 6–9
+- `Docs/platepilot-m1-task-document.md` §0.1 实现状态、§4.0 领域与接口（写侧端口约定）
 - `shared/domain/evidence/evidence.go`（`KnowledgeDocument` / `Evidence` / `DocType`）
 - `shared/port/embedding.go`（`EmbeddingProvider`）
 - `shared/port/writer.go`（`RestaurantStore` / `ReviewStore` / `PipelineStore`，M2 追加 `KnowledgeStore`）

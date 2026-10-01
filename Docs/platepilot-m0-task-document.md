@@ -2,7 +2,7 @@
 
 > 版本：v1.1  
 > 日期：2026-09-30  
-> 依据：`plans/platepilot-implementation-plan.md`（§6 M0、§7 关键路径、§10 完成定义）与 `plans/platepilot-technical-prd.md` v0.12（§7 API 边界、§8 技术栈、§9 API 框架约定）  
+> 依据：`Docs/platepilot-implementation-plan.md`（§6 M0、§7 关键路径、§10 完成定义）与 `Docs/platepilot-technical-prd.md` v0.12（§7 API 边界、§8 技术栈、§9 API 框架约定）  
 > 里程碑目标：搭建一个**可启动、可测试、边界清晰**的 Go 工程底座  
 > 退出条件：服务可本地启动且 `/healthz` 可用；领域 DTO、Provider、Repository 接口和测试骨架完整；**领域层不依赖任何具体中间件或厂商 SDK**
 
@@ -167,7 +167,7 @@ platepilot/                              # 单一 Go module，两个可独立运
 │   └── README.md
 ├── testdata/                            # 小型固定测试数据（不要放原始大文件）
 ├── scripts/                             # 已有 Python 数据探索脚本（保留）
-└── plans/                               # 技术 PRD、实施计划、任务文档
+└── Docs/                               # 技术 PRD、实施计划、任务文档
 ```
 
 ### 2.1 分层与依赖方向
@@ -917,7 +917,7 @@ M0 完成后，按实施计划 §14 第 1 组进入 M1。服务归属如下：
 **接口稳定性要求**：M0 定义的 `port` 接口是 M1–M4 的契约。若后续必须调整，需同步更新：
 
 - 本文档的接口形状章节。
-- `plans/platepilot-implementation-plan.md` 中对应任务的依赖与验收。
+- `Docs/platepilot-implementation-plan.md` 中对应任务的依赖与验收。
 - 所有实现该接口的 Mock 与内存实现。
 
 **M0 明确不做的事**（避免范围蔓延）：
@@ -984,8 +984,8 @@ HTTP_ADDR=:8080
 ```
 ## 附录 B：参考文档
 
-- 实施计划：`plans/platepilot-implementation-plan.md`
-- 技术 PRD：`plans/platepilot-technical-prd.md`
+- 实施计划：`Docs/platepilot-implementation-plan.md`
+- 技术 PRD：`Docs/platepilot-technical-prd.md`
   - §3.1 不可破坏的设计原则
   - §7 工具与 API 边界
   - §8 技术栈（§8.3 LLM Provider 抽象、§8.4 OpenAI-Compatible Chat Adapter、§8.5 本地 Qwen Embedding）

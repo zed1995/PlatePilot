@@ -1,11 +1,13 @@
 BIN_DIR       := bin
 CHAT_SERVICE  := chat-service
 DATA_PIPELINE := data-pipeline
+WEB_DIR       := web
 PKG           := ./...
 VERSION       ?= dev
 LDFLAGS       := -X main.version=$(VERSION)
 
-.PHONY: help build build-chat build-pipeline run-chat run-pipeline \
+.PHONY: help build build-chat build-pipeline run-chat run-chat-admin run-pipeline \
+        web-install web-dev web-build dev \
         migrate import-sample test test-offline test-race test-postgres \
         eval-retrieval vet cover lint clean pg-up pg-down pg-logs
 
@@ -23,8 +25,31 @@ build-pipeline: ## Build only the data pipeline
 run-chat: ## Run the chat service (HTTP, default :8080)
 	go run ./$(CHAT_SERVICE)
 
+run-chat-admin: ## Run the chat service with the admin API enabled (loopback only)
+	ADMIN_ENABLED=true go run ./$(CHAT_SERVICE)
+
 run-pipeline: ## Run the data pipeline (prints the resolved config)
 	go run ./$(DATA_PIPELINE) check-config
+
+# --- Admin console (web) ----------------------------------------------------
+
+web-install: ## Install the frontend dependencies
+	cd $(WEB_DIR) && npm install
+
+web-dev: ## Run the admin console dev server (Vite, proxies /admin to :8080)
+	cd $(WEB_DIR) && npm run dev
+
+web-build: ## Build the admin console for production into web/dist
+	cd $(WEB_DIR) && npm run build
+
+# Start both processes in one shell; `kill 0` takes down the whole group
+# (including the binary spawned by `go run`) on Ctrl-C.
+dev: web-install ## Start the chat service (admin enabled) and the Vite dev server together
+	@echo "starting chat-service (ADMIN_ENABLED=true) and $(WEB_DIR) dev server; Ctrl-C stops both"
+	@trap 'kill 0' INT TERM EXIT; \
+	ADMIN_ENABLED=true go run ./$(CHAT_SERVICE) & \
+	(cd $(WEB_DIR) && npm run dev) & \
+	wait
 
 migrate: ## Apply SQL migrations (requires POSTGRES_DSN)
 	go run ./$(DATA_PIPELINE) migrate

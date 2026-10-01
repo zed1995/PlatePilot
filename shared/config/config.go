@@ -465,6 +465,8 @@ func (l *Loader) Retrieval() RetrievalConfig {
 		TopK:             l.Int("RETRIEVAL_TOP_K", 5),
 		EnableKeyword:    l.Bool("RETRIEVAL_ENABLE_KEYWORD", true),
 		EnableStructured: l.Bool("RETRIEVAL_ENABLE_STRUCTURED", true),
+		EnableVector:     l.Bool("RETRIEVAL_ENABLE_VECTOR", true),
+		EmbeddingTimeout: l.Duration("RETRIEVAL_EMBEDDING_TIMEOUT", 5*time.Second),
 	}
 }
 

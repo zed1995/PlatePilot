@@ -1,7 +1,7 @@
 # PlatePilot M3 两级检索任务文档
 
 > 日期：2026-10-01
-> 依据：`plans/platepilot-implementation-plan.md`（§4 里程碑总览、§6 M3、§7 关键路径、§9 Gate C、§10 完成定义）与 `plans/platepilot-technical-prd.md` v0.12（§6.3 两级召回边界、§6.4 Restaurant RAG 链路、§11 测试与评测）
+> 依据：`Docs/platepilot-implementation-plan.md`（§4 里程碑总览、§6 M3、§7 关键路径、§9 Gate C、§10 完成定义）与 `Docs/platepilot-technical-prd.md` v0.12（§6.3 两级召回边界、§6.4 Restaurant RAG 链路、§11 测试与评测）
 > 里程碑目标：把 M2 已落库的 11,775 篇知识文档，变成**可过滤、可召回、可融合、可引用**的检索层——第一次让 `chat-service` 返回候选餐厅和带来源的佐证
 > 退出条件（Gate C）：硬条件过滤正确率 100%；餐厅召回结果可解释；佐证不会跨餐厅返回；引用包含 source 和 observed_at
 
@@ -1220,7 +1220,7 @@ M3 完成后按实施计划 §14 第 5 组进入 M4（Agent 运行时）。衔�
 **接口稳定性要求**：M3 对 `port` 的收敛是 M4/M5 的契约。若必须再调整，需同步更新：
 
 - 本文档 §2.3、§4 各任务的接口形状。
-- `plans/platepilot-implementation-plan.md` 对应任务的依赖与验收。
+- `Docs/platepilot-implementation-plan.md` 对应任务的依赖与验收。
 - 所有实现（postgres / memory）与 `read_contract.go`。
 - `shared/domain/search/search.go` 与 `shared/domain/evidence/evidence.go` 的 DTO 字段。
 
@@ -1723,9 +1723,9 @@ LIMIT 10;
 
 ## 附录 D：参考文档
 
-- `plans/platepilot-implementation-plan.md` §6 M3、§7 关键路径、§9 Gate C、§10 完成定义、§14 第 4 组
-- `plans/platepilot-technical-prd.md` §6.3 两级召回边界、§6.4 Restaurant RAG 链路、§11.3 RAG 评测
-- `plans/platepilot-m2-task-document.md` §7 与后续里程碑的衔接表、M2-07 向量索引决策、附录 E 实施记录
+- `Docs/platepilot-implementation-plan.md` §6 M3、§7 关键路径、§9 Gate C、§10 完成定义、§14 第 4 组
+- `Docs/platepilot-technical-prd.md` §6.3 两级召回边界、§6.4 Restaurant RAG 链路、§11.3 RAG 评测
+- `Docs/platepilot-m2-task-document.md` §7 与后续里程碑的衔接表、M2-07 向量索引决策、附录 E 实施记录
 - `shared/port/repository.go`（读侧端口，M3-01 收敛）
 - `shared/port/writer.go`（`KnowledgeStore.VectorSearch`，写侧验证版本）
 - `shared/port/rerank.go`（`RerankProvider`）

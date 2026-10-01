@@ -28,7 +28,18 @@ type Config struct {
 	Embedding sharedcfg.EmbeddingConfig
 	Retrieval sharedcfg.RetrievalConfig
 	Rerank    RerankConfig
+	Admin     AdminConfig
 	Timeout   sharedcfg.TimeoutConfig
+}
+
+// AdminConfig holds the administration console settings. The console is off by
+// default; when enabled it is additionally restricted to loopback peers by the
+// transport, so enabling it never exposes the surface beyond the local host.
+type AdminConfig struct {
+	Enabled         bool
+	DefaultPageSize int
+	MaxPageSize     int
+	MaxRejections   int
 }
 
 // RerankConfig holds the optional reranking settings. An empty provider name
@@ -96,6 +107,12 @@ func Load() (Config, error) {
 			Model:        l.String("CHAT_MODEL", ""),
 			ExtraHeaders: l.StringMap("CHAT_EXTRA_HEADERS_JSON"),
 		},
+		Admin: AdminConfig{
+			Enabled:         l.Bool("ADMIN_ENABLED", false),
+			DefaultPageSize: l.Int("ADMIN_DEFAULT_PAGE_SIZE", 25),
+			MaxPageSize:     l.Int("ADMIN_MAX_PAGE_SIZE", 100),
+			MaxRejections:   l.Int("ADMIN_MAX_REJECTIONS", 200),
+		},
 	}
 	if err := l.Err(); err != nil {
 		return Config{}, err
@@ -116,7 +133,33 @@ func (c Config) Validate() error {
 		c.Chat.validate(),
 		c.Retrieval.Validate(),
 		c.Rerank.validate(),
+		c.Admin.validate(),
 	)
+}
+
+func (c AdminConfig) validate() []string {
+	if !c.Enabled {
+		return nil
+	}
+	var problems []string
+	if c.DefaultPageSize <= 0 {
+		problems = append(problems, fmt.Sprintf(
+			"ADMIN_DEFAULT_PAGE_SIZE: must be > 0 (got %d)", c.DefaultPageSize))
+	}
+	if c.MaxPageSize <= 0 {
+		problems = append(problems, fmt.Sprintf(
+			"ADMIN_MAX_PAGE_SIZE: must be > 0 (got %d)", c.MaxPageSize))
+	}
+	if c.DefaultPageSize > c.MaxPageSize {
+		problems = append(problems, fmt.Sprintf(
+			"ADMIN_DEFAULT_PAGE_SIZE %d must not exceed ADMIN_MAX_PAGE_SIZE %d",
+			c.DefaultPageSize, c.MaxPageSize))
+	}
+	if c.MaxRejections <= 0 {
+		problems = append(problems, fmt.Sprintf(
+			"ADMIN_MAX_REJECTIONS: must be > 0 (got %d)", c.MaxRejections))
+	}
+	return problems
 }
 
 func (c HTTPConfig) validate() []string {
@@ -196,6 +239,9 @@ func (c Config) Summary() map[string]any {
 		"weight_quality":          c.Retrieval.Weights.Quality,
 		"rerank_provider":         c.Rerank.Provider,
 		"rerank_model":            c.Rerank.Model,
+		"admin_enabled":           c.Admin.Enabled,
+		"admin_default_page_size": c.Admin.DefaultPageSize,
+		"admin_max_page_size":     c.Admin.MaxPageSize,
 	}
 }
 

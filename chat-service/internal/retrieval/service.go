@@ -64,6 +64,7 @@ var DefaultServiceConfig = ServiceConfig{
 	// vector index turn it off at the configuration layer instead, which is
 	// where the decision to spend the embedding latency belongs.
 	EnableVector: true,
+	EmbeddingTimeout: 5 * time.Second,
 }
 
 // Service answers restaurant searches.

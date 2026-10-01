@@ -1,0 +1,8 @@
+/* Console-wide styles. */
+
+/* Inactive (superseded) knowledge documents are grayed out so they never read
+   as the current version. */
+.inactive-row > td {
+  color: rgba(0, 0, 0, 0.35) !important;
+  background-color: #fafafa !important;
+}
