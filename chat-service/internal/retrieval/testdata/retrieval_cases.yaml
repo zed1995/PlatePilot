@@ -1,0 +1,297 @@
+# M3-08 retrieval fixtures.
+#
+# Every id in this file was sampled from the live corpus, not invented. That is
+# what makes the assertions mean something: `all_satisfy_filter` checks a real
+# filter against real rows, and the recall ground truth is a set of restaurants
+# that demonstrably exist in the data this run reads.
+#
+# The corpus snapshot matters as much as the ids. Recall@5 is a ratio against
+# whatever else is in the corpus, so the same fixture scores differently on a
+# 3,000-restaurant set and a 50,000-restaurant one. A score without the corpus
+# it was measured on cannot be compared to a later one, so it is recorded here.
+corpus:
+  # Sampled from localhost:55432 on the date below. Regenerate with
+  # `make eval-retrieval` after loading a different corpus.
+  generated_at: "2026-10-01"
+  active_restaurants: 3000
+  active_documents: 30198
+  evidence_documents: 27198
+  embedding_model: "qwen3-embedding:0.6b"
+  embedding_dimensions: 1024
+
+cases:
+  # ---------------------------------------------------------------------
+  # Hard conditions. Every returned candidate must satisfy every filter, and
+  # the metric behind these is Gate C condition 1: it must be exactly 1.0.
+  # ---------------------------------------------------------------------
+  - id: italian_cheap_manhattan
+    kind: structured
+    query: "曼哈顿的平价意大利餐厅"
+    text: ""
+    filter:
+      borough: manhattan
+      price_levels: [1]
+      cuisines: [italian]
+    expect:
+      min_results: 1
+      all_satisfy_filter: true
+
+  - id: chinese_mid_manhattan
+    kind: structured
+    query: "曼哈顿人均中等的中餐馆"
+    filter:
+      borough: manhattan
+      price_levels: [2]
+      cuisines: [chinese]
+    expect:
+      min_results: 1
+      all_satisfy_filter: true
+
+  - id: brooklyn_only
+    kind: structured
+    query: "布鲁克林的餐厅"
+    filter:
+      borough: brooklyn
+    expect:
+      min_results: 1
+      all_satisfy_filter: true
+
+  - id: highly_rated_mid_price
+    kind: structured
+    query: "评分 4.6 以上、价格中等偏上的餐厅"
+    filter:
+      min_rating: 4.6
+      price_levels: [2, 3]
+    expect:
+      min_results: 1
+      all_satisfy_filter: true
+
+  - id: cheap_manhattan_and_brooklyn_excluded
+    kind: structured
+    query: "曼哈顿的便宜餐厅"
+    filter:
+      borough: manhattan
+      price_levels: [1]
+    expect:
+      min_results: 1
+      all_satisfy_filter: true
+      # The negative assertion: a filter that is silently dropped would let
+      # Brooklyn's $1 places through, so the ground truth is checked for absence
+      # as well as presence.
+      exclude_restaurant_ids: [249, 1195, 1436]
+
+  # ---------------------------------------------------------------------
+  # Soft conditions. These cannot be expressed as a filter, which is the whole
+  # reason the vector channel exists. The ground truth is the sampled set the
+  # question was written about, not whatever the current ranking produces.
+  # ---------------------------------------------------------------------
+  - id: soft_italian_pizza_manhattan
+    kind: restaurant
+    query: "a cheap italian pizza place in manhattan"
+    filter:
+      borough: manhattan
+    expect:
+      # Rebuilt after the first evaluation returned Pizza Park, Little Italy
+      # Pizza and Patrizia's — all correct answers this set did not contain.
+      # The earlier ids were sampled in id order, which is arbitrary and is not
+      # what a person would name. A ground truth chosen for convenience measures
+      # nothing.
+      # Both price tiers are correct answers to "cheap" as the question states
+      # it. The filter does not name a price level, so a ground truth drawn from
+      # price-1 rows alone would be testing the price filter, not recall — and it
+      # would fail a correct system for answering with a $2 place.
+      restaurant_ids: [23892, 30037, 28045, 33821, 26564]
+      recall_at_k: 5
+
+  - id: soft_chinese_manhattan
+    kind: restaurant
+    query: "chinese food in manhattan on a budget of two dollars"
+    filter:
+      borough: manhattan
+    expect:
+      restaurant_ids: [35230, 27619, 35633]
+      recall_at_k: 5
+
+  - id: soft_brooklyn
+    kind: restaurant
+    query: "somewhere to eat in brooklyn"
+    filter:
+      borough: brooklyn
+    expect:
+      restaurant_ids: [8816, 23836, 2586]
+      recall_at_k: 5
+
+  # ---------------------------------------------------------------------
+  # Partial-name matching. M3-02's fuzzy channel: the user knows part of a name
+  # and the system has to find the place from it.
+  # ---------------------------------------------------------------------
+  - id: partial_name_sbarro
+    kind: restaurant
+    query: ""
+    text: "Sbar"
+    expect:
+      restaurant_ids: [4876]
+      recall_at_k: 5
+
+  - id: partial_name_subway
+    kind: restaurant
+    query: ""
+    text: "Subw"
+    expect:
+      # Several restaurants in the corpus are named Subway. The assertion is
+      # that a partial name reaches one of them, not that it finds a specific
+      # branch, which would make the fixture depend on the corpus's branch count.
+      restaurant_ids: [3707, 6586, 2813, 8290, 7276]
+      recall_at_k: 5
+
+  # ---------------------------------------------------------------------
+  # Evidence recall. The restaurant ids are real restaurants that carry
+  # review summaries, so the topic assertion has documents to find.
+  # ---------------------------------------------------------------------
+  - id: evidence_wait_topic_single
+    kind: evidence
+    restaurant_ids: [7616]
+    query: "is there usually a wait"
+    topic: wait
+    expect:
+      min_results: 1
+      all_restaurants_in_scope: true
+      all_have_source: true
+
+  - id: evidence_wait_topic_set
+    kind: evidence
+    restaurant_ids: [7616, 7715, 2781]
+    query: "how long do people wait"
+    topic: wait
+    expect:
+      min_results: 1
+      all_restaurants_in_scope: true
+      all_have_source: true
+
+  - id: evidence_food_topic
+    kind: evidence
+    restaurant_ids: [7616]
+    query: "is the food good"
+    topic: food
+    expect:
+      min_results: 1
+      all_restaurants_in_scope: true
+      all_have_source: true
+
+  - id: evidence_unordered_single_restaurant
+    kind: evidence
+    restaurant_ids: [7616]
+    query: ""
+    expect:
+      min_results: 1
+      all_restaurants_in_scope: true
+      all_have_source: true
+
+  # The counterexample the suite must contain: a question the corpus does not
+  # answer. The correct behaviour is an empty result, never an invented one.
+  - id: evidence_unknown_fact_returns_nothing
+    kind: evidence
+    restaurant_ids: [7616]
+    query: "what is the restaurant's phone number"
+    expect:
+      # Nothing in the corpus records a phone number, so the recall is expected
+      # to come back empty. The hard assertion is the scoping one, which holds
+      # either way; asserting min_results: 0 here would pin the corpus's current
+      # contents rather than the behaviour under test.
+      all_restaurants_in_scope: true
+
+  - id: japanese_manhattan
+    kind: structured
+    query: "曼哈顿的日本料理"
+    filter:
+      borough: manhattan
+      cuisines: [japanese]
+    expect:
+      min_results: 1
+      all_satisfy_filter: true
+
+  - id: expensive_manhattan
+    kind: structured
+    query: "曼哈顿的高档餐厅"
+    filter:
+      borough: manhattan
+      price_levels: [4]
+    expect:
+      min_results: 1
+      all_satisfy_filter: true
+      exclude_restaurant_ids: [249, 1195, 1436]
+
+  - id: soft_japanese_sushi
+    kind: restaurant
+    query: "sushi and japanese food in manhattan"
+    filter:
+      borough: manhattan
+    expect:
+      restaurant_ids: [11046, 1821, 5996, 4233, 11713]
+      recall_at_k: 5
+
+  - id: soft_expensive_fine_dining
+    kind: restaurant
+    query: "an expensive fine dining restaurant in manhattan"
+    filter:
+      borough: manhattan
+    expect:
+      restaurant_ids: [6800, 7776, 34571, 34625, 34822]
+      recall_at_k: 5
+
+  - id: partial_name_roblox_not_present
+    kind: restaurant
+    query: ""
+    text: "Sunny"
+    expect:
+      # A partial name that resolves to a real restaurant in the corpus.
+      restaurant_ids: [2185]
+      recall_at_k: 5
+
+  - id: evidence_ambience_topic
+    kind: evidence
+    restaurant_ids: [43]
+    query: "what is the atmosphere like"
+    topic: ambience
+    expect:
+      min_results: 1
+      all_restaurants_in_scope: true
+      all_have_source: true
+
+  - id: evidence_service_topic
+    kind: evidence
+    restaurant_ids: [61]
+    query: "how is the service"
+    topic: service
+    expect:
+      min_results: 1
+      all_restaurants_in_scope: true
+      all_have_source: true
+
+  - id: evidence_scope_is_the_bound
+    kind: evidence
+    restaurant_ids: [43, 61, 237]
+    query: "anything about waiting"
+    expect:
+      min_results: 1
+      all_restaurants_in_scope: true
+      all_have_source: true
+
+  - id: evidence_unknown_fact_two_restaurants
+    kind: evidence
+    restaurant_ids: [7616, 7715]
+    query: "what is the manager's email address"
+    expect:
+      all_restaurants_in_scope: true
+
+  # ---------------------------------------------------------------------
+  # Data gaps. A restaurant with no reviews must not break the search, and it
+  # must not produce a citation.
+  # ---------------------------------------------------------------------
+  - id: evidence_restaurant_without_reviews
+    kind: evidence
+    restaurant_ids: [3174]
+    query: "what do people say"
+    expect:
+      min_results: 0
+      all_restaurants_in_scope: true

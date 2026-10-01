@@ -20,16 +20,29 @@ separately.
 
 ## Status
 
+Milestone **M3（两级检索）** — complete. `chat-service` answers
+`POST /v1/restaurants/search` with three fused channels: hard filters run in the
+database, names and addresses match through the `pg_trgm` indexes, and an online
+embedding of the query drives a semantic channel for the soft conditions no
+filter can express. It also answers `POST /v1/restaurants/{id}/evidence` and
+`POST /v1/restaurants/evidence`, which recall and assemble citable evidence for a
+named set of restaurants — the scope is a precondition, never a filter applied
+after the fact.
+
+Measured on the 3,000-restaurant corpus: hard-filter accuracy 1.000, recall@5
+0.792, citation precision 1.000, zero cross-restaurant leaks. `make eval-retrieval`
+re-runs those numbers against a live database.
+
+Milestone **M2 (Embedding 与知识文档)** — complete. `build-documents` and `embed`
+produce 11,775 active knowledge documents over 3,000 restaurants.
+
 Milestone **M1 (数据底座)** — complete on the write path. The data pipeline
 connects to PostgreSQL, applies its SQL migrations, streams the raw Google Local
 Meta/Review gzip JSONL into curated rows, materialises review statistics, and
-selects the demo restaurant set. `build-documents` and `embed` remain declared
-seams for M2.
+selects the demo restaurant set.
 
 Milestone **M0 (工程基础)** — skeleton, configuration, domain DTOs, provider and
 repository ports, Hertz HTTP skeleton, and the test baseline.
-
-The read path (`chat-service` search/retrieval) is M3.
 
 Measured on the full corpus (272k meta rows, 4.24M reviews) against a local
 container:
@@ -359,6 +372,145 @@ What the Postgres suite asserts beyond the shared behaviour contract:
 
 Point it at another instance with `PLATEPILOT_TEST_POSTGRES_DSN`.
 
+## Restaurant search and evidence
+
+`chat-service` serves three read-only endpoints. Search needs PostgreSQL, and
+additionally an embedding provider for the semantic channel; evidence needs both.
+Set `RETRIEVAL_ENABLE_VECTOR=false` to run the search path without a provider at
+all — the trace then records the channel as not run rather than pretending it
+contributed.
+
+```bash
+make pg-up && make migrate
+go run ./chat-service
+```
+
+```bash
+# Hard conditions plus free text. Conditions run in the database; the text is
+# matched against name and address through the pg_trgm indexes.
+curl -s localhost:8080/v1/restaurants/search \
+  -H 'content-type: application/json' \
+  -d '{"filter":{"cuisines":["italian"],"borough":"manhattan"},"text":"pizza"}' | jq
+```
+
+Every candidate explains itself. `reasons` names the channel that surfaced it and
+how much that channel contributed, and `trace.channels` records every channel
+that ran:
+
+```json
+{
+  "candidates": [{
+    "restaurant_id": 7715,
+    "name": "Vezzo",
+    "score": 0.682,
+    "rating": 4.53,
+    "rating_count": 1161,
+    "reasons": [
+      "满足全部硬条件（菜系=italian、行政区=manhattan）（权重 1.00，贡献 0.500）",
+      "评分先验（按评论样本量收缩）（权重 0.20，贡献 0.172）"
+    ]
+  }],
+  "trace": {
+    "candidate_pool": 48,
+    "returned": 12,
+    "channels": [
+      {"channel": "structured", "ran": true, "results": 240, "weight": 1},
+      {"channel": "keyword",    "ran": true, "results": 24,  "weight": 0.5},
+      {"channel": "vector",     "ran": true, "results": 30,  "weight": 0.4}
+    ]
+  }
+}
+```
+
+Behaviour worth knowing:
+
+- A request with neither text nor filters is refused. A filterless search would
+  return the corpus in score order, which looks like an answer.
+- An unknown borough is a `400`, not an empty list. "No restaurants there" and
+  "that is not a borough" are different messages and must not look the same.
+- Casing is accepted (`Manhattan` works); a misspelling is not.
+- No matches is `200` with `"candidates": []`. It is a search that found
+  nothing, not a failure.
+- Text shorter than three characters is refused: a trigram index cannot match
+  it, so answering would mean scanning the corpus.
+- Wildcards in the text are escaped, so `50%` searches for that literal string.
+- Ranking is reproducible — the same query returns the same list, bit for bit.
+
+### Evidence
+
+Evidence is what a citation points at. Both endpoints refuse a request that
+names no restaurant: a citation is a claim about a specific restaurant, so a
+request without one has no correct answer to give.
+
+```bash
+# One restaurant, straight from the path.
+curl -s localhost:8080/v1/restaurants/7715/evidence \
+  -H 'content-type: application/json' \
+  -d '{"query":"等位久吗","top_k":5}' | jq
+
+# Several at once. restaurant_ids is required here — the path carries no scope.
+curl -s localhost:8080/v1/restaurants/evidence \
+  -H 'content-type: application/json' \
+  -d '{"restaurant_ids":[7715,640],"topic":"wait"}' | jq
+```
+
+```json
+{
+  "evidence": [{
+    "document_id": "a1b2…",
+    "restaurant_id": 7715,
+    "doc_type": "restaurant_review_summary",
+    "content": "周末晚市排队约 40 分钟…",
+    "source": "google_reviews",
+    "score": 0.71
+  }],
+  "trace": {"scope_size": 1, "recalled": 12, "kept": 5, "dropped": 7,
+            "tokens": 612, "token_budget": 2000}
+}
+```
+
+Behaviour worth knowing:
+
+- Assembly never truncates. A chunk that would exceed the token budget is dropped
+  whole, because half a quote is not a quote — a truncated citation renders as
+  text that reads correctly and cites something the source never said.
+- At most three chunks per restaurant per document type, applied *before* the
+  budget. Letting the budget decide diversity would mean a restaurant with long
+  chunks silently monopolises the answer.
+- `dropped_by_reason` separates "the budget was full" from "a duplicate" from
+  "too many of this kind", so a short answer reads as a decision rather than as a
+  thin corpus.
+- A chunk with no recorded source is returned as `"unknown"` and flagged in
+  `warnings`. An unsourced citation is worse than an absent one.
+- If every candidate was unusable the request fails rather than returning an
+  empty bundle, because an empty bundle reads as "this restaurant has no
+  evidence" rather than as a data problem.
+
+### Running the retrieval evaluation
+
+```bash
+make pg-up && make migrate
+make eval-retrieval
+```
+
+The fixture suite scores recall@5, citation precision, hard-filter accuracy and
+cross-restaurant leaks against 25 cases sampled from the live corpus, and prints
+the metric table with its gates. Without `PLATEPILOT_REQUIRE_DB=1` it skips
+loudly rather than passing quietly — a green run that asserted nothing is worse
+than a red one.
+
+Ranking knobs live in the environment so they can be tuned against an evaluation
+set without a recompile:
+
+```bash
+RETRIEVAL_TOP_K=5                  # page size
+RETRIEVAL_OVERSAMPLE=2             # how much deeper each channel reads
+RETRIEVAL_WEIGHT_STRUCTURED=1.0    # satisfied hard conditions
+RETRIEVAL_WEIGHT_KEYWORD=0.5       # name / address match
+RETRIEVAL_WEIGHT_VECTOR=1.0        # reserved for M3-03
+RETRIEVAL_WEIGHT_QUALITY=0.2       # rating prior, shrunk by sample size
+```
+
 ## Layout
 
 ```
@@ -366,6 +518,7 @@ chat-service/
   main.go                 # HTTP service entrypoint
   internal/app/           # dependency assembly
   internal/config/        # chat-service configuration
+  internal/retrieval/     # read path: channel orchestration, fusion, rerank
   internal/transport/     # Hertz routes, middleware, canonical errors
 data-pipeline/
   main.go                 # batch CLI (check-config / migrate / import / report / ...)

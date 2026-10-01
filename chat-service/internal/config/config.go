@@ -26,8 +26,21 @@ type Config struct {
 	Postgres  sharedcfg.PostgresConfig
 	Chat      ChatConfig
 	Embedding sharedcfg.EmbeddingConfig
+	Retrieval sharedcfg.RetrievalConfig
+	Rerank    RerankConfig
 	Timeout   sharedcfg.TimeoutConfig
 }
+
+// RerankConfig holds the optional reranking settings. An empty provider name
+// means the stage is switched off, which is a supported way to run.
+type RerankConfig struct {
+	Provider string
+	Model    string
+	Timeout  time.Duration
+}
+
+// Enabled reports whether a rerank provider was configured.
+func (c RerankConfig) Enabled() bool { return c.Provider != "" }
 
 // HTTPConfig holds HTTP server settings.
 type HTTPConfig struct {
@@ -62,7 +75,13 @@ func Load() (Config, error) {
 		Log:       l.Log(),
 		Postgres:  l.Postgres(),
 		Embedding: l.Embedding(),
-		Timeout:   l.Timeout(),
+		Retrieval: l.Retrieval(),
+		Rerank: RerankConfig{
+			Provider: l.String("RERANK_PROVIDER", ""),
+			Model:    l.String("RERANK_MODEL", ""),
+			Timeout:  l.Duration("RERANK_TIMEOUT", 3*time.Second),
+		},
+		Timeout: l.Timeout(),
 		HTTP: HTTPConfig{
 			Addr:             l.String("HTTP_ADDR", ":8080"),
 			ReadTimeout:      l.Duration("HTTP_READ_TIMEOUT", 10*time.Second),
@@ -95,6 +114,8 @@ func (c Config) Validate() error {
 		c.Postgres.Validate(),
 		c.Embedding.Validate(),
 		c.Chat.validate(),
+		c.Retrieval.Validate(),
+		c.Rerank.validate(),
 	)
 }
 
@@ -122,6 +143,19 @@ func (c ChatConfig) validate() []string {
 	return problems
 }
 
+func (c RerankConfig) validate() []string {
+	if !c.Enabled() {
+		return nil
+	}
+	if strings.TrimSpace(c.Model) == "" {
+		return []string{"RERANK_MODEL: required when RERANK_PROVIDER is set"}
+	}
+	if c.Timeout <= 0 {
+		return []string{fmt.Sprintf("RERANK_TIMEOUT: must be > 0 (got %s)", c.Timeout)}
+	}
+	return nil
+}
+
 // Redacted returns a copy with secrets replaced so it is safe to log.
 func (c Config) Redacted() Config {
 	c.Chat.APIKey = sharedcfg.Redact(c.Chat.APIKey)
@@ -139,20 +173,29 @@ func (c Config) Redacted() Config {
 // Summary returns a log-friendly, secret-free view of the configuration.
 func (c Config) Summary() map[string]any {
 	return map[string]any{
-		"app_env":               c.App.Env,
-		"http_addr":             c.HTTP.Addr,
-		"http_read_timeout":     c.HTTP.ReadTimeout.String(),
-		"http_write_timeout":    c.HTTP.WriteTimeout.String(),
-		"http_shutdown_timeout": c.HTTP.ShutdownTimeout.String(),
-		"cors_allow_origins":    c.HTTP.CORSAllowOrigins,
-		"log_level":             c.Log.Level,
-		"postgres_enabled":      c.Postgres.Enabled(),
-		"postgres_database":     c.Postgres.Database,
-		"chat_provider":         c.Chat.Provider,
-		"chat_model":            c.Chat.Model,
-		"embedding_provider":    c.Embedding.Provider,
-		"embedding_model":       c.Embedding.Model,
-		"embedding_dimensions":  c.Embedding.Dimensions,
+		"app_env":                 c.App.Env,
+		"http_addr":               c.HTTP.Addr,
+		"http_read_timeout":       c.HTTP.ReadTimeout.String(),
+		"http_write_timeout":      c.HTTP.WriteTimeout.String(),
+		"http_shutdown_timeout":   c.HTTP.ShutdownTimeout.String(),
+		"cors_allow_origins":      c.HTTP.CORSAllowOrigins,
+		"log_level":               c.Log.Level,
+		"postgres_enabled":        c.Postgres.Enabled(),
+		"postgres_database":       c.Postgres.Database,
+		"chat_provider":           c.Chat.Provider,
+		"chat_model":              c.Chat.Model,
+		"embedding_provider":      c.Embedding.Provider,
+		"embedding_model":         c.Embedding.Model,
+		"embedding_dimensions":    c.Embedding.Dimensions,
+		"retrieval_top_k":         c.Retrieval.TopK,
+		"retrieval_enable_vector": c.Retrieval.EnableVector,
+		"retrieval_oversample":    c.Retrieval.Oversample,
+		"weight_structured":       c.Retrieval.Weights.Structured,
+		"weight_keyword":          c.Retrieval.Weights.Keyword,
+		"weight_vector":           c.Retrieval.Weights.Vector,
+		"weight_quality":          c.Retrieval.Weights.Quality,
+		"rerank_provider":         c.Rerank.Provider,
+		"rerank_model":            c.Rerank.Model,
 	}
 }
 

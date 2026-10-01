@@ -7,7 +7,7 @@ LDFLAGS       := -X main.version=$(VERSION)
 
 .PHONY: help build build-chat build-pipeline run-chat run-pipeline \
         migrate import-sample test test-offline test-race test-postgres \
-        vet cover lint clean pg-up pg-down pg-logs
+        eval-retrieval vet cover lint clean pg-up pg-down pg-logs
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
@@ -57,6 +57,13 @@ test-race: ## Run tests with the race detector
 
 test-postgres: ## Run the Postgres adapter contract suite (needs `make pg-up`)
 	go test ./shared/adapter/repository/postgres/... -count=1 -v
+
+# The retrieval fixtures assert against a live corpus, so they skip unless the
+# database is actually there: a green suite that quietly asserted nothing is
+# worse than a red one. REQUIRE_DB turns the skip into a failure instead of a
+# pass, which is what makes this usable as a gate rather than as a smoke test.
+eval-retrieval: ## Score the retrieval fixtures and print the gate metrics (needs `make pg-up`)
+	PLATEPILOT_REQUIRE_DB=1 go test ./chat-service/internal/retrieval/ -run TestRetrievalFixtures -count=1 -v
 
 vet: ## Run go vet
 	go vet $(PKG)

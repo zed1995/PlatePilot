@@ -37,6 +37,21 @@ const (
 	CodeEmbeddingZeroVector        Code = "embedding_zero_vector"
 	CodeEmbeddingDuplicate         Code = "embedding_duplicate"
 	CodeEmbeddingModelMismatch     Code = "embedding_model_mismatch"
+
+	// Retrieval codes cover the M3 read path. They exist because a client can
+	// fix these itself: an empty query and a misspelled borough are both
+	// request defects, and reporting them as internal errors would tell an
+	// operator to go looking for a fault that is in the request.
+	//
+	// Degradations that the service handles by design — a channel that failed
+	// but was survivable — deliberately have no code: they are recorded in the
+	// retrieval trace, not raised as errors. An error code for "a channel was
+	// slow" would train callers to retry a search that already succeeded.
+	CodeRetrievalEmptyQuery     Code = "retrieval_empty_query"
+	CodeRetrievalInvalidFilter  Code = "retrieval_invalid_filter"
+	CodeRetrievalNoScope        Code = "retrieval_no_scope"
+	CodeRetrievalBudgetExceeded Code = "retrieval_budget_exceeded"
+	CodeRetrievalQueryTooShort  Code = "retrieval_query_too_short"
 )
 
 var httpStatusByCode = map[Code]int{
@@ -56,6 +71,12 @@ var httpStatusByCode = map[Code]int{
 	CodeEmbeddingZeroVector:        http.StatusUnprocessableEntity,
 	CodeEmbeddingDuplicate:         http.StatusUnprocessableEntity,
 	CodeEmbeddingModelMismatch:     http.StatusConflict,
+
+	CodeRetrievalEmptyQuery:     http.StatusBadRequest,
+	CodeRetrievalInvalidFilter:  http.StatusBadRequest,
+	CodeRetrievalNoScope:        http.StatusBadRequest,
+	CodeRetrievalBudgetExceeded: http.StatusBadRequest,
+	CodeRetrievalQueryTooShort:  http.StatusBadRequest,
 }
 
 // Error is the canonical error type used across PlatePilot.
@@ -169,4 +190,10 @@ var (
 	ErrEmbeddingZeroVector        = New(CodeEmbeddingZeroVector, "embedding is a zero vector")
 	ErrEmbeddingDuplicate         = New(CodeEmbeddingDuplicate, "embedding duplicates an earlier vector")
 	ErrEmbeddingModelMismatch     = New(CodeEmbeddingModelMismatch, "embedding model does not match stored documents")
+
+	ErrRetrievalEmptyQuery     = New(CodeRetrievalEmptyQuery, "retrieval request carries neither text nor filters")
+	ErrRetrievalInvalidFilter  = New(CodeRetrievalInvalidFilter, "retrieval filter is not valid")
+	ErrRetrievalNoScope        = New(CodeRetrievalNoScope, "retrieval requires a scope that was not provided")
+	ErrRetrievalBudgetExceeded = New(CodeRetrievalBudgetExceeded, "retrieval budget is too small to hold any result")
+	ErrRetrievalQueryTooShort  = New(CodeRetrievalQueryTooShort, "retrieval text is too short to match")
 )

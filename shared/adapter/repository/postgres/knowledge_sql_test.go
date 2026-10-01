@@ -13,6 +13,35 @@ import (
 // placeholderPattern finds every $n the statement references.
 var placeholderPattern = regexp.MustCompile(`\$(\d+)`)
 
+// assertPlaceholdersContiguous is the assertion that keeps optional filters
+// honest, shared by every statement builder in this package.
+//
+// It checks both directions. A placeholder the statement never references makes
+// PostgreSQL fail with "could not determine data type of parameter $2", and a
+// bound parameter the statement never mentions is the same error from the other
+// side. Neither names the filter that got skipped, so both have to be asserted
+// rather than inferred from a passing query.
+func assertPlaceholdersContiguous(t *testing.T, statement string, bound int) {
+	t.Helper()
+	seen := map[int]bool{}
+	for _, match := range placeholderPattern.FindAllStringSubmatch(statement, -1) {
+		n, err := strconv.Atoi(match[1])
+		if err != nil {
+			t.Fatalf("bad placeholder %q", match[0])
+		}
+		if n < 1 || n > bound {
+			t.Errorf("statement references $%d but only %d parameters are bound:\n%s",
+				n, bound, statement)
+		}
+		seen[n] = true
+	}
+	for i := 1; i <= bound; i++ {
+		if !seen[i] {
+			t.Errorf("parameter $%d is bound but never referenced:\n%s", i, statement)
+		}
+	}
+}
+
 // TestVectorSearchStatementHasNoDanglingParameters is the assertion that keeps
 // the optional filters honest.
 //
@@ -39,25 +68,7 @@ func TestVectorSearchStatementHasNoDanglingParameters(t *testing.T) {
 			if len(args) != tc.want {
 				t.Errorf("bound %d parameters, want %d", len(args), tc.want)
 			}
-			// Every referenced number must be within the bound range, and every
-			// bound parameter must be referenced: no holes in either direction.
-			seen := map[int]bool{}
-			for _, match := range placeholderPattern.FindAllStringSubmatch(statement, -1) {
-				n, err := strconv.Atoi(match[1])
-				if err != nil {
-					t.Fatalf("bad placeholder %q", match[0])
-				}
-				if n < 1 || n > len(args) {
-					t.Errorf("statement references $%d but only %d parameters are bound:\n%s",
-						n, len(args), statement)
-				}
-				seen[n] = true
-			}
-			for i := 1; i <= len(args); i++ {
-				if !seen[i] {
-					t.Errorf("parameter $%d is bound but never referenced:\n%s", i, statement)
-				}
-			}
+			assertPlaceholdersContiguous(t, statement, len(args))
 		})
 	}
 }

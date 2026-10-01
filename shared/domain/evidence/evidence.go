@@ -26,8 +26,12 @@ const (
 // Evidence is a cited fragment returned by retrieval. Every value carries its
 // source and snapshot time so answers can be grounded and explained.
 type Evidence struct {
-	EvidenceID      int64     `json:"evidence_id"`
-	RestaurantID    int64     `json:"restaurant_id"`
+	EvidenceID   int64 `json:"evidence_id"`
+	RestaurantID int64 `json:"restaurant_id"`
+	// RestaurantName travels with the evidence so a citation can name the place
+	// it came from without a second lookup. A citation that says "this
+	// restaurant" instead of its name is a pointer, not a citation.
+	RestaurantName  string    `json:"restaurant_name,omitempty"`
 	DocType         DocType   `json:"doc_type"`
 	Title           string    `json:"title,omitempty"`
 	Content         string    `json:"content"`
@@ -35,6 +39,15 @@ type Evidence struct {
 	Source          string    `json:"source"`
 	SnapshotAt      time.Time `json:"snapshot_at"`
 	Score           float64   `json:"score,omitempty"`
+
+	// Topic is the review topic of a summary document, empty for every other
+	// doc type. It is what lets an answer say "reviews about waiting" instead of
+	// quoting a paragraph that also discusses the food.
+	Topic string `json:"topic,omitempty"`
+	// ContentHash identifies the exact document version behind this evidence,
+	// so a citation can be traced back to what produced it and so two chunks
+	// with the same text can be recognised as one source.
+	ContentHash string `json:"content_hash,omitempty"`
 }
 
 // KnowledgeDocument is an embeddable knowledge chunk stored by the retrieval layer.
@@ -70,5 +83,17 @@ func (d KnowledgeDocument) ToEvidence(score float64) Evidence {
 		Source:          source,
 		SnapshotAt:      d.SnapshotAt,
 		Score:           score,
+		Topic:           topicOf(d.Metadata),
+		ContentHash:     d.ContentHash,
 	}
+}
+
+// topicOf reads the review topic a summary document was written for.
+//
+// It lives in metadata because that is where the summariser put it, and it is
+// read defensively: a document written by an older version of the pipeline has
+// no topic key, and a citation for it is still a citation.
+func topicOf(metadata map[string]any) string {
+	topic, _ := metadata["topic"].(string)
+	return topic
 }

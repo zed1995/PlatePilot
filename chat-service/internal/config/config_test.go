@@ -21,6 +21,15 @@ func baseConfig() Config {
 			ShutdownTimeout: 10 * time.Second,
 		},
 		Postgres: sharedcfg.PostgresConfig{Database: "platepilot", Timeout: 10 * time.Second},
+		Retrieval: sharedcfg.RetrievalConfig{
+			Weights:          sharedcfg.DefaultRetrievalWeights,
+			Oversample:       2,
+			TopK:             5,
+			EnableStructured: true,
+			EnableKeyword:    true,
+			EnableVector:     true,
+			EmbeddingTimeout: 5 * time.Second,
+		},
 		Embedding: sharedcfg.EmbeddingConfig{
 			BaseURL:    "http://localhost:11434",
 			Model:      "qwen3-embedding:0.6b",

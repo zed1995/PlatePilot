@@ -91,3 +91,32 @@ func TestEveryEmbeddingCodeHasHTTPStatus(t *testing.T) {
 		}
 	}
 }
+
+// The same guard applies to the retrieval codes. They are all client-fixable,
+// so none of them may degrade to a 500: a 500 tells an operator the service is
+// broken when in fact the request was.
+func TestEveryRetrievalCodeHasHTTPStatus(t *testing.T) {
+	pairs := []struct {
+		code     Code
+		sentinel error
+	}{
+		{CodeRetrievalEmptyQuery, ErrRetrievalEmptyQuery},
+		{CodeRetrievalInvalidFilter, ErrRetrievalInvalidFilter},
+		{CodeRetrievalNoScope, ErrRetrievalNoScope},
+		{CodeRetrievalBudgetExceeded, ErrRetrievalBudgetExceeded},
+		{CodeRetrievalQueryTooShort, ErrRetrievalQueryTooShort},
+	}
+	for _, pair := range pairs {
+		if _, ok := httpStatusByCode[pair.code]; !ok {
+			t.Errorf("retrieval code %q has no HTTP status mapping", pair.code)
+		}
+		if status := HTTPStatusOf(New(pair.code, "x")); status != http.StatusBadRequest {
+			t.Errorf("retrieval code %q maps to %d, want 400", pair.code, status)
+		}
+		// A code without a sentinel cannot be matched with errors.Is, which is
+		// how callers branch on a retrieval failure.
+		if !errors.Is(New(pair.code, "x"), pair.sentinel) {
+			t.Errorf("retrieval code %q does not match its sentinel", pair.code)
+		}
+	}
+}

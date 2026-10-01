@@ -196,6 +196,89 @@ func (c EmbeddingConfig) validateMaxBatch() []string {
 	return problems
 }
 
+// RetrievalConfig holds the read path's ranking knobs.
+//
+// The weights live in configuration rather than in code because they encode a
+// product decision — how far a soft match may reorder a hard-filtered list — and
+// that decision is only answerable once an evaluation set can measure it. A
+// constant would make the answer require a recompile.
+type RetrievalConfig struct {
+	Weights RetrievalWeights
+	// Oversample is how much deeper than TopK each channel reads, so a channel
+	// that fills its own page cannot hide a restaurant another channel ranked
+	// first.
+	Oversample int
+	TopK       int
+	// EnableKeyword, EnableStructured and EnableVector switch individual
+	// channels off. A disabled channel is recorded in the trace as not run, so
+	// a weakened ranking is visible rather than silent.
+	EnableKeyword    bool
+	EnableStructured bool
+	EnableVector     bool
+	// EmbeddingTimeout bounds the on-demand query embedding.
+	//
+	// It is separate from the pipeline's REQUEST_TIMEOUT because that default
+	// is sized for embedding a whole batch of long documents on a CPU model —
+	// three minutes. An online recall embeds one short string, and a caller
+	// waiting three minutes for a search has already been given its answer by
+	// giving up.
+	EmbeddingTimeout time.Duration
+}
+
+// RetrievalWeights scales each channel's contribution to a fused score.
+type RetrievalWeights struct {
+	Structured float64
+	Keyword    float64
+	Vector     float64
+	// Quality scales the restaurant's own prior. It is kept smallest so a
+	// ranking answers the question rather than sorting by reputation.
+	Quality float64
+}
+
+// DefaultRetrievalWeights keeps the structured channel dominant: a restaurant
+// satisfying every stated condition must not be displaced by one that reads
+// well.
+var DefaultRetrievalWeights = RetrievalWeights{
+	Structured: 1.0,
+	Keyword:    0.5,
+	Vector:     1.0,
+	Quality:    0.2,
+}
+
+// Validate reports problems with the retrieval settings.
+func (c RetrievalConfig) Validate() []string {
+	var problems []string
+	weights := map[string]float64{
+		"RETRIEVAL_WEIGHT_STRUCTURED": c.Weights.Structured,
+		"RETRIEVAL_WEIGHT_KEYWORD":    c.Weights.Keyword,
+		"RETRIEVAL_WEIGHT_VECTOR":     c.Weights.Vector,
+		"RETRIEVAL_WEIGHT_QUALITY":    c.Weights.Quality,
+	}
+	// Names are visited in a fixed order so two runs over the same bad
+	// environment report the problems in the same sequence.
+	for _, name := range []string{
+		"RETRIEVAL_WEIGHT_STRUCTURED",
+		"RETRIEVAL_WEIGHT_KEYWORD",
+		"RETRIEVAL_WEIGHT_VECTOR",
+		"RETRIEVAL_WEIGHT_QUALITY",
+	} {
+		if weights[name] < 0 {
+			problems = append(problems, fmt.Sprintf("%s: must be >= 0 (got %g)", name, weights[name]))
+		}
+	}
+	if c.Oversample <= 0 {
+		problems = append(problems, fmt.Sprintf("RETRIEVAL_OVERSAMPLE: must be > 0 (got %d)", c.Oversample))
+	}
+	if c.TopK <= 0 {
+		problems = append(problems, fmt.Sprintf("RETRIEVAL_TOP_K: must be > 0 (got %d)", c.TopK))
+	}
+	if c.EmbeddingTimeout <= 0 {
+		problems = append(problems,
+			fmt.Sprintf("RETRIEVAL_EMBEDDING_TIMEOUT: must be > 0 (got %s)", c.EmbeddingTimeout))
+	}
+	return problems
+}
+
 // TimeoutConfig holds shared outbound request timeouts.
 type TimeoutConfig struct {
 	Request time.Duration
@@ -263,6 +346,21 @@ func (l *Loader) Int(key string, def int) int {
 	value, err := strconv.Atoi(strings.TrimSpace(raw))
 	if err != nil {
 		l.problems = append(l.problems, fmt.Sprintf("%s: invalid integer %q", key, raw))
+		return def
+	}
+	return value
+}
+
+// Float parses a floating-point value, recording a problem and returning def on
+// error.
+func (l *Loader) Float(key string, def float64) float64 {
+	raw, ok := os.LookupEnv(key)
+	if !ok || strings.TrimSpace(raw) == "" {
+		return def
+	}
+	value, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	if err != nil {
+		l.problems = append(l.problems, fmt.Sprintf("%s: invalid number %q", key, raw))
 		return def
 	}
 	return value
@@ -350,6 +448,23 @@ func (l *Loader) Embedding() EmbeddingConfig {
 		Model:      l.String("EMBEDDING_MODEL", "qwen3-embedding:0.6b"),
 		Dimensions: l.Int("EMBEDDING_DIMENSIONS", 1024),
 		MaxBatch:   l.Int("EMBEDDING_MAX_BATCH", DefaultMaxBatch),
+	}
+}
+
+// Retrieval loads the read path's ranking configuration.
+func (l *Loader) Retrieval() RetrievalConfig {
+	defaults := DefaultRetrievalWeights
+	return RetrievalConfig{
+		Weights: RetrievalWeights{
+			Structured: l.Float("RETRIEVAL_WEIGHT_STRUCTURED", defaults.Structured),
+			Keyword:    l.Float("RETRIEVAL_WEIGHT_KEYWORD", defaults.Keyword),
+			Vector:     l.Float("RETRIEVAL_WEIGHT_VECTOR", defaults.Vector),
+			Quality:    l.Float("RETRIEVAL_WEIGHT_QUALITY", defaults.Quality),
+		},
+		Oversample:       l.Int("RETRIEVAL_OVERSAMPLE", 2),
+		TopK:             l.Int("RETRIEVAL_TOP_K", 5),
+		EnableKeyword:    l.Bool("RETRIEVAL_ENABLE_KEYWORD", true),
+		EnableStructured: l.Bool("RETRIEVAL_ENABLE_STRUCTURED", true),
 	}
 }
 

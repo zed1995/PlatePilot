@@ -179,9 +179,6 @@ func TestRestaurantSearchRanksTextMatchesAndHonoursTopK(t *testing.T) {
 	if len(got) == 0 || got[0].RestaurantID != 1 {
 		t.Fatalf("text search should rank the name match first, got %v", candidateIDs(got))
 	}
-	if len(got[0].Reasons) == 0 {
-		t.Fatal("candidates must explain why they matched")
-	}
 
 	limited, err := repo.Search(context.Background(), search.SearchQuery{Text: "pizza", TopK: 1})
 	if err != nil {

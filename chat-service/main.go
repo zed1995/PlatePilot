@@ -40,13 +40,13 @@ func run() error {
 	slog.SetDefault(logger)
 	logger.Info("configuration loaded", slog.Any("config", cfg.Redacted().Summary()))
 
-	application, err := app.New(cfg, logger, app.Deps{}, version)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	application, err := app.Connect(ctx, cfg, logger, version)
 	if err != nil {
 		return err
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
 	runErr := make(chan error, 1)
 	go func() { runErr <- application.Run() }()

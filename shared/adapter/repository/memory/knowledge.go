@@ -8,6 +8,7 @@ import (
 
 	"github.com/zed/platepilot/shared/domain/errs"
 	"github.com/zed/platepilot/shared/domain/evidence"
+	"github.com/zed/platepilot/shared/port"
 )
 
 // KnowledgeRepository is an in-memory port.KnowledgeRepository.
@@ -22,6 +23,10 @@ func NewKnowledgeRepository() *KnowledgeRepository {
 }
 
 // UpsertDocuments inserts or replaces knowledge documents by document ID.
+//
+// It is not part of port.KnowledgeRepository: the read side of this system never
+// writes. The method exists so tests can seed a repository through one call
+// rather than reaching for the pipeline's store.
 func (r *KnowledgeRepository) UpsertDocuments(_ context.Context, docs []evidence.KnowledgeDocument) error {
 	for _, doc := range docs {
 		if doc.DocumentID <= 0 {
@@ -36,9 +41,10 @@ func (r *KnowledgeRepository) UpsertDocuments(_ context.Context, docs []evidence
 	return nil
 }
 
-// FindEvidenceByRestaurant returns active evidence documents for one restaurant.
-func (r *KnowledgeRepository) FindEvidenceByRestaurant(_ context.Context, restaurantID int64) ([]evidence.Evidence, error) {
-	if restaurantID == 0 {
+// FindEvidenceByRestaurant returns active evidence documents for one restaurant,
+// optionally narrowed to one review topic.
+func (r *KnowledgeRepository) FindEvidenceByRestaurant(_ context.Context, restaurantID int64, topic string) ([]evidence.Evidence, error) {
+	if restaurantID <= 0 {
 		return nil, errs.New(errs.CodeInvalidArgument, "restaurant_id is required")
 	}
 	r.mu.RLock()
@@ -49,88 +55,171 @@ func (r *KnowledgeRepository) FindEvidenceByRestaurant(_ context.Context, restau
 		if doc.RestaurantID != restaurantID || doc.Scope != evidence.ScopeEvidence || !doc.IsActive {
 			continue
 		}
-		out = append(out, doc.ToEvidence(0))
+		ev := doc.ToEvidence(0)
+		if topic != "" && ev.Topic != topic {
+			continue
+		}
+		out = append(out, ev)
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].EvidenceID < out[j].EvidenceID })
 	return out, nil
 }
 
 // VectorSearch returns the closest active documents in one retrieval scope.
-// Scoring is cosine similarity so the behaviour mirrors the pgvector operator.
-func (r *KnowledgeRepository) VectorSearch(_ context.Context, scope evidence.RetrievalScope, query []float32, topK int, filter map[string]any) ([]evidence.Evidence, error) {
-	if len(query) == 0 {
+// Scoring is cosine similarity so the behaviour mirrors the store's operator.
+func (r *KnowledgeRepository) VectorSearch(_ context.Context, req port.VectorSearchRequest) ([]port.ScoredDocument, error) {
+	if len(req.Query) == 0 {
 		return nil, errs.New(errs.CodeInvalidArgument, "query vector must not be empty")
 	}
-	if scope != evidence.ScopeRestaurant && scope != evidence.ScopeEvidence {
-		return nil, errs.Newf(errs.CodeInvalidArgument, "unknown retrieval scope %q", scope)
+	if req.Scope != evidence.ScopeRestaurant && req.Scope != evidence.ScopeEvidence {
+		return nil, errs.Newf(errs.CodeInvalidArgument, "unknown retrieval scope %q", req.Scope)
 	}
 
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	type scored struct {
-		ev    evidence.Evidence
-		score float64
+	types := make(map[evidence.DocType]struct{}, len(req.DocTypes))
+	for _, docType := range req.DocTypes {
+		types[docType] = struct{}{}
 	}
-	matches := make([]scored, 0)
-	for _, doc := range r.docs {
-		if doc.Scope != scope || !doc.IsActive || len(doc.Embedding) != len(query) {
-			continue
-		}
-		if !matchesMetadata(doc, filter) {
-			continue
-		}
-		similarity := cosine(query, doc.Embedding)
-		matches = append(matches, scored{ev: doc.ToEvidence(similarity), score: similarity})
+	ids := make(map[int64]struct{}, len(req.RestaurantIDs))
+	for _, id := range req.RestaurantIDs {
+		ids[id] = struct{}{}
 	}
-	sort.SliceStable(matches, func(i, j int) bool { return matches[i].score > matches[j].score })
 
-	if topK > 0 && len(matches) > topK {
-		matches = matches[:topK]
+	matches := make([]port.ScoredDocument, 0)
+	for _, doc := range r.docs {
+		if doc.Scope != req.Scope || !doc.IsActive || len(doc.Embedding) != len(req.Query) {
+			continue
+		}
+		if _, wanted := ids[doc.RestaurantID]; len(ids) > 0 && !wanted {
+			continue
+		}
+		if _, wanted := types[doc.DocType]; len(types) > 0 && !wanted {
+			continue
+		}
+		if req.Borough != "" && boroughOf(doc) != req.Borough {
+			continue
+		}
+		if req.Topic != "" && topicOf(doc) != req.Topic {
+			continue
+		}
+		similarity := cosine(req.Query, doc.Embedding)
+		matches = append(matches, port.ScoredDocument{KnowledgeDocument: doc, Distance: 1 - similarity})
 	}
-	out := make([]evidence.Evidence, 0, len(matches))
-	for _, match := range matches {
-		out = append(out, match.ev)
+	// Ties break on document id so the same seed returns the same order, which
+	// is what lets the retrieval tests assert on ranks.
+	sort.SliceStable(matches, func(i, j int) bool {
+		if matches[i].Distance != matches[j].Distance {
+			return matches[i].Distance < matches[j].Distance
+		}
+		return matches[i].DocumentID < matches[j].DocumentID
+	})
+
+	if req.TopK > 0 && len(matches) > req.TopK {
+		matches = matches[:req.TopK]
+	}
+	return matches, nil
+}
+
+// RecallEvidence returns citable evidence for a bounded restaurant set.
+//
+// It mirrors the store's contract rather than inventing one for tests: the
+// restaurant set is a precondition, an empty query is the unordered read, and
+// the returned evidence carries the similarity the store would have computed.
+func (r *KnowledgeRepository) RecallEvidence(
+	_ context.Context, req port.EvidenceRequest,
+) ([]evidence.Evidence, error) {
+	if len(req.RestaurantIDs) == 0 {
+		return nil, errs.New(errs.CodeRetrievalNoScope,
+			"evidence recall must name the restaurants it is asking about")
+	}
+
+	if len(req.Query) == 0 {
+		ids := make(map[int64]struct{}, len(req.RestaurantIDs))
+		for _, id := range req.RestaurantIDs {
+			ids[id] = struct{}{}
+		}
+		types := make(map[evidence.DocType]struct{}, len(req.DocTypes))
+		for _, docType := range req.DocTypes {
+			types[docType] = struct{}{}
+		}
+
+		r.mu.RLock()
+		defer r.mu.RUnlock()
+		out := make([]evidence.Evidence, 0)
+		for _, doc := range r.docs {
+			if _, wanted := ids[doc.RestaurantID]; !wanted {
+				continue
+			}
+			if doc.Scope != evidence.ScopeEvidence || !doc.IsActive {
+				continue
+			}
+			if _, wanted := types[doc.DocType]; len(types) > 0 && !wanted {
+				continue
+			}
+			item := doc.ToEvidence(0)
+			if req.Topic != "" && item.Topic != req.Topic {
+				continue
+			}
+			out = append(out, item)
+		}
+		sort.SliceStable(out, func(i, j int) bool {
+			if out[i].RestaurantID != out[j].RestaurantID {
+				return out[i].RestaurantID < out[j].RestaurantID
+			}
+			if out[i].DocType != out[j].DocType {
+				return out[i].DocType < out[j].DocType
+			}
+			return out[i].EvidenceID < out[j].EvidenceID
+		})
+		if req.TopK > 0 && len(out) > req.TopK {
+			out = out[:req.TopK]
+		}
+		return out, nil
+	}
+
+	docs, err := r.VectorSearch(context.Background(), port.VectorSearchRequest{
+		Scope:         evidence.ScopeEvidence,
+		Query:         req.Query,
+		TopK:          req.TopK,
+		RestaurantIDs: req.RestaurantIDs,
+		DocTypes:      req.DocTypes,
+		Topic:         req.Topic,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]evidence.Evidence, 0, len(docs))
+	for _, doc := range docs {
+		similarity := 1 - doc.Distance
+		if similarity < 0 {
+			similarity = 0
+		}
+		if similarity > 1 {
+			similarity = 1
+		}
+		out = append(out, doc.ToEvidence(similarity))
 	}
 	return out, nil
 }
 
-func matchesMetadata(doc evidence.KnowledgeDocument, filter map[string]any) bool {
-	for key, want := range filter {
-		if key == "restaurant_id" {
-			// The port carries a restaurant id as int64, so a caller that
-			// built the filter from a JSON payload may have typed it loosely.
-			id, ok := toRestaurantID(want)
-			if !ok || doc.RestaurantID != id {
-				return false
-			}
-			continue
-		}
-		if doc.Metadata == nil || doc.Metadata[key] != want {
-			return false
-		}
+// boroughOf reads the denormalised borough a document was written with.
+func boroughOf(doc evidence.KnowledgeDocument) string {
+	if doc.Metadata == nil {
+		return ""
 	}
-	return true
+	borough, _ := doc.Metadata["borough"].(string)
+	return borough
 }
 
-// toRestaurantID normalises the loosely typed values a metadata filter can
-// carry into the int64 the document stores.
-func toRestaurantID(want any) (int64, bool) {
-	switch value := want.(type) {
-	case int64:
-		return value, true
-	case int:
-		return int64(value), true
-	case float64:
-		// A whole number survives the round trip that JSON decoding does; a
-		// fractional value is a type error, not a rounded id.
-		if value != math.Trunc(value) {
-			return 0, false
-		}
-		return int64(value), true
-	default:
-		return 0, false
+// topicOf reads the review topic a summary document was written for.
+func topicOf(doc evidence.KnowledgeDocument) string {
+	if doc.Metadata == nil {
+		return ""
 	}
+	topic, _ := doc.Metadata["topic"].(string)
+	return topic
 }
 
 func cosine(a, b []float32) float64 {
@@ -145,3 +234,5 @@ func cosine(a, b []float32) float64 {
 	}
 	return dot / (math.Sqrt(normA) * math.Sqrt(normB))
 }
+
+var _ port.KnowledgeRepository = (*KnowledgeRepository)(nil)

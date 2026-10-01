@@ -334,12 +334,22 @@ func contains(names []string, name string) bool {
 	return false
 }
 
-// A borough query must be answered by that borough's partial HNSW index.
+// A borough query must be answered by an HNSW index whose predicate carries the
+// borough, never by a scan.
 //
 // This is the assertion M1-03's measurement predicted and M2-07 has to keep:
 // filtering the global index by borough in a WHERE clause produces a sequential
 // scan that discards almost every row, because the planner cannot assume a
 // filtered stream is still in vector order.
+//
+// M3-03 added the narrower scope-partitioned indexes (0004), and the planner
+// now prefers them — knowledge_documents_hnsw_manhattan_restaurant answers
+// this query instead of knowledge_documents_hnsw_manhattan. Both are correct;
+// the property worth protecting is that the borough reached an index predicate
+// rather than a scan, so the assertion names the family and not one member.
+// Pinning the exact index would turn every future index change into a failure
+// to investigate, and the fix it guards against is already covered by the
+// no-Seq-Scan half of the assertion.
 func TestBoroughQueryUsesTheBoroughPartialIndex(t *testing.T) {
 	client, _, _ := indexSearchConn(t)
 	ctx := context.Background()
@@ -355,7 +365,28 @@ func TestBoroughQueryUsesTheBoroughPartialIndex(t *testing.T) {
 		LIMIT 10`,
 		string(evidence.ScopeRestaurant), "manhattan", indexVectorLiteral(t, 0))
 
-	assertPlanUses(t, plan, "knowledge_documents_hnsw_manhattan")
+	assertPlanUsesBoroughIndex(t, plan, "manhattan")
+}
+
+// assertPlanUsesBoroughIndex fails unless the plan scans an HNSW index whose
+// name carries the borough.
+func assertPlanUsesBoroughIndex(t *testing.T, plan, borough string) {
+	t.Helper()
+	var candidates []string
+	for _, name := range planIndexNames(plan) {
+		if strings.HasPrefix(name, "knowledge_documents_hnsw_") &&
+			strings.Contains(name, borough) {
+			candidates = append(candidates, name)
+		}
+	}
+	if len(candidates) == 0 {
+		t.Errorf("no HNSW index partitioned by borough %q answered the query; "+
+			"the borough has to reach an index predicate or the planner is "+
+			"scanning. Plan used %v:\n%s", borough, planIndexNames(plan), plan)
+	}
+	if strings.Contains(plan, "Seq Scan on knowledge_documents") {
+		t.Errorf("plan fell back to a sequential scan:\n%s", plan)
+	}
 }
 
 // Without a borough the unpartitioned index answers.
