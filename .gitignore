@@ -53,3 +53,5 @@ scripts/
 
 # Reference geometry: git-ignored, provenance lives in README.md
 data/boundaries/*.geojson
+
+.trae/
