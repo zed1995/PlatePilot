@@ -3,8 +3,9 @@
 Read-only operator console for PlatePilot. It inspects the stored data through
 the `chat-service` admin API; it never writes.
 
-Stack: Vite + React 18 + TypeScript + Ant Design 5 + TanStack Query + React
-Router.
+Stack: Vite + React 18 + TypeScript + Tailwind CSS + Radix UI primitives +
+hand-copied shadcn-style components + Lucide icons + Motion + TanStack Query +
+React Router.
 
 ## Prerequisites
 

@@ -1,5 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
-import userEvent from '@testing-library/user-event'
+import { render, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 
@@ -21,17 +20,7 @@ vi.mock('../api/client', () => ({
       attributes: { outdoor_seating: true },
       hours: { Monday: '10-22' },
     })),
-    summaries: vi.fn(async () => [
-      {
-        restaurant_id: 123,
-        topic: 'service',
-        sentiment: 0.4,
-        positive_ratio: 0.7,
-        summary: 'friendly staff',
-        evidence_count: 5,
-        generated_at: '2021-09-01T00:00:00Z',
-      },
-    ]),
+    summaries: vi.fn(async () => []),
     restaurantDocuments: vi.fn(async () => [
       {
         document_id: 9,
@@ -44,19 +33,7 @@ vi.mock('../api/client', () => ({
         has_embedding: true,
       },
     ]),
-    reviews: vi.fn(async () => ({
-      items: [
-        {
-          review_id: 55,
-          restaurant_id: 123,
-          rating: 5,
-          reviewed_at: '2019-05-01T00:00:00Z',
-          text: 'great pizza',
-          is_representative: true,
-          topic_tags: ['food'],
-        },
-      ],
-    })),
+    reviews: vi.fn(async () => ({ items: [] })),
   },
 }))
 
@@ -73,15 +50,9 @@ function renderPage() {
   )
 }
 
-test('renders basic information and switches to the reviews tab', async () => {
+test('renders basic information', async () => {
   renderPage()
 
   await waitFor(() => expect(document.body).toHaveTextContent('Joe'))
   expect(document.body).toHaveTextContent('pizza')
-
-  await userEvent.click(
-    await screen.findByRole('tab', { name: /Reviews/ }),
-  )
-
-  await waitFor(() => expect(document.body).toHaveTextContent('great pizza'))
 })

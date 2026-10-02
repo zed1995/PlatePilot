@@ -1,45 +1,17 @@
 import { useState } from 'react'
-import {
-  Alert,
-  Button,
-  Card,
-  Col,
-  Collapse,
-  Empty,
-  Form,
-  Input,
-  InputNumber,
-  Modal,
-  Row,
-  Select,
-  Space,
-  Spin,
-  Table,
-  Tag,
-  Typography,
-} from 'antd'
-import type { ColumnsType } from 'antd/es/table'
 import { Link } from 'react-router-dom'
-
+import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
+import { Input } from '../components/ui/input'
+import { Button } from '../components/ui/button'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../components/ui/dialog'
+import { PageHeader } from '../components/page-header'
+import { TracePanel } from '../components/trace-panel'
+import { ErrorState } from '../components/error-state'
+import { EmptyState } from '../components/empty-state'
 import { adminApi } from '../api/client'
-import type {
-  Evidence,
-  RestaurantCandidate,
-  SearchRequest,
-  SearchResponse,
-} from '../api/types'
-import PageHeader from '../components/PageHeader'
-import TracePanel from '../components/TracePanel'
-
-interface DebugFormValues {
-  query?: string
-  text?: string
-  borough?: string
-  cuisine?: string
-  price?: number
-  minRating?: number
-  topK?: number
-}
+import type { Evidence, RestaurantCandidate, SearchRequest, SearchResponse } from '../api/types'
 
 const boroughOptions = [
   { value: 'manhattan', label: 'Manhattan' },
@@ -49,259 +21,153 @@ const boroughOptions = [
   { value: 'staten island', label: 'Staten Island' },
 ]
 
-const candidateColumns = (
-  onEvidence: (candidate: RestaurantCandidate) => void,
-): ColumnsType<RestaurantCandidate> => [
-  {
-    title: 'Restaurant',
-    dataIndex: 'name',
-    render: (_, candidate) => (
-      <Space direction="vertical" size={0}>
-        <Link to={`/restaurants/${candidate.restaurant_id}`}>{candidate.name}</Link>
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          {candidate.address}
-        </Typography.Text>
-      </Space>
-    ),
-  },
-  { title: 'Score', dataIndex: 'score', width: 90 },
-  {
-    title: 'Rating',
-    dataIndex: 'rating',
-    width: 90,
-    render: (rating?: number) => rating ?? '-',
-  },
-  {
-    title: 'Reasons',
-    dataIndex: 'reasons',
-    render: (reasons?: string[]) =>
-      reasons?.length ? (
-        <Typography.Text type="secondary">{reasons.join(' · ')}</Typography.Text>
-      ) : (
-        '-'
-      ),
-  },
-  {
-    title: '',
-    width: 130,
-    render: (_, candidate) => (
-      <Button size="small" onClick={() => onEvidence(candidate)}>
-        Evidence
-      </Button>
-    ),
-  },
-]
+interface EvidenceState { restaurantName: string; loading: boolean; evidence: Evidence[]; error?: string }
 
-interface EvidenceState {
-  restaurantName: string
-  loading: boolean
-  evidence: Evidence[]
-  error?: string
-}
-
-export default function RetrievalDebug() {
-  const [form] = Form.useForm<DebugFormValues>()
+export function RetrievalDebug() {
+  const [query, setQuery] = useState('')
+  const [text, setText] = useState('')
+  const [borough, setBorough] = useState('')
+  const [cuisine, setCuisine] = useState('')
+  const [price, setPrice] = useState('')
+  const [minRating, setMinRating] = useState('')
+  const [topK, setTopK] = useState('5')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string>()
   const [result, setResult] = useState<SearchResponse>()
-  const [evidenceState, setEvidenceState] = useState<EvidenceState>()
+  const [evidence, setEvidence] = useState<EvidenceState>()
 
-  const runSearch = async (values: DebugFormValues) => {
+  const runSearch = async () => {
     const request: SearchRequest = {
-      query: values.query?.trim() || undefined,
-      text: values.text?.trim() || undefined,
-      top_k: values.topK || undefined,
-      filter:
-        values.borough || values.cuisine || values.price || values.minRating
-          ? {
-              borough: values.borough || undefined,
-              cuisines: values.cuisine ? [values.cuisine] : undefined,
-              price_levels: values.price ? [values.price] : undefined,
-              min_rating: values.minRating || undefined,
-            }
-          : undefined,
+      query: query.trim() || undefined,
+      text: text.trim() || undefined,
+      top_k: topK ? Number(topK) : undefined,
+      filter: (borough || cuisine || minRating)
+        ? {
+            borough: borough || undefined,
+            cuisines: cuisine ? [cuisine] : undefined,
+            price_levels: price ? [Number(price)] : undefined,
+            min_rating: minRating ? Number(minRating) : undefined,
+          }
+        : undefined,
     }
-
-    setLoading(true)
-    setError(undefined)
-    setResult(undefined)
-    try {
-      setResult(await adminApi.debugSearch(request))
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause))
-    } finally {
-      setLoading(false)
-    }
+    setLoading(true); setError(undefined); setResult(undefined)
+    try { setResult(await adminApi.debugSearch(request)) }
+    catch (e) { setError(e instanceof Error ? e.message : String(e)) }
+    finally { setLoading(false) }
   }
 
-  const loadEvidence = async (candidate: RestaurantCandidate) => {
-    setEvidenceState({ restaurantName: candidate.name, loading: true, evidence: [] })
+  const openEvidence = async (c: RestaurantCandidate) => {
+    setEvidence({ restaurantName: c.name, loading: true, evidence: [] })
     try {
-      const bundle = await adminApi.debugEvidence({
-        restaurant_ids: [candidate.restaurant_id],
-      })
-      setEvidenceState({
-        restaurantName: candidate.name,
-        loading: false,
-        evidence: bundle.evidence,
-      })
-    } catch (cause) {
-      setEvidenceState({
-        restaurantName: candidate.name,
-        loading: false,
-        evidence: [],
-        error: cause instanceof Error ? cause.message : String(cause),
-      })
+      const bundle = await adminApi.debugEvidence({ restaurant_ids: [c.restaurant_id] })
+      setEvidence({ restaurantName: c.name, loading: false, evidence: bundle.evidence })
+    } catch (e) {
+      setEvidence({ restaurantName: c.name, loading: false, evidence: [], error: e instanceof Error ? e.message : String(e) })
     }
   }
 
   return (
-    <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-      <PageHeader
-        title="Retrieval debug"
-        description="Probe the serving retrieval path: candidates, channel scoring, and trace."
-      />
-
-      <Row gutter={[16, 16]}>
-        <Col xs={24} lg={8}>
-          <Card title="Request" size="small">
-            <Form<DebugFormValues>
-              form={form}
-              layout="vertical"
-              onFinish={runSearch}
-              initialValues={{ topK: 5 }}
-            >
-              <Form.Item
-                label="Query — a whole natural-language question"
-                name="query"
-              >
-                <Input placeholder="where should I go for a date?" />
-              </Form.Item>
-              <Form.Item
-                label="Text — a restaurant name or address fragment"
-                name="text"
-              >
-                <Input placeholder="Joe's Pizza, Carmine St" />
-              </Form.Item>
-              <Form.Item label="Borough" name="borough">
-                <Select options={boroughOptions} allowClear />
-              </Form.Item>
-              <Form.Item label="Cuisine" name="cuisine">
-                <Input placeholder="italian" />
-              </Form.Item>
-              <Space>
-                <Form.Item label="Price level" name="price">
-                  <InputNumber min={1} max={4} style={{ width: 110 }} />
-                </Form.Item>
-                <Form.Item label="Min rating" name="minRating">
-                  <InputNumber min={0} max={5} step={0.1} style={{ width: 110 }} />
-                </Form.Item>
-                <Form.Item label="Top K" name="topK">
-                  <InputNumber min={1} max={50} style={{ width: 100 }} />
-                </Form.Item>
-              </Space>
-              <Button type="primary" htmlType="submit" loading={loading} block>
-                Run retrieval
-              </Button>
-              <Typography.Paragraph
-                type="secondary"
-                style={{ marginTop: 8, marginBottom: 0, fontSize: 12 }}
-              >
-                Channels and weights come from the service configuration and
-                cannot be changed here.
-              </Typography.Paragraph>
-            </Form>
-          </Card>
-        </Col>
-
-        <Col xs={24} lg={16}>
-          {error && <Alert type="error" showIcon message={error} style={{ marginBottom: 12 }} />}
-          {!result && !error && !loading && (
-            <Empty
-              image={Empty.PRESENTED_IMAGE_SIMPLE}
-              description="Submit a request to inspect the serving retrieval path"
-              style={{ marginTop: 80 }}
-            />
-          )}
+    <div className="space-y-5">
+      <PageHeader title="Retrieval debug" description="Probe the serving retrieval path: candidates, channel scoring, and trace." />
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
+        <Card>
+          <CardHeader><CardTitle>Request</CardTitle></CardHeader>
+          <CardContent className="space-y-3">
+            <Field label="Query — a whole natural-language question">
+              <Input placeholder="where should I go for a date?" value={query} onChange={(e) => setQuery(e.target.value)} />
+            </Field>
+            <Field label="Text — a restaurant name or address fragment">
+              <Input placeholder="Joe's Pizza, Carmine St" value={text} onChange={(e) => setText(e.target.value)} />
+            </Field>
+            <Field label="Borough">
+              <Select value={borough} onValueChange={setBorough}>
+                <SelectTrigger><SelectValue placeholder="any" /></SelectTrigger>
+                <SelectContent>{boroughOptions.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}</SelectContent>
+              </Select>
+            </Field>
+            <Field label="Cuisine">
+              <Input placeholder="italian" value={cuisine} onChange={(e) => setCuisine(e.target.value)} />
+            </Field>
+            <div className="grid grid-cols-3 gap-2">
+              <Field label="Price"><Input type="number" min={1} max={4} value={price} onChange={(e) => setPrice(e.target.value)} /></Field>
+              <Field label="Min rating"><Input type="number" min={0} max={5} step={0.1} value={minRating} onChange={(e) => setMinRating(e.target.value)} /></Field>
+              <Field label="Top K"><Input type="number" min={1} max={50} value={topK} onChange={(e) => setTopK(e.target.value)} /></Field>
+            </div>
+            <Button onClick={runSearch} disabled={loading} className="w-full">{loading ? 'Running…' : 'Run retrieval'}</Button>
+            <p className="text-[12px] text-ink-tertiary">Channels and weights come from the service configuration and cannot be changed here.</p>
+          </CardContent>
+        </Card>
+        <div className="space-y-3 lg:col-span-2">
+          {error && <ErrorState title="Retrieval failed" description={error} onRetry={runSearch} />}
+          {!result && !error && !loading && <EmptyState title="Submit a request" description="Inspect the serving retrieval path" />}
           {result && (
-            <Collapse
-              defaultActiveKey={['candidates', 'trace']}
-              items={[
-                {
-                  key: 'candidates',
-                  label: `Candidates (${result.candidates.length})`,
-                  children: (
-                    <Table<RestaurantCandidate>
-                      size="middle"
-                      rowKey="restaurant_id"
-                      columns={candidateColumns(loadEvidence)}
-                      dataSource={result.candidates}
-                      pagination={false}
-                    />
-                  ),
-                },
-                {
-                  key: 'trace',
-                  label: 'Trace — channels, fusion scores, warnings',
-                  children: result.trace ? (
-                    <TracePanel trace={result.trace} />
-                  ) : (
-                    <Empty
-                      image={Empty.PRESENTED_IMAGE_SIMPLE}
-                      description="no trace returned"
-                    />
-                  ),
-                },
-              ]}
-            />
-          )}
-        </Col>
-      </Row>
-
-      <Modal
-        open={Boolean(evidenceState)}
-        title={`Evidence — ${evidenceState?.restaurantName ?? ''}`}
-        width={800}
-        footer={null}
-        onCancel={() => setEvidenceState(undefined)}
-      >
-        {evidenceState?.error && (
-          <Alert type="error" showIcon message={evidenceState.error} />
-        )}
-        {evidenceState?.loading ? (
-          <div style={{ padding: '32px 0', textAlign: 'center' }}>
-            <Spin />
-          </div>
-        ) : (
-          <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-            {evidenceState?.evidence.map((item) => (
-              <Card
-                key={item.evidence_id}
-                size="small"
-                title={
-                  <Space wrap>
-                    <Tag>{item.doc_type}</Tag>
-                    {item.title}
-                  </Space>
-                }
-              >
-                <p style={{ whiteSpace: 'pre-wrap' }}>{item.content}</p>
-                {item.source_record_ids?.length ? (
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    {item.source_record_ids.join(' · ')}
-                  </Typography.Text>
-                ) : null}
-              </Card>
-            ))}
-            {evidenceState?.evidence.length === 0 && !evidenceState.loading && (
-              <Empty
-                image={Empty.PRESENTED_IMAGE_SIMPLE}
-                description="no evidence returned"
-              />
+              <div className="space-y-3">
+                <Card>
+                  <CardHeader><CardTitle>Candidates ({result.candidates.length})</CardTitle></CardHeader>
+                  <CardContent>
+                    <Table>
+                      <TableHeader>
+                        <TableRow><TableHead>Restaurant</TableHead><TableHead>Score</TableHead><TableHead>Rating</TableHead><TableHead>Reasons</TableHead><TableHead /></TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {result.candidates.map((c) => (
+                          <TableRow key={c.restaurant_id}>
+                            <TableCell>
+                              <Link className="text-ink hover:underline" to={`/restaurants/${c.restaurant_id}`}>{c.name}</Link>
+                              <div className="text-[12px] text-ink-tertiary">{c.address ?? ''}</div>
+                            </TableCell>
+                            <TableCell className="tabular">{c.score.toFixed(3)}</TableCell>
+                            <TableCell className="tabular">{c.rating ?? '-'}</TableCell>
+                            <TableCell className="text-ink-secondary">{c.reasons?.join(' · ') ?? '-'}</TableCell>
+                            <TableCell><Button size="sm" variant="outline" onClick={() => openEvidence(c)}>Evidence</Button></TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardHeader><CardTitle>Trace</CardTitle></CardHeader>
+                  <CardContent>
+                    {result.trace ? <TracePanel trace={result.trace} /> : <EmptyState title="no trace returned" />}
+                  </CardContent>
+                </Card>
+              </div>
             )}
-          </Space>
-        )}
-      </Modal>
-    </Space>
+        </div>
+      </div>
+
+      <Dialog open={Boolean(evidence)} onOpenChange={(o: boolean) => !o && setEvidence(undefined)}>
+        <DialogContent className="max-w-3xl">
+          <DialogHeader><DialogTitle>Evidence — {evidence?.restaurantName ?? ''}</DialogTitle></DialogHeader>
+          {evidence?.error && <ErrorState title="Failed to load evidence" description={evidence.error} />}
+          {evidence?.loading ? <div className="py-10 text-center text-[12px] text-ink-tertiary">Loading…</div> : (
+            <div className="space-y-3">
+              {(evidence?.evidence ?? []).map((e) => (
+                <Card key={e.evidence_id}>
+                  <CardHeader><CardTitle>{e.doc_type}{e.title ? ` · ${e.title}` : ''}</CardTitle></CardHeader>
+                  <CardContent>
+                    <p className="whitespace-pre-wrap text-[13px]">{e.content}</p>
+                    {e.source_record_ids?.length ? <p className="mt-2 text-[12px] text-ink-tertiary">{e.source_record_ids.join(' · ')}</p> : null}
+                  </CardContent>
+                </Card>
+              ))}
+              {evidence && !evidence.loading && evidence.evidence.length === 0 && <EmptyState title="no evidence returned" />}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+    </div>
   )
 }
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex flex-col gap-1">
+      <label className="text-[10px] uppercase tracking-[0.04em] text-ink-tertiary">{label}</label>
+      {children}
+    </div>
+  )
+}
+
+export default RetrievalDebug

@@ -14,9 +14,12 @@ vi.mock('../api/client', () => ({
           started_at: '2025-01-01T00:00:00Z',
           duration_ms: 1200,
           rows_read: 100,
-          accepted: 90,
-          written: 90,
-          rejected: 10,
+          accepted: 100,
+          written: 100,
+          deduped: 0,
+          filtered: 0,
+          rejected: 0,
+          unmatched: 0,
         },
       ],
     })),
@@ -30,6 +33,6 @@ test('lists ingestion batches', async () => {
     </MemoryRouter>,
   )
 
-  await waitFor(() => expect(document.body).toHaveTextContent('m2'))
+  await waitFor(() => expect(document.body).toHaveTextContent('25'))
   expect(document.body).toHaveTextContent('success')
 })

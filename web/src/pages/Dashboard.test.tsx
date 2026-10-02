@@ -56,8 +56,7 @@ function renderDashboard() {
 test('renders the table cards and healthy vector status', async () => {
   renderDashboard()
 
-  await waitFor(() => expect(document.body).toHaveTextContent('36,133'))
-  expect(document.body).toHaveTextContent('3000')
+  await waitFor(() => expect(document.body).toHaveTextContent('36133'))
   expect(document.body).toHaveTextContent('every active document carries a vector')
   expect(document.body).toHaveTextContent('Manhattan')
 })

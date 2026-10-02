@@ -15,8 +15,6 @@ export default defineConfig({
     },
   },
   build: {
-    // AntD alone exceeds Vite's default 500 kB warning; the console is a
-    // desktop-only internal tool where that size is acceptable.
     chunkSizeWarningLimit: 1000,
     rollupOptions: {
       output: {
@@ -24,7 +22,7 @@ export default defineConfig({
         // independently of the application code.
         manualChunks: {
           react: ['react', 'react-dom', 'react-router-dom'],
-          antd: ['antd', '@ant-design/icons'],
+          ui: ['@radix-ui/react-dialog', '@radix-ui/react-dropdown-menu', '@radix-ui/react-popover', '@radix-ui/react-select', '@radix-ui/react-separator', '@radix-ui/react-slot', '@radix-ui/react-tabs', '@radix-ui/react-tooltip'],
           query: ['@tanstack/react-query'],
         },
       },

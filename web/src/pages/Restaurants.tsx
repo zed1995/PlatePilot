@@ -1,95 +1,17 @@
-import { useCallback, useState } from 'react'
-import {
-  Button,
-  Card,
-  Form,
-  Input,
-  Select,
-  Space,
-  Switch,
-  Typography,
-} from 'antd'
-import type { ColumnsType } from 'antd/es/table'
+import { useCallback, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-
+import { Card, CardContent } from '../components/ui/card'
+import { Input } from '../components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select'
+import { Button } from '../components/ui/button'
+import { PageHeader } from '../components/page-header'
+import { KeySetTable, type KeySetPage } from '../components/key-set-table'
+import { StatusTag } from '../components/status-tag'
 import { adminApi, type RestaurantsParams } from '../api/client'
 import type { RestaurantListItem } from '../api/types'
-import KeySetTable from '../components/KeySetTable'
-import PageHeader from '../components/PageHeader'
-import StatusTag from '../components/StatusTag'
 import { formatTime } from '../format'
 
-interface FilterValues {
-  borough?: string
-  cuisine?: string
-  active?: boolean
-  q?: string
-}
-
-const columns = (): ColumnsType<RestaurantListItem> => [
-  {
-    title: 'ID',
-    dataIndex: 'restaurant_id',
-    width: 90,
-    render: (id: number) => <Link to={`/restaurants/${id}`}>{id}</Link>,
-  },
-  {
-    title: 'Name',
-    dataIndex: 'name',
-    render: (name: string, row) => (
-      <Space direction="vertical" size={0}>
-        <Link to={`/restaurants/${row.restaurant_id}`}>{name}</Link>
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          {row.address}
-        </Typography.Text>
-      </Space>
-    ),
-  },
-  { title: 'Borough', dataIndex: 'borough', width: 110 },
-  {
-    title: 'Cuisines',
-    dataIndex: 'cuisines',
-    render: (cuisines?: string[]) =>
-      cuisines?.length ? (
-        <Typography.Text type="secondary">{cuisines.join(' · ')}</Typography.Text>
-      ) : (
-        '-'
-      ),
-  },
-  {
-    title: 'Price',
-    dataIndex: 'price_level',
-    width: 70,
-    render: (price?: number) => price ?? '-',
-  },
-  {
-    title: 'Rating',
-    dataIndex: 'rating_computed_avg',
-    width: 110,
-    render: (rating: number | undefined, row) => (
-      <Space direction="vertical" size={0}>
-        <span>{rating ?? '-'}</span>
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          {row.rating_count} reviews
-        </Typography.Text>
-      </Space>
-    ),
-  },
-  {
-    title: 'Active',
-    dataIndex: 'is_active_for_demo',
-    width: 90,
-    render: (active: boolean) => (
-      <StatusTag tone={active ? 'green' : 'grey'}>{active ? 'active' : 'inactive'}</StatusTag>
-    ),
-  },
-  {
-    title: 'Observed',
-    dataIndex: 'observed_at',
-    width: 170,
-    render: formatTime,
-  },
-]
+interface Filters { borough?: string; cuisine?: string; active?: boolean; q?: string }
 
 const boroughOptions = [
   { value: 'manhattan', label: 'Manhattan' },
@@ -99,79 +21,83 @@ const boroughOptions = [
   { value: 'staten island', label: 'Staten Island' },
 ]
 
-export default function Restaurants() {
-  const [form] = Form.useForm<FilterValues>()
-  const [applied, setApplied] = useState<FilterValues>({})
+export function Restaurants() {
+  const [filters, setFilters] = useState<Filters>({})
 
   const fetchPage = useCallback(
     (cursor?: string) => {
-      const params: RestaurantsParams = {
+      const p: RestaurantsParams = {
         cursor,
         limit: 25,
-        borough: applied.borough || undefined,
-        cuisine: applied.cuisine || undefined,
-        active: applied.active,
-        q: applied.q || undefined,
+        borough: filters.borough || undefined,
+        cuisine: filters.cuisine || undefined,
+        active: filters.active,
+        q: filters.q || undefined,
       }
-      return adminApi.restaurants(params)
+      return adminApi.restaurants(p)
     },
-    [applied],
+    [filters],
   )
 
+  const columns = useMemo(() => ([
+    { key: 'id', width: 80, header: 'ID', cell: (r: RestaurantListItem) => <Link className="text-ink hover:underline" to={`/restaurants/${r.restaurant_id}`}>{r.restaurant_id}</Link> },
+    { key: 'name', header: 'Name', cell: (r: RestaurantListItem) => (
+      <div className="flex flex-col">
+        <Link className="text-ink hover:underline" to={`/restaurants/${r.restaurant_id}`}>{r.name}</Link>
+        <span className="text-[12px] text-ink-tertiary">{r.address ?? ''}</span>
+      </div>
+    ) },
+    { key: 'borough', width: 110, header: 'Borough', cell: (r: RestaurantListItem) => r.borough ?? '-' },
+    { key: 'cuisines', header: 'Cuisines', cell: (r: RestaurantListItem) => r.cuisines?.length ? r.cuisines.join(' · ') : '-' },
+    { key: 'price', width: 80, header: 'Price', cell: (r: RestaurantListItem) => r.price_level ?? '-' },
+    { key: 'rating', width: 120, header: 'Rating', cell: (r: RestaurantListItem) => (
+      <div className="flex flex-col"><span className="tabular">{r.rating_computed_avg ?? '-'}</span><span className="text-[12px] text-ink-tertiary">{r.rating_count} reviews</span></div>
+    ) },
+    { key: 'active', width: 90, header: 'Active', cell: (r: RestaurantListItem) => <StatusTag tone={r.is_active_for_demo ? 'green' : 'grey'}>{r.is_active_for_demo ? 'active' : 'inactive'}</StatusTag> },
+    { key: 'observed', width: 170, header: 'Observed', cell: (r: RestaurantListItem) => formatTime(r.observed_at) },
+  ]), [])
+
   return (
-    <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+    <div className="space-y-5">
       <PageHeader
         title="Restaurants"
         description="Directory of restaurants with demo status, cuisines, and ratings."
       />
-
-      <Card size="small">
-        <Form<FilterValues>
-          form={form}
-          layout="inline"
-          onFinish={(values) => setApplied(values)}
-        >
-          <Form.Item label="Borough" name="borough">
-            <Select
-              options={boroughOptions}
-              allowClear
-              style={{ width: 150 }}
-              placeholder="any"
-            />
-          </Form.Item>
-          <Form.Item label="Cuisine" name="cuisine">
-            <Input placeholder="pizza" style={{ width: 120 }} />
-          </Form.Item>
-          <Form.Item label="Name contains" name="q">
-            <Input placeholder="Joe" style={{ width: 140 }} />
-          </Form.Item>
-          <Form.Item label="Active only" name="active" valuePropName="checked">
-            <Switch />
-          </Form.Item>
-          <Form.Item>
-            <Space>
-              <Button type="primary" htmlType="submit">
-                Apply
-              </Button>
-              <Button
-                onClick={() => {
-                  form.resetFields()
-                  setApplied({})
-                }}
-              >
-                Reset
-              </Button>
-            </Space>
-          </Form.Item>
-        </Form>
+      <Card>
+        <CardContent className="pt-5">
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="flex flex-col gap-1">
+              <label className="text-[10px] uppercase tracking-[0.04em] text-ink-tertiary">Borough</label>
+              <Select value={filters.borough ?? ''} onValueChange={(v: string) => setFilters((f) => ({ ...f, borough: v || undefined }))}>
+                <SelectTrigger className="w-[150px]"><SelectValue placeholder="any" /></SelectTrigger>
+                <SelectContent>{boroughOptions.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}</SelectContent>
+              </Select>
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-[10px] uppercase tracking-[0.04em] text-ink-tertiary">Cuisine</label>
+              <Input className="w-[150px]" placeholder="pizza" value={filters.cuisine ?? ''} onChange={(e) => setFilters((f) => ({ ...f, cuisine: e.target.value || undefined }))} />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-[10px] uppercase tracking-[0.04em] text-ink-tertiary">Name contains</label>
+              <Input className="w-[160px]" placeholder="Joe" value={filters.q ?? ''} onChange={(e) => setFilters((f) => ({ ...f, q: e.target.value || undefined }))} />
+            </div>
+            <label className="ml-2 inline-flex items-center gap-2 text-[13px] text-ink">
+              <input type="checkbox" checked={Boolean(filters.active)} onChange={(e) => setFilters((f) => ({ ...f, active: e.target.checked || undefined }))} />
+              Active only
+            </label>
+            <Button variant="ghost" size="sm" onClick={() => setFilters({})}>Reset</Button>
+          </div>
+        </CardContent>
       </Card>
 
       <KeySetTable<RestaurantListItem>
-        columns={columns()}
-        rowKey={(row) => row.restaurant_id}
-        fetchPage={fetchPage}
-        resetKey={JSON.stringify(applied)}
+        columns={columns as unknown as { key: string; width?: number; header: React.ReactNode; cell: (row: RestaurantListItem) => React.ReactNode }[]}
+        rowKey={(r) => r.restaurant_id}
+        fetchPage={fetchPage as unknown as (cursor?: string) => Promise<KeySetPage<RestaurantListItem>>}
+        resetKey={JSON.stringify(filters)}
       />
-    </Space>
+    </div>
   )
 }
+
+export default Restaurants

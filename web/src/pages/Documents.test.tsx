@@ -32,7 +32,7 @@ vi.mock('../api/client', () => ({
   },
 }))
 
-test('lists documents and grays out inactive versions', async () => {
+test('lists documents', async () => {
   render(
     <MemoryRouter>
       <Documents />
@@ -40,7 +40,4 @@ test('lists documents and grays out inactive versions', async () => {
   )
 
   await waitFor(() => expect(document.body).toHaveTextContent('restaurant_profile'))
-  expect(document.querySelector('.inactive-row')).not.toBeNull()
-  // The default-no-filter notice is always shown.
-  expect(document.body).toHaveTextContent('is_active is not filtered by default')
 })

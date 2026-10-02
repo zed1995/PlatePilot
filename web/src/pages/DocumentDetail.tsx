@@ -1,171 +1,77 @@
 import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import {
-  Alert,
-  Card,
-  Collapse,
-  Descriptions,
-  List,
-  Result,
-  Space,
-  Switch,
-  Typography,
-} from 'antd'
 import { Link, useParams } from 'react-router-dom'
-
+import { useQuery } from '@tanstack/react-query'
+import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
+import { Button } from '../components/ui/button'
+import { PageHeader } from '../components/page-header'
+import { JsonBlock } from '../components/json-block'
+import { ErrorState } from '../components/error-state'
 import { adminApi } from '../api/client'
-import type { DocumentDetail as DocumentDetailType } from '../api/types'
-import JsonBlock from '../components/JsonBlock'
-import PageHeader from '../components/PageHeader'
-import StatusTag from '../components/StatusTag'
-import { formatTime, shortHash } from '../format'
 
-export default function DocumentDetailPage() {
-  const { id: idParam } = useParams()
-  const id = Number(idParam)
+export function DocumentDetailPage() {
+  const { id } = useParams<{ id: string }>()
   const [vectorPreview, setVectorPreview] = useState(false)
-
-  const documentQuery = useQuery<DocumentDetailType>({
+  const detail = useQuery({
     queryKey: ['document', id, vectorPreview],
-    queryFn: () => adminApi.document(id, vectorPreview),
-    enabled: Number.isInteger(id),
+    queryFn: () => adminApi.document(Number(id), vectorPreview),
+    enabled: Boolean(id),
   })
 
-  if (!Number.isInteger(id)) {
-    return <Result status="warning" title="Bad document id" />
-  }
+  if (detail.isError) return <ErrorState title="Failed to load document" description={detail.error instanceof Error ? detail.error.message : String(detail.error)} onRetry={() => detail.refetch()} />
 
-  if (documentQuery.isError) {
-    return (
-      <Alert
-        type="error"
-        showIcon
-        message="Failed to load the document"
-        description={
-          documentQuery.error instanceof Error
-            ? documentQuery.error.message
-            : String(documentQuery.error)
-        }
-      />
-    )
-  }
-
-  const document = documentQuery.data
-  const heading = document?.title || document?.doc_type || 'Document'
-
+  const d = detail.data
   return (
-    <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+    <div className="space-y-5">
       <PageHeader
-        title={heading}
-        breadcrumb={[
-          { title: 'Documents', path: '/documents' },
-          { title: heading },
-        ]}
-        extra={
-          <Space size={8}>
-            <Typography.Text type="secondary">Vector preview</Typography.Text>
-            <Switch
-              checked={vectorPreview}
-              onChange={setVectorPreview}
-              id="vector-preview-switch"
-            />
-          </Space>
-        }
+        title={d?.title ?? `Document ${id}`}
+        description={`${d?.doc_type ?? ''} · ${d?.retrieval_scope ?? ''}`}
+        extra={<Button variant="outline" size="sm" onClick={() => setVectorPreview((v) => !v)}>{vectorPreview ? 'Hide vector preview' : 'Show vector preview'}</Button>}
       />
-
-      {document && (
-        <Descriptions size="small" column={3}>
-          <Descriptions.Item label="Document ID">
-            {document.document_id}
-          </Descriptions.Item>
-          <Descriptions.Item label="Restaurant">
-            <Link to={`/restaurants/${document.restaurant_id}`}>
-              {document.restaurant_id}
-            </Link>
-          </Descriptions.Item>
-          <Descriptions.Item label="Scope">
-            {document.retrieval_scope}
-          </Descriptions.Item>
-          <Descriptions.Item label="Doc type">
-            {document.doc_type}
-          </Descriptions.Item>
-          <Descriptions.Item label="Version">
-            {document.version}
-          </Descriptions.Item>
-          <Descriptions.Item label="Content hash">
-            {shortHash(document.content_hash, 20)}
-          </Descriptions.Item>
-          <Descriptions.Item label="Is active">
-            <StatusTag tone={document.is_active ? 'green' : 'grey'}>
-              {document.is_active ? 'active' : 'inactive'}
-            </StatusTag>
-          </Descriptions.Item>
-          <Descriptions.Item label="Embedding model">
-            {document.embedding_model || '-'}
-          </Descriptions.Item>
-          <Descriptions.Item label="Dimensions">
-            {document.embedding_dimensions || '-'}
-          </Descriptions.Item>
-          <Descriptions.Item label="Snapshot" span={3}>
-            {formatTime(document.snapshot_at)}
-          </Descriptions.Item>
-        </Descriptions>
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
+        <Card>
+          <CardHeader><CardTitle>Meta</CardTitle></CardHeader>
+          <CardContent className="space-y-2 text-[13px]">
+            <Field label="Document ID" value={d?.document_id} />
+            <Field label="Restaurant" value={<Link className="text-ink hover:underline" to={`/restaurants/${d?.restaurant_id}`}>{d?.restaurant_id}</Link>} />
+            <Field label="Active" value={d?.is_active ? 'yes' : 'no'} />
+            <Field label="Has embedding" value={d?.has_embedding ? 'yes' : 'no'} />
+            <Field label="Embedding model" value={d?.embedding_model ?? '-'} />
+            <Field label="Dimensions" value={d?.embedding_dimensions ?? '-'} />
+            <Field label="Version" value={d?.version} />
+          </CardContent>
+        </Card>
+        <Card className="lg:col-span-2">
+          <CardHeader><CardTitle>Content</CardTitle></CardHeader>
+          <CardContent><JsonBlock value={d?.content} /></CardContent>
+        </Card>
+      </div>
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+        <Card>
+          <CardHeader><CardTitle>Metadata</CardTitle></CardHeader>
+          <CardContent><JsonBlock value={d?.metadata} /></CardContent>
+        </Card>
+        <Card>
+          <CardHeader><CardTitle>Source records</CardTitle></CardHeader>
+          <CardContent><JsonBlock value={d?.source_record_ids} /></CardContent>
+        </Card>
+      </div>
+      {vectorPreview && (
+        <Card>
+          <CardHeader><CardTitle>Vector preview</CardTitle></CardHeader>
+          <CardContent><JsonBlock value={d?.vector_preview} /></CardContent>
+        </Card>
       )}
-
-      <Card title="Content" size="small" loading={documentQuery.isLoading}>
-        <pre
-          style={{
-            whiteSpace: 'pre-wrap',
-            wordBreak: 'break-word',
-            margin: 0,
-            fontFamily:
-              'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-          }}
-        >
-          {document?.content}
-        </pre>
-      </Card>
-
-      <RowPanels document={document} vectorPreview={vectorPreview} />
-    </Space>
+    </div>
   )
 }
 
-function RowPanels({
-  document,
-  vectorPreview,
-}: {
-  document?: DocumentDetailType
-  vectorPreview: boolean
-}) {
-  if (!document) return null
-
-  const items = [
-    {
-      key: 'metadata',
-      label: 'metadata',
-      children: <JsonBlock value={document.metadata} />,
-    },
-    {
-      key: 'source-record-ids',
-      label: `source_record_ids (${document.source_record_ids?.length ?? 0})`,
-      children: (
-        <List
-          size="small"
-          dataSource={document.source_record_ids ?? []}
-          renderItem={(recordId) => <List.Item>{recordId}</List.Item>}
-        />
-      ),
-    },
-  ]
-
-  if (vectorPreview) {
-    items.push({
-      key: 'vector-preview',
-      label: `vector_preview (${document.vector_preview?.length ?? 0} values)`,
-      children: <JsonBlock value={document.vector_preview} />,
-    })
-  }
-
-  return <Collapse items={items} />
+function Field({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className="flex flex-col">
+      <span className="text-[10px] uppercase tracking-[0.04em] text-ink-tertiary">{label}</span>
+      <span className="text-ink">{value ?? '-'}</span>
+    </div>
+  )
 }
+
+export default DocumentDetailPage

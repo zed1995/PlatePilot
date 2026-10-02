@@ -1,195 +1,113 @@
-import { useQuery } from '@tanstack/react-query'
-import {
-  Alert,
-  Card,
-  Collapse,
-  Descriptions,
-  Progress,
-  Result,
-  Space,
-  Table,
-  Typography,
-} from 'antd'
 import { useParams } from 'react-router-dom'
-import type { ColumnsType } from 'antd/es/table'
-
+import { useQuery } from '@tanstack/react-query'
+import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../components/ui/table'
+import { PageHeader } from '../components/page-header'
+import { StatusTag } from '../components/status-tag'
+import { JsonBlock } from '../components/json-block'
+import { ErrorState } from '../components/error-state'
 import { adminApi } from '../api/client'
-import type { BatchDetail, RejectionItem } from '../api/types'
-import JsonBlock from '../components/JsonBlock'
-import PageHeader from '../components/PageHeader'
-import StatusTag from '../components/StatusTag'
-import {
-  formatDuration,
-  formatTime,
-  shortHash,
-  statusColor,
-} from '../format'
+import type { BatchDetail } from '../api/types'
+import { formatDuration, formatTime, statusColor } from '../format'
 
-const rejectionColumns: ColumnsType<RejectionItem> = [
-  { title: 'Stage', dataIndex: 'stage', width: 100 },
-  { title: 'Line', dataIndex: 'line_no', width: 80 },
-  { title: 'Reason', dataIndex: 'reason' },
-  { title: 'Source record', dataIndex: 'source_record_id' },
-]
+export function IngestionDetailPage() {
+  const { id } = useParams<{ id: string }>()
+  const detail = useQuery<BatchDetail>({ queryKey: ['batch', id], queryFn: () => adminApi.batch(Number(id)), enabled: Boolean(id) })
 
-function RejectReasons({ reasons }: { reasons?: Record<string, number> }) {
-  const entries = Object.entries(reasons ?? {})
-  if (entries.length === 0) {
-    return <Typography.Text type="secondary">No rejections.</Typography.Text>
-  }
+  if (detail.isError) return <ErrorState title="Failed to load batch" description={detail.error instanceof Error ? detail.error.message : String(detail.error)} onRetry={() => detail.refetch()} />
 
-  const max = Math.max(...entries.map(([, count]) => count))
-
+  const b = detail.data
   return (
-    <Space direction="vertical" size={8} style={{ width: '100%' }}>
-      {entries.map(([reason, count]) => (
-        <Space key={reason} style={{ width: '100%' }} align="center">
-          <Typography.Text style={{ width: 260 }}>{reason}</Typography.Text>
-          <Progress
-            percent={Math.round((count / max) * 100)}
-            size="small"
-            style={{ width: 260, marginBottom: 0 }}
-            format={() => String(count)}
-          />
-        </Space>
-      ))}
-    </Space>
-  )
-}
-
-export default function IngestionDetailPage() {
-  const { id: idParam } = useParams()
-  const id = Number(idParam)
-
-  const batchQuery = useQuery<BatchDetail>({
-    queryKey: ['batch', id],
-    queryFn: () => adminApi.batch(id),
-    enabled: Number.isInteger(id),
-  })
-
-  if (!Number.isInteger(id)) {
-    return <Result status="warning" title="Bad batch id" />
-  }
-
-  if (batchQuery.isError) {
-    return (
-      <Alert
-        type="error"
-        showIcon
-        message="Failed to load the batch"
-        description={
-          batchQuery.error instanceof Error
-            ? batchQuery.error.message
-            : String(batchQuery.error)
-        }
-      />
-    )
-  }
-
-  const batch = batchQuery.data
-
-  return (
-    <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+    <div className="space-y-5">
       <PageHeader
         title={`Batch ${id}`}
-        breadcrumb={[
-          { title: 'Ingestion', path: '/ingestion' },
-          { title: `Batch ${id}` },
-        ]}
-        extra={
-          batch ? (
-            <StatusTag tone={statusColor(batch.status)}>{batch.status}</StatusTag>
-          ) : undefined
-        }
+        description={b ? `${formatTime(b.started_at)} · ${formatDuration(b.duration_ms)}` : ''}
+        extra={b ? <StatusTag tone={statusColor(b.status)}>{b.status}</StatusTag> : null}
       />
-
-      {batch && (
-        <Card size="small">
-          <Descriptions size="small" column={4}>
-            <Descriptions.Item label="Stage">{batch.stage}</Descriptions.Item>
-            <Descriptions.Item label="Curation version">
-              {batch.curation_version}
-            </Descriptions.Item>
-            <Descriptions.Item label="Started">
-              {formatTime(batch.started_at)}
-            </Descriptions.Item>
-            <Descriptions.Item label="Finished">
-              {formatTime(batch.finished_at)}
-            </Descriptions.Item>
-            <Descriptions.Item label="Duration">
-              {formatDuration(batch.duration_ms)}
-            </Descriptions.Item>
-            <Descriptions.Item label="Source file" span={2}>
-              {batch.source_file || '-'}
-            </Descriptions.Item>
-            <Descriptions.Item label="Source sha256">
-              {batch.source_sha256 ? shortHash(batch.source_sha256, 16) : '-'}
-            </Descriptions.Item>
-
-            <Descriptions.Item label="Rows read">{batch.rows_read}</Descriptions.Item>
-            <Descriptions.Item label="Accepted">{batch.accepted}</Descriptions.Item>
-            <Descriptions.Item label="Written">{batch.written}</Descriptions.Item>
-            <Descriptions.Item label="Deduped">{batch.deduped}</Descriptions.Item>
-            <Descriptions.Item label="Filtered">{batch.filtered}</Descriptions.Item>
-            <Descriptions.Item label="Rejected">{batch.rejected}</Descriptions.Item>
-            <Descriptions.Item label="Unmatched">{batch.unmatched}</Descriptions.Item>
-            <Descriptions.Item label="Documents built">
-              {batch.documents_built ?? '-'}
-            </Descriptions.Item>
-            <Descriptions.Item label="Documents embedded">
-              {batch.documents_embedded ?? '-'}
-            </Descriptions.Item>
-            <Descriptions.Item label="Documents rejected">
-              {batch.documents_rejected ?? '-'}
-            </Descriptions.Item>
-            <Descriptions.Item label="Embedding model">
-              {batch.embedding_model || '-'}
-            </Descriptions.Item>
-            <Descriptions.Item label="Dimensions">
-              {batch.embedding_dimensions || '-'}
-            </Descriptions.Item>
-            <Descriptions.Item label="Error code">
-              {batch.error_code || '-'}
-            </Descriptions.Item>
-          </Descriptions>
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
+        <Card>
+          <CardHeader><CardTitle>Counts</CardTitle></CardHeader>
+          <CardContent className="space-y-2 text-[13px]">
+            <Field label="Rows read" value={b?.rows_read} />
+            <Field label="Accepted" value={b?.accepted} />
+            <Field label="Written" value={b?.written} />
+            <Field label="Deduped" value={b?.deduped} />
+            <Field label="Filtered" value={b?.filtered} />
+            <Field label="Rejected" value={b?.rejected} />
+            <Field label="Unmatched" value={b?.unmatched} />
+          </CardContent>
         </Card>
+        <Card>
+          <CardHeader><CardTitle>Embedding</CardTitle></CardHeader>
+          <CardContent className="space-y-2 text-[13px]">
+            <Field label="Documents built" value={b?.documents_built} />
+            <Field label="Documents embedded" value={b?.documents_embedded} />
+            <Field label="Documents rejected" value={b?.documents_rejected} />
+            <Field label="Model" value={b?.embedding_model ?? '-'} />
+            <Field label="Dimensions" value={b?.embedding_dimensions ?? '-'} />
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader><CardTitle>Provenance</CardTitle></CardHeader>
+          <CardContent className="space-y-2 text-[13px]">
+            <Field label="Curation version" value={b?.curation_version} />
+            <Field label="Source file" value={b?.source_file ?? '-'} />
+            <Field label="Boundary version" value={b?.boundary_version ?? '-'} />
+            <Field label="Error code" value={b?.error_code ?? '-'} />
+          </CardContent>
+        </Card>
+      </div>
+
+      {b && (b.reject_reasons || b.missing_fields !== undefined) && (
+        <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+          {b.reject_reasons ? (
+            <Card>
+              <CardHeader><CardTitle>Reject reasons</CardTitle></CardHeader>
+              <CardContent><JsonBlock value={b.reject_reasons} /></CardContent>
+            </Card>
+          ) : null}
+          {b.missing_fields !== undefined ? (
+            <Card>
+              <CardHeader><CardTitle>Missing fields</CardTitle></CardHeader>
+              <CardContent><JsonBlock value={b.missing_fields} /></CardContent>
+            </Card>
+          ) : null}
+        </div>
       )}
 
-      <Collapse
-        items={[
-          {
-            key: 'missing-fields',
-            label: 'missing_fields',
-            children: <JsonBlock value={batch?.missing_fields} />,
-          },
-        ]}
-      />
-
-      <Card title="Reject reasons" size="small" loading={batchQuery.isLoading}>
-        <RejectReasons reasons={batch?.reject_reasons} />
-      </Card>
-
-      <Card
-        title={`Rejection details (${batch?.rejections?.length ?? 0})`}
-        size="small"
-        loading={batchQuery.isLoading}
-      >
-        {batch?.rejections_truncated && (
-          <Alert
-            type="warning"
-            showIcon
-            style={{ marginBottom: 12 }}
-            message="The rejection list is truncated: only the first entries kept by the service are shown."
-          />
-        )}
-        <Table<RejectionItem>
-          size="middle"
-          rowKey={(row) => `${row.stage}-${row.line_no}-${row.reason}`}
-          columns={rejectionColumns}
-          dataSource={batch?.rejections ?? []}
-          pagination={false}
-        />
-      </Card>
-    </Space>
+      {b?.rejections && b.rejections.length > 0 && (
+        <Card>
+          <CardHeader><CardTitle>Rejections{b.rejections_truncated ? ' (truncated)' : ''}</CardTitle></CardHeader>
+          <CardContent>
+            <Table>
+              <TableHeader>
+                <TableRow><TableHead>Stage</TableHead><TableHead>Line</TableHead><TableHead>Reason</TableHead><TableHead>Source record</TableHead></TableRow>
+              </TableHeader>
+              <TableBody>
+                {b.rejections.map((r, i) => (
+                  <TableRow key={`${r.stage}-${r.line_no}-${i}`}>
+                    <TableCell>{r.stage}</TableCell>
+                    <TableCell className="tabular">{r.line_no}</TableCell>
+                    <TableCell>{r.reason}</TableCell>
+                    <TableCell>{r.source_record_id ?? '-'}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+      )}
+    </div>
   )
 }
+
+function Field({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className="flex flex-col">
+      <span className="text-[10px] uppercase tracking-[0.04em] text-ink-tertiary">{label}</span>
+      <span className="text-ink">{value === undefined || value === null || value === '' ? '-' : value}</span>
+    </div>
+  )
+}
+
+export default IngestionDetailPage

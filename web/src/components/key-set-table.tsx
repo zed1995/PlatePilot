@@ -14,10 +14,8 @@ interface KeySetTableProps<T> {
   tableLayout?: 'auto' | 'fixed'
 }
 
-const defaultPageSize = 25
-
 export function KeySetTable<T>({
-  columns, rowKey, fetchPage, resetKey = '', pageSize = defaultPageSize, rowClassName, tableLayout = 'auto',
+  columns, rowKey, fetchPage, resetKey = '', rowClassName, tableLayout = 'auto',
 }: KeySetTableProps<T>) {
   const [stack, setStack] = useState<(string | undefined)[]>([undefined])
   const [pageIndex, setPageIndex] = useState(0)

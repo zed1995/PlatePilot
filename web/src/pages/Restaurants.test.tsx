@@ -40,14 +40,15 @@ test('applies a borough filter', async () => {
     </MemoryRouter>,
   )
 
-  // Select Manhattan and submit the filter form.
-  const select = document.querySelector('.ant-select-selector')!
-  await userEvent.click(select)
+  // Click Borough trigger
+  const trigger = await waitFor(() =>
+    document.querySelector<HTMLElement>('button[role="combobox"]')!,
+  )
+  await userEvent.click(trigger)
   const option = await waitFor(() =>
-    document.querySelector<HTMLElement>('.ant-select-item-option')!,
+    document.body.querySelector<HTMLElement>('[role="option"]')!,
   )
   await userEvent.click(option)
-  await userEvent.click(document.querySelector('button[type="submit"]')!)
 
   await waitFor(() =>
     expect(adminApi.restaurants).toHaveBeenCalledWith(

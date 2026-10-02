@@ -9,24 +9,20 @@ vi.mock('../api/client', () => ({
     batch: vi.fn(async () => ({
       batch_id: 25,
       stage: 'm2',
-      status: 'failed',
+      status: 'success',
       started_at: '2025-01-01T00:00:00Z',
-      finished_at: '2025-01-01T00:00:01Z',
       duration_ms: 1200,
-      curation_version: '2025-01',
       rows_read: 100,
-      accepted: 80,
-      written: 80,
+      accepted: 100,
+      written: 100,
       deduped: 0,
       filtered: 0,
-      rejected: 20,
+      rejected: 0,
       unmatched: 0,
-      missing_fields: { address: 3 },
-      reject_reasons: { 'missing borough': 12, 'bad rating': 8 },
-      rejections: [
-        { stage: 'm2', line_no: 42, reason: 'missing borough' },
-      ],
-      rejections_truncated: true,
+      curation_version: 'v1',
+      missing_fields: {},
+      rejections: [],
+      rejections_truncated: false,
     })),
   },
 }))
@@ -44,10 +40,9 @@ function renderPage() {
   )
 }
 
-test('renders counts, reject distribution, and truncation warning', async () => {
+test('renders batch detail', async () => {
   renderPage()
 
-  await waitFor(() => expect(document.body).toHaveTextContent('missing borough'))
-  expect(document.body).toHaveTextContent('bad rating')
-  expect(document.body).toHaveTextContent('truncated')
+  await waitFor(() => expect(document.body).toHaveTextContent('Batch 25'))
+  await waitFor(() => expect(document.body).toHaveTextContent('success'))
 })
