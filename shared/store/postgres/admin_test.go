@@ -257,6 +257,35 @@ func TestAdminRestaurantDetailNotFound(t *testing.T) {
 	}
 }
 
+// TestAdminRestaurantDetailCarriesActiveFlag proves the detail projection
+// carries is_active_for_demo: without it the console's detail badge reads
+// inactive for every restaurant that the list marks active.
+func TestAdminRestaurantDetailCarriesActiveFlag(t *testing.T) {
+	store := newAdminStore(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	active := true
+	page, err := store.Restaurants(ctx, admin.RestaurantQuery{Limit: 1, Active: &active})
+	if err != nil {
+		t.Fatalf("list active restaurants: %v", err)
+	}
+	if len(page.Items) == 0 {
+		t.Skip("database has no demo-active restaurants to compare")
+	}
+
+	restaurantID := page.Items[0].RestaurantID
+	detail, err := store.RestaurantDetail(ctx, restaurantID)
+	if err != nil {
+		t.Fatalf("RestaurantDetail %d: %v", restaurantID, err)
+	}
+	if !detail.ActiveForDemo {
+		t.Errorf("restaurant %d is active in the listing but detail carries is_active_for_demo=false",
+			restaurantID)
+	}
+}
+
 // TestAdminKeysetQueriesUseIndexes verifies the keyset statement shapes are
 // served from indexes rather than full scans.
 func TestAdminKeysetQueriesUseIndexes(t *testing.T) {

@@ -93,6 +93,7 @@ export interface RestaurantDetail {
   attributes: unknown
   hours: unknown
 
+  is_active_for_demo: boolean
   snapshot_status: string
   knowledge_score: number
   observed_at: string

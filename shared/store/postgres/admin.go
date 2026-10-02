@@ -307,6 +307,7 @@ func restaurantDetailFromRow(r restaurantRow) (admin.RestaurantDetail, error) {
 		EmbeddedReviewCount:       int(r.EmbeddedReviewCount),
 		Attributes:                jsonRaw(orEmptyObject(r.Attributes)),
 		Hours:                     jsonRaw(orEmptyArray(r.Hours)),
+		ActiveForDemo:             r.IsActiveForDemo,
 		SnapshotStatus:            r.SnapshotStatus,
 		KnowledgeScore:            r.KnowledgeScore,
 		ObservedAt:                r.ObservedAt,

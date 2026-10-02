@@ -1,4 +1,4 @@
-import { render, waitFor } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 
@@ -16,6 +16,7 @@ vi.mock('../api/client', () => ({
       text_review_count: 9,
       representative_review_count: 3,
       embedded_review_count: 3,
+      is_active_for_demo: true,
       snapshot_status: 'ready',
       attributes: { outdoor_seating: true },
       hours: { Monday: '10-22' },
@@ -55,4 +56,7 @@ test('renders basic information', async () => {
 
   await waitFor(() => expect(document.body).toHaveTextContent('Joe'))
   expect(document.body).toHaveTextContent('pizza')
+  // The detail payload carries the same demo flag as the list row, so the
+  // header badge must render "active", not fall back to "inactive".
+  expect(screen.getByText('active')).toBeInTheDocument()
 })

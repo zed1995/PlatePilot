@@ -1,3 +1,4 @@
+import { useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link, useParams } from 'react-router-dom'
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card'
@@ -6,18 +7,62 @@ import { PageHeader } from '../components/page-header'
 import { StatusTag } from '../components/status-tag'
 import { ErrorState } from '../components/error-state'
 import { JsonBlock } from '../components/json-block'
+import { KeySetTable } from '../components/key-set-table'
 import { adminApi } from '../api/client'
+import type { ReviewListItem, ReviewSummary } from '../api/types'
 import { formatTime } from '../format'
+
+const reviewColumns: { key: string; width?: number; header: React.ReactNode; cell: (row: ReviewListItem) => React.ReactNode }[] = [
+  { key: 'review_id', width: 90, header: 'ID', cell: (r) => r.review_id },
+  { key: 'rating', width: 70, header: 'Rating', cell: (r) => r.rating },
+  { key: 'reviewed_at', width: 160, header: 'Reviewed', cell: (r) => formatTime(r.reviewed_at) },
+  {
+    key: 'text',
+    header: 'Text',
+    cell: (r) => (
+      <span className="block max-w-[460px] truncate text-ink-secondary" title={r.text}>{r.text}</span>
+    ),
+  },
+  {
+    key: 'representative',
+    width: 140,
+    header: 'Representative',
+    cell: (r) => (r.is_representative ? <StatusTag tone="orange">representative</StatusTag> : null),
+  },
+  {
+    key: 'topics',
+    header: 'Topics',
+    cell: (r) =>
+      r.topic_tags?.length ? (
+        <span className="text-ink-tertiary">{r.topic_tags.join(' · ')}</span>
+      ) : (
+        '-'
+      ),
+  },
+]
+
+const summaryColumns: { key: string; header: React.ReactNode; cell: (row: ReviewSummary) => React.ReactNode }[] = [
+  { key: 'topic', header: 'Topic', cell: (s) => s.topic },
+  { key: 'sentiment', header: 'Sentiment', cell: (s) => s.sentiment.toFixed(2) },
+  { key: 'positive_ratio', header: 'Positive ratio', cell: (s) => `${Math.round(s.positive_ratio * 100)}%` },
+  { key: 'evidence_count', header: 'Evidence', cell: (s) => s.evidence_count },
+  { key: 'summary', header: 'Summary', cell: (s) => <span className="text-ink-secondary">{s.summary}</span> },
+]
 
 export function RestaurantDetailPage() {
   const { id } = useParams<{ id: string }>()
   const detail = useQuery({ queryKey: ['restaurant', id], queryFn: () => adminApi.restaurant(Number(id)), enabled: Boolean(id) })
   const docs = useQuery({ queryKey: ['restaurant', id, 'documents'], queryFn: () => adminApi.restaurantDocuments(Number(id)), enabled: Boolean(id) })
+  const summaries = useQuery({ queryKey: ['restaurant', id, 'summaries'], queryFn: () => adminApi.summaries(Number(id)), enabled: Boolean(id) })
+  const fetchReviews = useCallback(
+    (cursor?: string) => adminApi.reviews(Number(id), { cursor, limit: 25 }),
+    [id],
+  )
 
   if (detail.isError) return <ErrorState title="Failed to load restaurant" description={detail.error instanceof Error ? detail.error.message : String(detail.error)} onRetry={() => detail.refetch()} />
 
   const r = detail.data
-  const active = (r as unknown as { is_active_for_demo?: boolean } | undefined)?.is_active_for_demo
+  const active = r?.is_active_for_demo
   return (
     <div className="space-y-5">
       <PageHeader
@@ -90,6 +135,51 @@ export function RestaurantDetailPage() {
                     <TableCell>{d.is_active ? 'yes' : 'no'}</TableCell>
                     <TableCell>{d.has_embedding ? 'yes' : 'no'}</TableCell>
                     <TableCell className="tabular">{d.version}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader><CardTitle>Reviews</CardTitle></CardHeader>
+        <CardContent>
+          <KeySetTable<ReviewListItem>
+            columns={reviewColumns}
+            rowKey={(row) => row.review_id}
+            fetchPage={fetchReviews}
+            resetKey={String(id)}
+            tableLayout="fixed"
+          />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader><CardTitle>Topic summaries</CardTitle></CardHeader>
+        <CardContent>
+          {summaries.isError ? (
+            <p className="text-[13px] text-error">
+              Failed to load topic summaries: {summaries.error instanceof Error ? summaries.error.message : String(summaries.error)}
+            </p>
+          ) : (summaries.data ?? []).length === 0 ? (
+            <p className="text-[13px] text-ink-tertiary">No topic summaries for this restaurant.</p>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  {summaryColumns.map((c) => (
+                    <TableHead key={c.key}>{c.header}</TableHead>
+                  ))}
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {(summaries.data ?? []).map((s) => (
+                  <TableRow key={`${s.topic}-${s.generated_at}`}>
+                    {summaryColumns.map((c) => (
+                      <TableCell key={c.key}>{c.cell(s)}</TableCell>
+                    ))}
                   </TableRow>
                 ))}
               </TableBody>

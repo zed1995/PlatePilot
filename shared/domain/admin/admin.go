@@ -144,6 +144,9 @@ type RestaurantDetail struct {
 	Attributes json.RawMessage `json:"attributes"`
 	Hours      json.RawMessage `json:"hours"`
 
+	// ActiveForDemo mirrors the listing projection so the detail page's
+	// status badge and the list never disagree about the same row.
+	ActiveForDemo  bool      `json:"is_active_for_demo"`
 	SnapshotStatus string    `json:"snapshot_status"`
 	KnowledgeScore float64   `json:"knowledge_score"`
 	ObservedAt     time.Time `json:"observed_at"`
