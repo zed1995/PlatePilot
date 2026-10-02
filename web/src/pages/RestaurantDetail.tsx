@@ -9,7 +9,6 @@ import {
   Space,
   Table,
   Tabs,
-  Tag,
   Typography,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
@@ -24,6 +23,8 @@ import type {
 } from '../api/types'
 import JsonBlock from '../components/JsonBlock'
 import KeySetTable from '../components/KeySetTable'
+import PageHeader from '../components/PageHeader'
+import StatusTag from '../components/StatusTag'
 import { formatTime } from '../format'
 
 const documentColumns: ColumnsType<DocumentSummary> = [
@@ -36,21 +37,23 @@ const documentColumns: ColumnsType<DocumentSummary> = [
     ),
   },
   { title: 'Scope', dataIndex: 'retrieval_scope', width: 100 },
-  { title: 'Type', dataIndex: 'doc_type' },
+  { title: 'Type', dataIndex: 'doc_type', ellipsis: true },
   { title: 'Version', dataIndex: 'version', width: 80 },
   {
     title: 'Active',
     dataIndex: 'is_active',
     width: 90,
-    render: (active: boolean) =>
-      active ? <Tag color="green">active</Tag> : <Tag>inactive</Tag>,
+    render: (active: boolean) => (
+      <StatusTag tone={active ? 'green' : 'grey'}>{active ? 'active' : 'inactive'}</StatusTag>
+    ),
   },
   {
     title: 'Embedding',
     dataIndex: 'has_embedding',
     width: 100,
-    render: (has: boolean) =>
-      has ? <Tag color="blue">vector</Tag> : <Tag>none</Tag>,
+    render: (has: boolean) => (
+      <StatusTag tone={has ? 'blue' : 'grey'}>{has ? 'vector' : 'none'}</StatusTag>
+    ),
   },
   {
     title: 'Snapshot',
@@ -86,16 +89,19 @@ const reviewColumns: ColumnsType<ReviewListItem> = [
     dataIndex: 'is_representative',
     width: 120,
     render: (representative: boolean) =>
-      representative ? <Tag color="gold">representative</Tag> : null,
+      representative ? (
+        <StatusTag tone="orange">representative</StatusTag>
+      ) : null,
   },
   {
     title: 'Topics',
     dataIndex: 'topic_tags',
-    render: (tags: string[]) => (
-      <Space size={[0, 4]} wrap>
-        {tags?.map((tag) => <Tag key={tag}>{tag}</Tag>)}
-      </Space>
-    ),
+    render: (tags?: string[]) =>
+      tags?.length ? (
+        <Typography.Text type="secondary">{tags.join(' · ')}</Typography.Text>
+      ) : (
+        '-'
+      ),
   },
 ]
 
@@ -120,7 +126,7 @@ const summaryColumns: ColumnsType<ReviewSummary> = [
 function BasicInfo({ restaurant }: { restaurant: RestaurantDetailType }) {
   return (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-      <Descriptions bordered size="small" column={3}>
+      <Descriptions size="small" column={3}>
         <Descriptions.Item label="ID">{restaurant.restaurant_id}</Descriptions.Item>
         <Descriptions.Item label="Name">{restaurant.name}</Descriptions.Item>
         <Descriptions.Item label="Source">{restaurant.source}</Descriptions.Item>
@@ -131,11 +137,13 @@ function BasicInfo({ restaurant }: { restaurant: RestaurantDetailType }) {
           {restaurant.borough || '-'}
         </Descriptions.Item>
         <Descriptions.Item label="Cuisines" span={3}>
-          <Space size={[0, 4]} wrap>
-            {restaurant.cuisines?.map((cuisine) => (
-              <Tag key={cuisine}>{cuisine}</Tag>
-            ))}
-          </Space>
+          {restaurant.cuisines?.length ? (
+            <Typography.Text type="secondary">
+              {restaurant.cuisines.join(' · ')}
+            </Typography.Text>
+          ) : (
+            '-'
+          )}
         </Descriptions.Item>
         <Descriptions.Item label="Price">
           {restaurant.price_level ?? '-'} ({restaurant.price_raw || 'n/a'})
@@ -228,31 +236,40 @@ export default function RestaurantDetailPage() {
     )
   }
 
+  const restaurant = restaurantQuery.data
+  const subtitle = restaurant
+    ? [restaurant.borough, restaurant.address].filter(Boolean).join(' · ')
+    : undefined
+
   return (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-      {restaurantQuery.data && (
-        <Card size="small">
-          <Typography.Title level={4} style={{ margin: 0 }}>
-            {restaurantQuery.data.name}
-          </Typography.Title>
-        </Card>
-      )}
+      <PageHeader
+        title={restaurant?.name ?? 'Restaurant'}
+        description={subtitle}
+        breadcrumb={[
+          { title: 'Restaurants', path: '/restaurants' },
+          { title: restaurant?.name ?? id },
+        ]}
+      />
 
       <Tabs
         items={[
           {
             key: 'basic',
             label: 'Basic information',
-            children: restaurantQuery.data ? (
-              <BasicInfo restaurant={restaurantQuery.data} />
-            ) : null,
+            children: restaurant ? (
+              <BasicInfo restaurant={restaurant} />
+            ) : (
+              <Card loading style={{ minHeight: 200 }} />
+            ),
           },
           {
             key: 'documents',
             label: `Knowledge documents (${documentsQuery.data?.length ?? 0})`,
             children: (
               <Table<DocumentSummary>
-                size="small"
+                size="middle"
+                tableLayout="fixed"
                 rowKey="document_id"
                 columns={documentColumns}
                 dataSource={documentsQuery.data ?? []}
@@ -278,7 +295,7 @@ export default function RestaurantDetailPage() {
             label: `Topic summaries (${summariesQuery.data?.length ?? 0})`,
             children: (
               <Table<ReviewSummary>
-                size="small"
+                size="middle"
                 rowKey={(row) => `${row.topic}-${row.generated_at}`}
                 columns={summaryColumns}
                 dataSource={summariesQuery.data ?? []}

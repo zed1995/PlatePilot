@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Alert, Table } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 
@@ -19,6 +19,9 @@ interface KeySetTableProps<T> {
   resetKey?: string
   pageSize?: number
   rowClassName?: (row: T) => string
+  // "fixed" keeps wide unbreakable cells from pushing the table past the
+  // container edge; pair it with ellipsis on the wide columns.
+  tableLayout?: 'auto' | 'fixed'
 }
 
 const defaultPageSize = 25
@@ -33,6 +36,7 @@ export default function KeySetTable<T>({
   resetKey = '',
   pageSize = defaultPageSize,
   rowClassName,
+  tableLayout,
 }: KeySetTableProps<T>) {
   // stack[i] is the cursor used to load page i; the first page is undefined.
   const [stack, setStack] = useState<(string | undefined)[]>([undefined])
@@ -41,13 +45,22 @@ export default function KeySetTable<T>({
   const [nextCursor, setNextCursor] = useState<string | undefined>(undefined)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<unknown>(null)
+  // Bumped when the filter set changes so the fetch below runs exactly once
+  // with the fresh first-page cursor, never once more with a stale one.
+  const [generation, setGeneration] = useState(0)
+  const firstRun = useRef(true)
 
   const currentCursor = stack[pageIndex]
 
   // A new filter set restarts paging at the first page.
   useEffect(() => {
+    if (firstRun.current) {
+      firstRun.current = false
+      return
+    }
     setStack([undefined])
     setPageIndex(0)
+    setGeneration((gen) => gen + 1)
   }, [resetKey, fetchPage])
 
   useEffect(() => {
@@ -69,8 +82,7 @@ export default function KeySetTable<T>({
     return () => {
       cancelled = true
     }
-    // resetKey forces a refetch even when the cursor is already undefined.
-  }, [fetchPage, currentCursor, resetKey])
+  }, [fetchPage, currentCursor, generation])
 
   const goNext = () => {
     if (!nextCursor) return
@@ -79,7 +91,17 @@ export default function KeySetTable<T>({
     setPageIndex((index) => index + 1)
   }
 
-  const goBack = () => setPageIndex((index) => Math.max(0, index - 1))
+  // Clicking any earlier page number moves through the visited cursor stack,
+  // and the next button (the only reachable forward step) appends a cursor.
+  const goTo = (page: number) => {
+    const target = page - 1
+    if (target === pageIndex) return
+    if (target > pageIndex) {
+      goNext()
+    } else {
+      setPageIndex(target)
+    }
+  }
 
   if (error) {
     return (
@@ -96,7 +118,8 @@ export default function KeySetTable<T>({
 
   return (
     <Table<T>
-      size="small"
+      size="middle"
+      tableLayout={tableLayout}
       columns={columns}
       dataSource={items}
       rowKey={rowKey}
@@ -109,13 +132,7 @@ export default function KeySetTable<T>({
         // the next arrow without needing the real row count.
         total: (pageIndex + 1) * pageSize + (hasNext ? 1 : 0),
         showSizeChanger: false,
-        onChange: (page) => {
-          if (page < pageIndex + 1) {
-            goBack()
-          } else if (page > pageIndex + 1) {
-            goNext()
-          }
-        },
+        onChange: goTo,
       }}
     />
   )

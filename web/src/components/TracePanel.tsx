@@ -54,7 +54,7 @@ export default function TracePanel({ trace }: { trace: Trace }) {
         />
       )}
 
-      <Descriptions size="small" bordered column={3}>
+      <Descriptions size="small" column={3}>
         <Descriptions.Item label="Candidate pool">
           {trace.candidate_pool}
         </Descriptions.Item>

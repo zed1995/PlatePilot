@@ -1,11 +1,13 @@
 import { useCallback, useState } from 'react'
-import { Button, Card, Form, Input, Space, Tag } from 'antd'
+import { Button, Card, Form, Input, Space, Typography } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { Link } from 'react-router-dom'
 
 import { adminApi, type BatchesParams } from '../api/client'
 import type { BatchListItem } from '../api/types'
 import KeySetTable from '../components/KeySetTable'
+import PageHeader from '../components/PageHeader'
+import StatusTag from '../components/StatusTag'
 import { formatDuration, formatTime, statusColor } from '../format'
 
 interface FilterValues {
@@ -24,7 +26,9 @@ const columns = (): ColumnsType<BatchListItem> => [
     title: 'Status',
     dataIndex: 'status',
     width: 100,
-    render: (status: string) => <Tag color={statusColor(status)}>{status}</Tag>,
+    render: (status: string) => (
+      <StatusTag tone={statusColor(status)}>{status}</StatusTag>
+    ),
   },
   {
     title: 'Started',
@@ -46,7 +50,11 @@ const columns = (): ColumnsType<BatchListItem> => [
     dataIndex: 'rejected',
     width: 90,
     render: (rejected: number) =>
-      rejected > 0 ? <Tag color="red">{rejected}</Tag> : rejected,
+      rejected > 0 ? (
+        <Typography.Text style={{ color: '#ff3b30' }}>{rejected}</Typography.Text>
+      ) : (
+        rejected
+      ),
   },
   {
     title: 'Docs built',
@@ -80,6 +88,11 @@ export default function Ingestion() {
 
   return (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+      <PageHeader
+        title="Ingestion"
+        description="Batches that loaded, curated, and embedded source data."
+      />
+
       <Card size="small">
         <Form<FilterValues>
           form={form}

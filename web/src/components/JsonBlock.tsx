@@ -12,13 +12,15 @@ export default function JsonBlock({ value }: { value: unknown }) {
     <pre
       style={{
         margin: 0,
-        padding: 12,
+        padding: 14,
         maxHeight: 400,
         overflow: 'auto',
-        background: '#fafafa',
-        border: '1px solid #f0f0f0',
-        borderRadius: 6,
+        background: '#f5f5f7',
+        border: '1px solid rgba(0, 0, 0, 0.04)',
+        borderRadius: 10,
         fontSize: 12,
+        fontFamily:
+          'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
       }}
     >
       {text}

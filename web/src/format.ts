@@ -17,9 +17,9 @@ export function formatDuration(ms: number): string {
   return `${minutes}m ${seconds}s`
 }
 
-// statusColor maps a batch status onto an AntD tag color. Unknown values use a
-// neutral color so a new status never renders as success.
-export function statusColor(status: string): string {
+// statusColor maps a batch status onto a StatusTag tone. Unknown values use a
+// neutral grey so a new status never reads as success.
+export function statusColor(status: string): 'green' | 'red' | 'blue' | 'grey' {
   switch (status) {
     case 'success':
     case 'succeeded':
@@ -32,7 +32,7 @@ export function statusColor(status: string): string {
     case 'started':
       return 'blue'
     default:
-      return 'default'
+      return 'grey'
   }
 }
 

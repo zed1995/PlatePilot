@@ -1,13 +1,11 @@
 import { useCallback, useState } from 'react'
 import {
-  Alert,
   Button,
   Card,
   Form,
   Input,
   Select,
   Space,
-  Tag,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { Link } from 'react-router-dom'
@@ -15,6 +13,8 @@ import { Link } from 'react-router-dom'
 import { adminApi, type DocumentsParams } from '../api/client'
 import type { DocumentListItem } from '../api/types'
 import KeySetTable from '../components/KeySetTable'
+import PageHeader from '../components/PageHeader'
+import StatusTag from '../components/StatusTag'
 import { formatTime, shortHash } from '../format'
 
 interface FilterValues {
@@ -58,7 +58,7 @@ const columns = (): ColumnsType<DocumentListItem> => [
     render: (id: number) => <Link to={`/restaurants/${id}`}>{id}</Link>,
   },
   { title: 'Scope', dataIndex: 'retrieval_scope', width: 100 },
-  { title: 'Type', dataIndex: 'doc_type' },
+  { title: 'Type', dataIndex: 'doc_type', ellipsis: true },
   { title: 'Version', dataIndex: 'version', width: 80 },
   {
     title: 'Hash',
@@ -70,15 +70,17 @@ const columns = (): ColumnsType<DocumentListItem> => [
     title: 'Active',
     dataIndex: 'is_active',
     width: 90,
-    render: (active: boolean) =>
-      active ? <Tag color="green">active</Tag> : <Tag>inactive</Tag>,
+    render: (active: boolean) => (
+      <StatusTag tone={active ? 'green' : 'grey'}>{active ? 'active' : 'inactive'}</StatusTag>
+    ),
   },
   {
     title: 'Embedding',
     dataIndex: 'has_embedding',
     width: 100,
-    render: (has: boolean) =>
-      has ? <Tag color="blue">vector</Tag> : <Tag>none</Tag>,
+    render: (has: boolean) => (
+      <StatusTag tone={has ? 'blue' : 'grey'}>{has ? 'vector' : 'none'}</StatusTag>
+    ),
   },
   {
     title: 'Snapshot',
@@ -115,10 +117,9 @@ export default function Documents() {
 
   return (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-      <Alert
-        type="info"
-        showIcon
-        message="is_active is not filtered by default: superseded versions are listed too. Inactive rows are shown grayed out."
+      <PageHeader
+        title="Documents"
+        description="Knowledge documents across versions. is_active is not filtered by default: superseded versions are listed too, grayed out."
       />
 
       <Card size="small">
@@ -182,6 +183,7 @@ export default function Documents() {
         fetchPage={fetchPage}
         resetKey={JSON.stringify(applied)}
         rowClassName={(row) => (row.is_active ? '' : 'inactive-row')}
+        tableLayout="fixed"
       />
     </Space>
   )

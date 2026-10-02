@@ -9,7 +9,6 @@ import {
   Result,
   Space,
   Switch,
-  Tag,
   Typography,
 } from 'antd'
 import { Link, useParams } from 'react-router-dom'
@@ -17,6 +16,8 @@ import { Link, useParams } from 'react-router-dom'
 import { adminApi } from '../api/client'
 import type { DocumentDetail as DocumentDetailType } from '../api/types'
 import JsonBlock from '../components/JsonBlock'
+import PageHeader from '../components/PageHeader'
+import StatusTag from '../components/StatusTag'
 import { formatTime, shortHash } from '../format'
 
 export default function DocumentDetailPage() {
@@ -50,27 +51,30 @@ export default function DocumentDetailPage() {
   }
 
   const document = documentQuery.data
+  const heading = document?.title || document?.doc_type || 'Document'
 
   return (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-      <Card size="small" loading={documentQuery.isLoading}>
-        <Space style={{ justifyContent: 'space-between', width: '100%' }}>
-          <Typography.Title level={4} style={{ margin: 0 }}>
-            {document?.title || document?.doc_type}
-          </Typography.Title>
-          <Space>
+      <PageHeader
+        title={heading}
+        breadcrumb={[
+          { title: 'Documents', path: '/documents' },
+          { title: heading },
+        ]}
+        extra={
+          <Space size={8}>
+            <Typography.Text type="secondary">Vector preview</Typography.Text>
             <Switch
               checked={vectorPreview}
               onChange={setVectorPreview}
               id="vector-preview-switch"
             />
-            <span>Load vector preview</span>
           </Space>
-        </Space>
-      </Card>
+        }
+      />
 
       {document && (
-        <Descriptions bordered size="small" column={3}>
+        <Descriptions size="small" column={3}>
           <Descriptions.Item label="Document ID">
             {document.document_id}
           </Descriptions.Item>
@@ -92,11 +96,9 @@ export default function DocumentDetailPage() {
             {shortHash(document.content_hash, 20)}
           </Descriptions.Item>
           <Descriptions.Item label="Is active">
-            {document.is_active ? (
-              <Tag color="green">active</Tag>
-            ) : (
-              <Tag>inactive</Tag>
-            )}
+            <StatusTag tone={document.is_active ? 'green' : 'grey'}>
+              {document.is_active ? 'active' : 'inactive'}
+            </StatusTag>
           </Descriptions.Item>
           <Descriptions.Item label="Embedding model">
             {document.embedding_model || '-'}

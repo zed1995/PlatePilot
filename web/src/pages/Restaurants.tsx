@@ -7,7 +7,7 @@ import {
   Select,
   Space,
   Switch,
-  Tag,
+  Typography,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { Link } from 'react-router-dom'
@@ -15,6 +15,8 @@ import { Link } from 'react-router-dom'
 import { adminApi, type RestaurantsParams } from '../api/client'
 import type { RestaurantListItem } from '../api/types'
 import KeySetTable from '../components/KeySetTable'
+import PageHeader from '../components/PageHeader'
+import StatusTag from '../components/StatusTag'
 import { formatTime } from '../format'
 
 interface FilterValues {
@@ -37,7 +39,9 @@ const columns = (): ColumnsType<RestaurantListItem> => [
     render: (name: string, row) => (
       <Space direction="vertical" size={0}>
         <Link to={`/restaurants/${row.restaurant_id}`}>{name}</Link>
-        <span style={{ color: '#999', fontSize: 12 }}>{row.address}</span>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {row.address}
+        </Typography.Text>
       </Space>
     ),
   },
@@ -45,11 +49,12 @@ const columns = (): ColumnsType<RestaurantListItem> => [
   {
     title: 'Cuisines',
     dataIndex: 'cuisines',
-    render: (cuisines: string[]) => (
-      <Space size={[0, 4]} wrap>
-        {cuisines?.map((cuisine) => <Tag key={cuisine}>{cuisine}</Tag>)}
-      </Space>
-    ),
+    render: (cuisines?: string[]) =>
+      cuisines?.length ? (
+        <Typography.Text type="secondary">{cuisines.join(' · ')}</Typography.Text>
+      ) : (
+        '-'
+      ),
   },
   {
     title: 'Price',
@@ -64,16 +69,19 @@ const columns = (): ColumnsType<RestaurantListItem> => [
     render: (rating: number | undefined, row) => (
       <Space direction="vertical" size={0}>
         <span>{rating ?? '-'}</span>
-        <span style={{ color: '#999', fontSize: 12 }}>{row.rating_count} reviews</span>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {row.rating_count} reviews
+        </Typography.Text>
       </Space>
     ),
   },
   {
     title: 'Active',
     dataIndex: 'is_active_for_demo',
-    width: 80,
-    render: (active: boolean) =>
-      active ? <Tag color="green">active</Tag> : <Tag>inactive</Tag>,
+    width: 90,
+    render: (active: boolean) => (
+      <StatusTag tone={active ? 'green' : 'grey'}>{active ? 'active' : 'inactive'}</StatusTag>
+    ),
   },
   {
     title: 'Observed',
@@ -112,6 +120,11 @@ export default function Restaurants() {
 
   return (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+      <PageHeader
+        title="Restaurants"
+        description="Directory of restaurants with demo status, cuisines, and ratings."
+      />
+
       <Card size="small">
         <Form<FilterValues>
           form={form}

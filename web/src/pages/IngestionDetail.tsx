@@ -8,15 +8,16 @@ import {
   Result,
   Space,
   Table,
-  Tag,
   Typography,
 } from 'antd'
-import type { ColumnsType } from 'antd/es/table'
 import { useParams } from 'react-router-dom'
+import type { ColumnsType } from 'antd/es/table'
 
 import { adminApi } from '../api/client'
 import type { BatchDetail, RejectionItem } from '../api/types'
 import JsonBlock from '../components/JsonBlock'
+import PageHeader from '../components/PageHeader'
+import StatusTag from '../components/StatusTag'
 import {
   formatDuration,
   formatTime,
@@ -43,7 +44,7 @@ function RejectReasons({ reasons }: { reasons?: Record<string, number> }) {
     <Space direction="vertical" size={8} style={{ width: '100%' }}>
       {entries.map(([reason, count]) => (
         <Space key={reason} style={{ width: '100%' }} align="center">
-          <span style={{ width: 260 }}>{reason}</span>
+          <Typography.Text style={{ width: 260 }}>{reason}</Typography.Text>
           <Progress
             percent={Math.round((count / max) * 100)}
             size="small"
@@ -89,63 +90,69 @@ export default function IngestionDetailPage() {
 
   return (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-      <Card size="small" loading={batchQuery.isLoading}>
-        <Space>
-          <Typography.Title level={4} style={{ margin: 0 }}>
-            Batch {id}
-          </Typography.Title>
-          {batch && <Tag color={statusColor(batch.status)}>{batch.status}</Tag>}
-        </Space>
-      </Card>
+      <PageHeader
+        title={`Batch ${id}`}
+        breadcrumb={[
+          { title: 'Ingestion', path: '/ingestion' },
+          { title: `Batch ${id}` },
+        ]}
+        extra={
+          batch ? (
+            <StatusTag tone={statusColor(batch.status)}>{batch.status}</StatusTag>
+          ) : undefined
+        }
+      />
 
       {batch && (
-        <Descriptions bordered size="small" column={4}>
-          <Descriptions.Item label="Stage">{batch.stage}</Descriptions.Item>
-          <Descriptions.Item label="Curation version">
-            {batch.curation_version}
-          </Descriptions.Item>
-          <Descriptions.Item label="Started">
-            {formatTime(batch.started_at)}
-          </Descriptions.Item>
-          <Descriptions.Item label="Finished">
-            {formatTime(batch.finished_at)}
-          </Descriptions.Item>
-          <Descriptions.Item label="Duration">
-            {formatDuration(batch.duration_ms)}
-          </Descriptions.Item>
-          <Descriptions.Item label="Source file" span={2}>
-            {batch.source_file || '-'}
-          </Descriptions.Item>
-          <Descriptions.Item label="Source sha256">
-            {batch.source_sha256 ? shortHash(batch.source_sha256, 16) : '-'}
-          </Descriptions.Item>
+        <Card size="small">
+          <Descriptions size="small" column={4}>
+            <Descriptions.Item label="Stage">{batch.stage}</Descriptions.Item>
+            <Descriptions.Item label="Curation version">
+              {batch.curation_version}
+            </Descriptions.Item>
+            <Descriptions.Item label="Started">
+              {formatTime(batch.started_at)}
+            </Descriptions.Item>
+            <Descriptions.Item label="Finished">
+              {formatTime(batch.finished_at)}
+            </Descriptions.Item>
+            <Descriptions.Item label="Duration">
+              {formatDuration(batch.duration_ms)}
+            </Descriptions.Item>
+            <Descriptions.Item label="Source file" span={2}>
+              {batch.source_file || '-'}
+            </Descriptions.Item>
+            <Descriptions.Item label="Source sha256">
+              {batch.source_sha256 ? shortHash(batch.source_sha256, 16) : '-'}
+            </Descriptions.Item>
 
-          <Descriptions.Item label="Rows read">{batch.rows_read}</Descriptions.Item>
-          <Descriptions.Item label="Accepted">{batch.accepted}</Descriptions.Item>
-          <Descriptions.Item label="Written">{batch.written}</Descriptions.Item>
-          <Descriptions.Item label="Deduped">{batch.deduped}</Descriptions.Item>
-          <Descriptions.Item label="Filtered">{batch.filtered}</Descriptions.Item>
-          <Descriptions.Item label="Rejected">{batch.rejected}</Descriptions.Item>
-          <Descriptions.Item label="Unmatched">{batch.unmatched}</Descriptions.Item>
-          <Descriptions.Item label="Documents built">
-            {batch.documents_built ?? '-'}
-          </Descriptions.Item>
-          <Descriptions.Item label="Documents embedded">
-            {batch.documents_embedded ?? '-'}
-          </Descriptions.Item>
-          <Descriptions.Item label="Documents rejected">
-            {batch.documents_rejected ?? '-'}
-          </Descriptions.Item>
-          <Descriptions.Item label="Embedding model">
-            {batch.embedding_model || '-'}
-          </Descriptions.Item>
-          <Descriptions.Item label="Dimensions">
-            {batch.embedding_dimensions || '-'}
-          </Descriptions.Item>
-          <Descriptions.Item label="Error code">
-            {batch.error_code || '-'}
-          </Descriptions.Item>
-        </Descriptions>
+            <Descriptions.Item label="Rows read">{batch.rows_read}</Descriptions.Item>
+            <Descriptions.Item label="Accepted">{batch.accepted}</Descriptions.Item>
+            <Descriptions.Item label="Written">{batch.written}</Descriptions.Item>
+            <Descriptions.Item label="Deduped">{batch.deduped}</Descriptions.Item>
+            <Descriptions.Item label="Filtered">{batch.filtered}</Descriptions.Item>
+            <Descriptions.Item label="Rejected">{batch.rejected}</Descriptions.Item>
+            <Descriptions.Item label="Unmatched">{batch.unmatched}</Descriptions.Item>
+            <Descriptions.Item label="Documents built">
+              {batch.documents_built ?? '-'}
+            </Descriptions.Item>
+            <Descriptions.Item label="Documents embedded">
+              {batch.documents_embedded ?? '-'}
+            </Descriptions.Item>
+            <Descriptions.Item label="Documents rejected">
+              {batch.documents_rejected ?? '-'}
+            </Descriptions.Item>
+            <Descriptions.Item label="Embedding model">
+              {batch.embedding_model || '-'}
+            </Descriptions.Item>
+            <Descriptions.Item label="Dimensions">
+              {batch.embedding_dimensions || '-'}
+            </Descriptions.Item>
+            <Descriptions.Item label="Error code">
+              {batch.error_code || '-'}
+            </Descriptions.Item>
+          </Descriptions>
+        </Card>
       )}
 
       <Collapse
@@ -176,7 +183,7 @@ export default function IngestionDetailPage() {
           />
         )}
         <Table<RejectionItem>
-          size="small"
+          size="middle"
           rowKey={(row) => `${row.stage}-${row.line_no}-${row.reason}`}
           columns={rejectionColumns}
           dataSource={batch?.rejections ?? []}

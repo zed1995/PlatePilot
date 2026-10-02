@@ -13,8 +13,10 @@ import {
   Row,
   Select,
   Space,
+  Spin,
   Table,
   Tag,
+  Typography,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { Link } from 'react-router-dom'
@@ -26,6 +28,7 @@ import type {
   SearchRequest,
   SearchResponse,
 } from '../api/types'
+import PageHeader from '../components/PageHeader'
 import TracePanel from '../components/TracePanel'
 
 interface DebugFormValues {
@@ -55,7 +58,9 @@ const candidateColumns = (
     render: (_, candidate) => (
       <Space direction="vertical" size={0}>
         <Link to={`/restaurants/${candidate.restaurant_id}`}>{candidate.name}</Link>
-        <span style={{ color: '#999', fontSize: 12 }}>{candidate.address}</span>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {candidate.address}
+        </Typography.Text>
       </Space>
     ),
   },
@@ -69,11 +74,12 @@ const candidateColumns = (
   {
     title: 'Reasons',
     dataIndex: 'reasons',
-    render: (reasons?: string[]) => (
-      <Space size={[0, 4]} wrap>
-        {reasons?.map((reason) => <Tag key={reason}>{reason}</Tag>)}
-      </Space>
-    ),
+    render: (reasons?: string[]) =>
+      reasons?.length ? (
+        <Typography.Text type="secondary">{reasons.join(' · ')}</Typography.Text>
+      ) : (
+        '-'
+      ),
   },
   {
     title: '',
@@ -151,8 +157,13 @@ export default function RetrievalDebug() {
 
   return (
     <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-      <Row gutter={16}>
-        <Col span={8}>
+      <PageHeader
+        title="Retrieval debug"
+        description="Probe the serving retrieval path: candidates, channel scoring, and trace."
+      />
+
+      <Row gutter={[16, 16]}>
+        <Col xs={24} lg={8}>
           <Card title="Request" size="small">
             <Form<DebugFormValues>
               form={form}
@@ -192,18 +203,25 @@ export default function RetrievalDebug() {
               <Button type="primary" htmlType="submit" loading={loading} block>
                 Run retrieval
               </Button>
-              <p style={{ marginTop: 8, color: '#999', fontSize: 12 }}>
+              <Typography.Paragraph
+                type="secondary"
+                style={{ marginTop: 8, marginBottom: 0, fontSize: 12 }}
+              >
                 Channels and weights come from the service configuration and
                 cannot be changed here.
-              </p>
+              </Typography.Paragraph>
             </Form>
           </Card>
         </Col>
 
-        <Col span={16}>
+        <Col xs={24} lg={16}>
           {error && <Alert type="error" showIcon message={error} style={{ marginBottom: 12 }} />}
           {!result && !error && !loading && (
-            <Empty description="Submit a request to inspect the serving retrieval path" />
+            <Empty
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              description="Submit a request to inspect the serving retrieval path"
+              style={{ marginTop: 80 }}
+            />
           )}
           {result && (
             <Collapse
@@ -214,7 +232,7 @@ export default function RetrievalDebug() {
                   label: `Candidates (${result.candidates.length})`,
                   children: (
                     <Table<RestaurantCandidate>
-                      size="small"
+                      size="middle"
                       rowKey="restaurant_id"
                       columns={candidateColumns(loadEvidence)}
                       dataSource={result.candidates}
@@ -228,7 +246,10 @@ export default function RetrievalDebug() {
                   children: result.trace ? (
                     <TracePanel trace={result.trace} />
                   ) : (
-                    <Empty description="no trace returned" />
+                    <Empty
+                      image={Empty.PRESENTED_IMAGE_SIMPLE}
+                      description="no trace returned"
+                    />
                   ),
                 },
               ]}
@@ -248,7 +269,9 @@ export default function RetrievalDebug() {
           <Alert type="error" showIcon message={evidenceState.error} />
         )}
         {evidenceState?.loading ? (
-          <p>Loading…</p>
+          <div style={{ padding: '32px 0', textAlign: 'center' }}>
+            <Spin />
+          </div>
         ) : (
           <Space direction="vertical" size="middle" style={{ width: '100%' }}>
             {evidenceState?.evidence.map((item) => (
@@ -263,15 +286,18 @@ export default function RetrievalDebug() {
                 }
               >
                 <p style={{ whiteSpace: 'pre-wrap' }}>{item.content}</p>
-                <Space wrap>
-                  {item.source_record_ids?.map((id) => (
-                    <Tag key={id}>{id}</Tag>
-                  ))}
-                </Space>
+                {item.source_record_ids?.length ? (
+                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    {item.source_record_ids.join(' · ')}
+                  </Typography.Text>
+                ) : null}
               </Card>
             ))}
             {evidenceState?.evidence.length === 0 && !evidenceState.loading && (
-              <Empty description="no evidence returned" />
+              <Empty
+                image={Empty.PRESENTED_IMAGE_SIMPLE}
+                description="no evidence returned"
+              />
             )}
           </Space>
         )}
