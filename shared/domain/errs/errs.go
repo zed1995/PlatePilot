@@ -52,6 +52,14 @@ const (
 	CodeRetrievalNoScope        Code = "retrieval_no_scope"
 	CodeRetrievalBudgetExceeded Code = "retrieval_budget_exceeded"
 	CodeRetrievalQueryTooShort  Code = "retrieval_query_too_short"
+
+	// Agent codes cover the M4 reasoning loop. A citation violation means the
+	// model cited evidence that was not part of the turn's evidence set even
+	// after one corrective retry; the answer is withheld rather than shipped
+	// with an unverifiable reference. It is 422 rather than 500 because the
+	// request itself was answerable — the generated content just failed a
+	// hard output contract and must not be retried blindly by callers.
+	CodeAgentCitationViolation Code = "agent_citation_violation"
 )
 
 var httpStatusByCode = map[Code]int{
@@ -77,6 +85,8 @@ var httpStatusByCode = map[Code]int{
 	CodeRetrievalNoScope:        http.StatusBadRequest,
 	CodeRetrievalBudgetExceeded: http.StatusBadRequest,
 	CodeRetrievalQueryTooShort:  http.StatusBadRequest,
+
+	CodeAgentCitationViolation: http.StatusUnprocessableEntity,
 }
 
 // Error is the canonical error type used across PlatePilot.
@@ -196,4 +206,6 @@ var (
 	ErrRetrievalNoScope        = New(CodeRetrievalNoScope, "retrieval requires a scope that was not provided")
 	ErrRetrievalBudgetExceeded = New(CodeRetrievalBudgetExceeded, "retrieval budget is too small to hold any result")
 	ErrRetrievalQueryTooShort  = New(CodeRetrievalQueryTooShort, "retrieval text is too short to match")
+
+	ErrAgentCitationViolation = New(CodeAgentCitationViolation, "answer cites evidence that is not part of this turn")
 )

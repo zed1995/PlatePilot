@@ -25,11 +25,30 @@ type Config struct {
 	Log       sharedcfg.LogConfig
 	Postgres  sharedcfg.PostgresConfig
 	Chat      ChatConfig
+	Agent     AgentConfig
 	Embedding sharedcfg.EmbeddingConfig
 	Retrieval sharedcfg.RetrievalConfig
 	Rerank    RerankConfig
 	Admin     AdminConfig
 	Timeout   sharedcfg.TimeoutConfig
+}
+
+// Agent defaults bound the tool-use loop so a model that keeps requesting
+// tools cannot turn one turn into an unbounded chain of provider calls.
+const (
+	defaultAgentMaxToolRounds = 5
+	defaultAgentToolTimeout   = 15 * time.Second
+)
+
+// AgentConfig holds the agent runtime knobs. They stay effective even when no
+// chat provider is configured, so wiring the runner later cannot silently fall
+// back to zero/unlimited values.
+type AgentConfig struct {
+	// MaxToolRounds bounds how many plan->tools cycles one turn may run before
+	// the model is forced to answer.
+	MaxToolRounds int
+	// ToolTimeout bounds one tool invocation.
+	ToolTimeout time.Duration
 }
 
 // AdminConfig holds the administration console settings. The console is off by
@@ -62,6 +81,18 @@ type HTTPConfig struct {
 	CORSAllowOrigins []string
 }
 
+// Chat defaults. They mirror the conservative capability assumptions of the
+// OpenAI-compatible adapter: a model that genuinely supports parallel tool
+// calls or strict JSON schema is opted in explicitly through the environment.
+const (
+	defaultChatTimeout            = 60 * time.Second
+	defaultChatMaxRetries         = 2
+	defaultChatSupportsTools      = true
+	defaultChatSupportsParallel   = false
+	defaultChatSupportsJSONSchema = false
+	defaultChatContextTokens      = 32768
+)
+
 // ChatConfig holds the OpenAI-compatible chat provider settings (used from M4).
 type ChatConfig struct {
 	Provider     string
@@ -69,6 +100,18 @@ type ChatConfig struct {
 	APIKey       string
 	Model        string
 	ExtraHeaders map[string]string
+
+	Timeout time.Duration
+	// MaxRetries is the number of retries after the first attempt for
+	// transient failures (429/408/5xx/transport).
+	MaxRetries int
+	// Capability flags declare what the configured endpoint supports. They
+	// are operator assertions, not runtime probes: unknown models default to
+	// the safe subset (tools on, parallel tools and strict JSON schema off).
+	SupportsTools         bool
+	SupportsParallelTools bool
+	SupportsJSONSchema    bool
+	ContextTokens         int
 }
 
 // Enabled reports whether a chat provider has been configured.
@@ -101,11 +144,21 @@ func Load() (Config, error) {
 			CORSAllowOrigins: l.List("HTTP_CORS_ALLOW_ORIGINS"),
 		},
 		Chat: ChatConfig{
-			Provider:     l.String("CHAT_PROVIDER", ""),
-			BaseURL:      l.String("CHAT_BASE_URL", ""),
-			APIKey:       l.String("CHAT_API_KEY", ""),
-			Model:        l.String("CHAT_MODEL", ""),
-			ExtraHeaders: l.StringMap("CHAT_EXTRA_HEADERS_JSON"),
+			Provider:              l.String("CHAT_PROVIDER", ""),
+			BaseURL:               l.String("CHAT_BASE_URL", ""),
+			APIKey:                l.String("CHAT_API_KEY", ""),
+			Model:                 l.String("CHAT_MODEL", ""),
+			ExtraHeaders:          l.StringMap("CHAT_EXTRA_HEADERS_JSON"),
+			Timeout:               l.Duration("CHAT_TIMEOUT", defaultChatTimeout),
+			MaxRetries:            l.Int("CHAT_MAX_RETRIES", defaultChatMaxRetries),
+			SupportsTools:         l.Bool("CHAT_SUPPORTS_TOOLS", defaultChatSupportsTools),
+			SupportsParallelTools: l.Bool("CHAT_SUPPORTS_PARALLEL_TOOLS", defaultChatSupportsParallel),
+			SupportsJSONSchema:    l.Bool("CHAT_SUPPORTS_JSON_SCHEMA", defaultChatSupportsJSONSchema),
+			ContextTokens:         l.Int("CHAT_CONTEXT_TOKENS", defaultChatContextTokens),
+		},
+		Agent: AgentConfig{
+			MaxToolRounds: l.Int("AGENT_MAX_TOOL_ROUNDS", defaultAgentMaxToolRounds),
+			ToolTimeout:   l.Duration("AGENT_TOOL_TIMEOUT", defaultAgentToolTimeout),
 		},
 		Admin: AdminConfig{
 			Enabled:         l.Bool("ADMIN_ENABLED", false),
@@ -131,6 +184,7 @@ func (c Config) Validate() error {
 		c.Postgres.Validate(),
 		c.Embedding.Validate(),
 		c.Chat.validate(),
+		c.Agent.validate(),
 		c.Retrieval.Validate(),
 		c.Rerank.validate(),
 		c.Admin.validate(),
@@ -183,6 +237,31 @@ func (c ChatConfig) validate() []string {
 	if strings.TrimSpace(c.Model) == "" {
 		problems = append(problems, "CHAT_MODEL: required when CHAT_PROVIDER is set")
 	}
+	if c.Timeout <= 0 {
+		problems = append(problems, fmt.Sprintf(
+			"CHAT_TIMEOUT: must be > 0 (got %s)", c.Timeout))
+	}
+	if c.MaxRetries < 0 {
+		problems = append(problems, fmt.Sprintf(
+			"CHAT_MAX_RETRIES: must be >= 0 (got %d)", c.MaxRetries))
+	}
+	if c.ContextTokens <= 0 {
+		problems = append(problems, fmt.Sprintf(
+			"CHAT_CONTEXT_TOKENS: must be > 0 (got %d)", c.ContextTokens))
+	}
+	return problems
+}
+
+func (c AgentConfig) validate() []string {
+	var problems []string
+	if c.MaxToolRounds <= 0 {
+		problems = append(problems, fmt.Sprintf(
+			"AGENT_MAX_TOOL_ROUNDS: must be > 0 (got %d)", c.MaxToolRounds))
+	}
+	if c.ToolTimeout <= 0 {
+		problems = append(problems, fmt.Sprintf(
+			"AGENT_TOOL_TIMEOUT: must be > 0 (got %s)", c.ToolTimeout))
+	}
 	return problems
 }
 
@@ -216,32 +295,40 @@ func (c Config) Redacted() Config {
 // Summary returns a log-friendly, secret-free view of the configuration.
 func (c Config) Summary() map[string]any {
 	return map[string]any{
-		"app_env":                 c.App.Env,
-		"http_addr":               c.HTTP.Addr,
-		"http_read_timeout":       c.HTTP.ReadTimeout.String(),
-		"http_write_timeout":      c.HTTP.WriteTimeout.String(),
-		"http_shutdown_timeout":   c.HTTP.ShutdownTimeout.String(),
-		"cors_allow_origins":      c.HTTP.CORSAllowOrigins,
-		"log_level":               c.Log.Level,
-		"postgres_enabled":        c.Postgres.Enabled(),
-		"postgres_database":       c.Postgres.Database,
-		"chat_provider":           c.Chat.Provider,
-		"chat_model":              c.Chat.Model,
-		"embedding_provider":      c.Embedding.Provider,
-		"embedding_model":         c.Embedding.Model,
-		"embedding_dimensions":    c.Embedding.Dimensions,
-		"retrieval_top_k":         c.Retrieval.TopK,
-		"retrieval_enable_vector": c.Retrieval.EnableVector,
-		"retrieval_oversample":    c.Retrieval.Oversample,
-		"weight_structured":       c.Retrieval.Weights.Structured,
-		"weight_keyword":          c.Retrieval.Weights.Keyword,
-		"weight_vector":           c.Retrieval.Weights.Vector,
-		"weight_quality":          c.Retrieval.Weights.Quality,
-		"rerank_provider":         c.Rerank.Provider,
-		"rerank_model":            c.Rerank.Model,
-		"admin_enabled":           c.Admin.Enabled,
-		"admin_default_page_size": c.Admin.DefaultPageSize,
-		"admin_max_page_size":     c.Admin.MaxPageSize,
+		"app_env":                      c.App.Env,
+		"http_addr":                    c.HTTP.Addr,
+		"http_read_timeout":            c.HTTP.ReadTimeout.String(),
+		"http_write_timeout":           c.HTTP.WriteTimeout.String(),
+		"http_shutdown_timeout":        c.HTTP.ShutdownTimeout.String(),
+		"cors_allow_origins":           c.HTTP.CORSAllowOrigins,
+		"log_level":                    c.Log.Level,
+		"postgres_enabled":             c.Postgres.Enabled(),
+		"postgres_database":            c.Postgres.Database,
+		"chat_provider":                c.Chat.Provider,
+		"chat_model":                   c.Chat.Model,
+		"chat_timeout":                 c.Chat.Timeout.String(),
+		"chat_max_retries":             c.Chat.MaxRetries,
+		"chat_supports_tools":          c.Chat.SupportsTools,
+		"chat_supports_parallel_tools": c.Chat.SupportsParallelTools,
+		"chat_supports_json_schema":    c.Chat.SupportsJSONSchema,
+		"chat_context_tokens":          c.Chat.ContextTokens,
+		"agent_max_tool_rounds":        c.Agent.MaxToolRounds,
+		"agent_tool_timeout":           c.Agent.ToolTimeout.String(),
+		"embedding_provider":           c.Embedding.Provider,
+		"embedding_model":              c.Embedding.Model,
+		"embedding_dimensions":         c.Embedding.Dimensions,
+		"retrieval_top_k":              c.Retrieval.TopK,
+		"retrieval_enable_vector":      c.Retrieval.EnableVector,
+		"retrieval_oversample":         c.Retrieval.Oversample,
+		"weight_structured":            c.Retrieval.Weights.Structured,
+		"weight_keyword":               c.Retrieval.Weights.Keyword,
+		"weight_vector":                c.Retrieval.Weights.Vector,
+		"weight_quality":               c.Retrieval.Weights.Quality,
+		"rerank_provider":              c.Rerank.Provider,
+		"rerank_model":                 c.Rerank.Model,
+		"admin_enabled":                c.Admin.Enabled,
+		"admin_default_page_size":      c.Admin.DefaultPageSize,
+		"admin_max_page_size":          c.Admin.MaxPageSize,
 	}
 }
 

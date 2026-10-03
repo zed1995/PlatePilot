@@ -1,0 +1,269 @@
+package agent_test
+
+import (
+	"context"
+	"sync"
+	"testing"
+	"time"
+
+	domainchat "github.com/zed/platepilot/shared/domain/chat"
+	"github.com/zed/platepilot/shared/domain/errs"
+	"github.com/zed/platepilot/shared/domain/run"
+	"github.com/zed/platepilot/shared/idgen"
+
+	"github.com/zed/platepilot/chat-service/internal/agent"
+	"github.com/zed/platepilot/chat-service/internal/agent/audit"
+	"github.com/zed/platepilot/chat-service/internal/agent/toolreg"
+)
+
+// capturingRunRepo is a test RunRepository that records every write and can
+// be switched to fail-all mode.
+type capturingRunRepo struct {
+	mu       sync.Mutex
+	starts   []run.AgentRun
+	finishes []run.AgentRun
+	calls    []run.ToolCallRecord
+	failAll  bool
+}
+
+func (r *capturingRunRepo) Start(_ context.Context, agentRun run.AgentRun) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.starts = append(r.starts, agentRun)
+	if r.failAll {
+		return errs.ErrInternal
+	}
+	return nil
+}
+
+func (r *capturingRunRepo) Finish(_ context.Context, agentRun run.AgentRun) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.finishes = append(r.finishes, agentRun)
+	if r.failAll {
+		return errs.ErrInternal
+	}
+	return nil
+}
+
+func (r *capturingRunRepo) RecordToolCall(_ context.Context, call run.ToolCallRecord) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, call)
+	if r.failAll {
+		return errs.ErrInternal
+	}
+	return nil
+}
+
+func (r *capturingRunRepo) snapshot() (starts, finishes []run.AgentRun, calls []run.ToolCallRecord) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]run.AgentRun(nil), r.starts...),
+		append([]run.AgentRun(nil), r.finishes...),
+		append([]run.ToolCallRecord(nil), r.calls...)
+}
+
+func newAuditedRunner(t *testing.T, p *scriptedProvider, reg *toolreg.Registry, repo *capturingRunRepo) *agent.Runner {
+	t.Helper()
+	hooks := audit.New(repo, nil, audit.Options{ModelProvider: "test-provider", ModelName: "test-model"})
+	runner, err := agent.NewRunner(agent.Config{MaxToolRounds: 3}, agent.Deps{
+		Chat:        p,
+		ToolCalling: p,
+		Registry:    reg,
+		Auditor:     hooks,
+	})
+	if err != nil {
+		t.Fatalf("NewRunner: %v", err)
+	}
+	return runner
+}
+
+func TestRunnerAuditsSuccessfulToolTurn(t *testing.T) {
+	reg := toolreg.New(time.Second)
+	if err := reg.Register(echoEntry()); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	provider := &scriptedProvider{
+		supportTools: true,
+		toolResps: []domainchat.ToolCallResponse{
+			toolCallResponse("call-1", "echo_ping", `{"word":"hi"}`),
+			assistantText("审计完成"),
+		},
+	}
+	repo := &capturingRunRepo{}
+	runner := newAuditedRunner(t, provider, reg, repo)
+
+	result, events := drainPair(runner.Run(context.Background(), agent.TurnInput{
+		ThreadID:  "th-audit",
+		TraceID:   "trace-fixed",
+		UserInput: "ping 一下",
+	}))
+	drain(events)
+	if result == nil {
+		t.Fatal("expected successful turn")
+	}
+
+	starts, finishes, calls := repo.snapshot()
+	if len(starts) != 1 {
+		t.Fatalf("starts = %d, want 1", len(starts))
+	}
+	if starts[0].Status != run.StatusRunning || starts[0].RunID != result.RunID {
+		t.Fatalf("start row = %+v, result run id = %q", starts[0], result.RunID)
+	}
+	if starts[0].TraceID != "trace-fixed" {
+		t.Fatalf("trace id = %q, want trace-fixed", starts[0].TraceID)
+	}
+	if result.TraceID != "trace-fixed" {
+		t.Fatalf("result trace id = %q", result.TraceID)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("tool call records = %d, want 1", len(calls))
+	}
+	if calls[0].CallID != "call-1" || calls[0].RunID != result.RunID {
+		t.Fatalf("tool call row = %+v", calls[0])
+	}
+	// echo_ping is not on the argument allowlist: arguments collapse.
+	if string(calls[0].Arguments) != "{}" {
+		t.Fatalf("unknown-tool arguments must collapse to {}, got %s", calls[0].Arguments)
+	}
+	if len(finishes) != 1 {
+		t.Fatalf("finish rows = %d, want 1", len(finishes))
+	}
+	fin := finishes[0]
+	if fin.Status != run.StatusSucceeded {
+		t.Fatalf("finish status = %q", fin.Status)
+	}
+	if fin.ToolCallCount != 1 || fin.RetrievalCount != 0 {
+		t.Fatalf("counters = calls %d retrieval %d", fin.ToolCallCount, fin.RetrievalCount)
+	}
+	if fin.FinishedAt == nil || fin.LatencyMS < 0 {
+		t.Fatalf("timing missing: %+v", fin)
+	}
+}
+
+func TestRunnerMintsTraceAndRunIDs(t *testing.T) {
+	provider := &scriptedProvider{
+		supportTools: true,
+		completeResps: []domainchat.ChatResponse{{
+			Message:      domainchat.ChatMessage{Role: domainchat.RoleAssistant, Content: "ok"},
+			FinishReason: domainchat.FinishReasonStop,
+		}},
+	}
+	repo := &capturingRunRepo{}
+	runner := newAuditedRunner(t, provider, toolreg.New(0), repo)
+
+	result, _ := drainPair(runner.Run(context.Background(), agent.TurnInput{
+		ThreadID:  "th-id",
+		UserInput: "hi",
+	}))
+	if result == nil {
+		t.Fatal("expected result")
+	}
+	if result.RunID == "" || result.TraceID == "" || result.RunID == result.TraceID {
+		t.Fatalf("expected distinct minted ids, got run=%q trace=%q", result.RunID, result.TraceID)
+	}
+	starts, _, _ := repo.snapshot()
+	if len(starts) != 1 || starts[0].RunID != result.RunID || starts[0].TraceID != result.TraceID {
+		t.Fatalf("start row ids mismatch: %+v vs result %+v", starts, result)
+	}
+}
+
+func TestRunnerAuditsFailedTurn(t *testing.T) {
+	// No queued responses: the first model call fails, so the turn errors
+	// before finalize and the audit must record the failed row.
+	provider := &scriptedProvider{supportTools: true}
+	repo := &capturingRunRepo{}
+	runner := newAuditedRunner(t, provider, toolreg.New(0), repo)
+
+	result, eventsCh := runner.Run(context.Background(), agent.TurnInput{
+		ThreadID:  "th-fail",
+		UserInput: "注定失败",
+	})
+	events := drain(eventsCh)
+	if result != nil {
+		t.Fatal("expected nil result")
+	}
+	var runID string
+	var sawError bool
+	for _, ev := range events {
+		if ev.Type == agent.EventError {
+			sawError = true
+			runID = ev.RunID
+		}
+	}
+	if !sawError || runID == "" {
+		t.Fatalf("error event must carry the run id, events = %+v", events)
+	}
+	_, finishes, _ := repo.snapshot()
+	if len(finishes) != 1 {
+		t.Fatalf("finish rows = %d, want 1", len(finishes))
+	}
+	fin := finishes[0]
+	if fin.Status != run.StatusFailed || fin.RunID != runID {
+		t.Fatalf("failed finish row = %+v, event run id %q", fin, runID)
+	}
+	if fin.ErrorCode != string(errs.CodeInternal) {
+		t.Fatalf("error code = %q, want internal", fin.ErrorCode)
+	}
+	if fin.FinishedAt == nil {
+		t.Fatal("failed row must carry finished_at")
+	}
+}
+
+func TestRunnerAuditStoreFailureNeverBreaksTurn(t *testing.T) {
+	provider := &scriptedProvider{
+		supportTools: true,
+		completeResps: []domainchat.ChatResponse{{
+			Message:      domainchat.ChatMessage{Role: domainchat.RoleAssistant, Content: "即使审计挂了也要回答"},
+			FinishReason: domainchat.FinishReasonStop,
+		}},
+	}
+	repo := &capturingRunRepo{failAll: true}
+	runner := newAuditedRunner(t, provider, toolreg.New(0), repo)
+
+	result, eventsCh := runner.Run(context.Background(), agent.TurnInput{
+		ThreadID:  "th-broken-audit",
+		UserInput: "你好",
+	})
+	events := drain(eventsCh)
+	if result == nil || result.Answer.Text != "即使审计挂了也要回答" {
+		t.Fatalf("turn must succeed despite audit failures, result = %+v", result)
+	}
+	for _, ev := range events {
+		if ev.Type == agent.EventError {
+			t.Fatalf("audit failure must not surface as turn error: %+v", ev)
+		}
+	}
+	starts, finishes, _ := repo.snapshot()
+	if len(starts) != 1 || len(finishes) != 1 {
+		t.Fatalf("writes still attempted: starts=%d finishes=%d", len(starts), len(finishes))
+	}
+}
+
+func TestRunnerWithoutAuditorStillRuns(t *testing.T) {
+	provider := &scriptedProvider{
+		supportTools: true,
+		completeResps: []domainchat.ChatResponse{{
+			Message:      domainchat.ChatMessage{Role: domainchat.RoleAssistant, Content: idgen.NewUUID()},
+			FinishReason: domainchat.FinishReasonStop,
+		}},
+	}
+	runner := newTestRunner(t, provider, toolreg.New(0), 3)
+	result, _ := drainPair(runner.Run(context.Background(), agent.TurnInput{
+		ThreadID:  "th-no-audit",
+		UserInput: "hi",
+	}))
+	if result == nil {
+		t.Fatal("nil auditor must be a safe no-op")
+	}
+}
+
+// drainPair is a terse helper for tests that ignore the event channel.
+func drainPair(result *agent.TurnResult, events <-chan agent.Event) (*agent.TurnResult, <-chan agent.Event) {
+	go func() {
+		for range events {
+		}
+	}()
+	return result, events
+}

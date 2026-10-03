@@ -27,22 +27,32 @@ type Response struct {
 	Error Body `json:"error"`
 }
 
+// ClientMessage returns the error prose that is safe to show to a caller.
+// Internal failures collapse to a generic sentence so implementation details
+// never leak; other errors render their Error() text. It is shared by the
+// JSON envelope and the in-stream SSE error frame so both channels stay
+// consistent.
+func ClientMessage(err error) string {
+	if errs.CodeOf(err) == errs.CodeInternal {
+		return "internal server error"
+	}
+	return err.Error()
+}
+
 // Write renders err as the canonical error response. Internal errors are logged
 // with their cause but never leak it to the client.
 func Write(ctx context.Context, c *app.RequestContext, err error) {
 	code := errs.CodeOf(err)
 	status := errs.HTTPStatusOf(err)
-	message := err.Error()
 
 	if code == errs.CodeInternal {
 		logging.FromContext(ctx).Error("request failed", slog.String("error", err.Error()))
-		message = "internal server error"
 	}
 
 	rc, _ := requestctx.FromContext(ctx)
 	c.JSON(status, Response{Error: Body{
 		Code:      string(code),
-		Message:   message,
+		Message:   ClientMessage(err),
 		RequestID: rc.RequestID,
 	}})
 }

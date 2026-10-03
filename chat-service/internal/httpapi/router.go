@@ -31,6 +31,10 @@ type Config struct {
 	// unscoped, which reads as a wrong URL rather than a wrong request.
 	Search   SearchService
 	Evidence EvidenceService
+	// Chat is the conversational application service: threads, transcript
+	// history, the SSE turn endpoint, and user memories. When nil those routes
+	// are not registered, while the read-only retrieval API still serves.
+	Chat ChatService
 	// Admin is the read-only administration application service. When
 	// AdminEnabled is true, the /admin/v1 group is mounted behind the
 	// local-host guard; with it false (the default) no administration path
@@ -56,6 +60,10 @@ func NewRouter(cfg Config) *server.Hertz {
 		server.WithReadTimeout(cfg.ReadTimeout),
 		server.WithWriteTimeout(cfg.WriteTimeout),
 		server.WithCustomValidatorFunc(validatorFunc),
+		// SSE turns must stop when the EventSource client goes away: without
+		// this opt-in the handler context never cancels on disconnect and the
+		// agent would keep burning model calls for an audience that left.
+		server.WithSenseClientDisconnection(true),
 	)
 
 	h.Use(
@@ -84,6 +92,9 @@ func NewRouter(cfg Config) *server.Hertz {
 		// keeps the table readable in the order a caller meets it.
 		v1.POST("/restaurants/evidence", EvidenceHandler(cfg.Evidence))
 		v1.POST("/restaurants/:id/evidence", RestaurantEvidenceHandler(cfg.Evidence))
+	}
+	if cfg.Chat != nil {
+		registerChatRoutes(h, cfg.Chat)
 	}
 
 	// Administration console. Mounted only when explicitly enabled: the guard

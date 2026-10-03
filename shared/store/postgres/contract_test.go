@@ -61,10 +61,13 @@ func newStores(t *testing.T) contract.Stores {
 		t.Fatalf("Migrate: %v", err)
 	}
 	return contract.Stores{
-		Restaurants: postgres.NewRestaurantStore(client),
-		Reviews:     postgres.NewReviewStore(client),
-		Pipeline:    postgres.NewPipelineStore(client),
-		Knowledge:   postgres.NewKnowledgeStore(client),
+		Restaurants:   postgres.NewRestaurantStore(client),
+		Reviews:       postgres.NewReviewStore(client),
+		Pipeline:      postgres.NewPipelineStore(client),
+		Knowledge:     postgres.NewKnowledgeStore(client),
+		Runs:          postgres.NewRunRepository(client),
+		Conversations: postgres.NewConversationRepository(client),
+		Memories:      postgres.NewMemoryRepository(client),
 	}
 }
 

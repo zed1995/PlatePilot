@@ -12,10 +12,13 @@ import (
 func TestMemoryStoresSatisfyContract(t *testing.T) {
 	contract.Run(t, func(t *testing.T) contract.Stores {
 		return contract.Stores{
-			Restaurants: memory.NewRestaurantStore(),
-			Reviews:     memory.NewReviewStore(),
-			Pipeline:    memory.NewPipelineStore(),
-			Knowledge:   memory.NewKnowledgeStore(),
+			Restaurants:   memory.NewRestaurantStore(),
+			Reviews:       memory.NewReviewStore(),
+			Pipeline:      memory.NewPipelineStore(),
+			Knowledge:     memory.NewKnowledgeStore(),
+			Runs:          memory.NewRunRepository(),
+			Conversations: memory.NewConversationRepository(),
+			Memories:      memory.NewMemoryRepository(),
 		}
 	})
 }

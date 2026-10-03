@@ -24,7 +24,9 @@ func NewMemoryRepository() *MemoryRepository {
 	return &MemoryRepository{byUser: make(map[string]map[string]domainmemory.Memory)}
 }
 
-// List returns a user's non-deleted memories ordered by creation time.
+// List returns a user's non-deleted memories, the most recently updated first.
+// That order lets injection drop overflow from the tail instead of searching
+// the list for staleness.
 func (r *MemoryRepository) List(_ context.Context, userID string) ([]domainmemory.Memory, error) {
 	if strings.TrimSpace(userID) == "" {
 		return nil, errs.New(errs.CodeInvalidArgument, "user_id is required")
@@ -41,8 +43,11 @@ func (r *MemoryRepository) List(_ context.Context, userID string) ([]domainmemor
 		out = append(out, record)
 	}
 	sort.SliceStable(out, func(i, j int) bool {
+		if !out[i].UpdatedAt.Equal(out[j].UpdatedAt) {
+			return out[i].UpdatedAt.After(out[j].UpdatedAt)
+		}
 		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
-			return out[i].CreatedAt.Before(out[j].CreatedAt)
+			return out[i].CreatedAt.After(out[j].CreatedAt)
 		}
 		return out[i].ID < out[j].ID
 	})
@@ -57,11 +62,6 @@ func (r *MemoryRepository) Upsert(_ context.Context, mem domainmemory.Memory) er
 	if strings.TrimSpace(mem.ID) == "" {
 		mem.ID = idgen.NewUUID()
 	}
-	now := time.Now().UTC()
-	if mem.CreatedAt.IsZero() {
-		mem.CreatedAt = now
-	}
-	mem.UpdatedAt = now
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -70,9 +70,23 @@ func (r *MemoryRepository) Upsert(_ context.Context, mem domainmemory.Memory) er
 		records = make(map[string]domainmemory.Memory)
 		r.byUser[mem.UserID] = records
 	}
+	// Stamps must be strictly increasing within one user's set. Two writes
+	// can read the same wall-clock instant (the monotonic clock does not
+	// advance between them), and List's tie-breakers would then order fresh
+	// rows by random UUID id — making "most recently updated first" depend
+	// on a coin flip. Bump past the newest existing stamp instead.
+	now := time.Now().UTC()
+	for _, existing := range records {
+		if !existing.UpdatedAt.Before(now) {
+			now = existing.UpdatedAt.Add(time.Nanosecond)
+		}
+	}
 	if existing, ok := records[mem.ID]; ok && !existing.CreatedAt.IsZero() {
 		mem.CreatedAt = existing.CreatedAt
+	} else if mem.CreatedAt.IsZero() {
+		mem.CreatedAt = now
 	}
+	mem.UpdatedAt = now
 	records[mem.ID] = mem
 	return nil
 }

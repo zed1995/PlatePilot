@@ -17,12 +17,17 @@ import (
 	"github.com/zed/platepilot/shared/store"
 )
 
-// Stores bundles the three write-side ports under test.
+// Stores bundles the ports under test.
 type Stores struct {
 	Restaurants store.RestaurantStore
 	Reviews     store.ReviewStore
 	Pipeline    store.PipelineStore
 	Knowledge   store.KnowledgeStore
+
+	// M4 agent runtime ports.
+	Runs          store.RunRepository
+	Conversations store.ConversationRepository
+	Memories      store.MemoryRepository
 }
 
 // Factory returns a fresh, empty Stores for one subtest.
@@ -36,6 +41,9 @@ func Run(t *testing.T, newStores Factory) {
 	t.Run("PipelineStore", func(t *testing.T) { runPipelineStore(t, newStores(t).Pipeline) })
 	t.Run("ReviewKnowledgeMethods", func(t *testing.T) { runReviewKnowledgeMethods(t, newStores(t)) })
 	t.Run("KnowledgeStore", func(t *testing.T) { runKnowledgeStore(t, newStores(t)) })
+	t.Run("RunRepository", func(t *testing.T) { runRunRepositoryContract(t, newStores(t).Runs) })
+	t.Run("ConversationRepository", func(t *testing.T) { runConversationRepositoryContract(t, newStores(t).Conversations) })
+	t.Run("MemoryRepository", func(t *testing.T) { runMemoryRepositoryContract(t, newStores(t).Memories) })
 }
 
 var baseTime = time.Date(2021, 9, 1, 0, 0, 0, 0, time.UTC)

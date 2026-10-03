@@ -105,3 +105,15 @@ type ToolCallResponse struct {
 	Usage        TokenUsage   `json:"usage"`
 	Model        string       `json:"model,omitempty"`
 }
+
+// Answer is the grounded final answer the agent hands back for one turn.
+//
+// Citations references evidence by EvidenceID; only IDs that were actually in
+// the turn's evidence set may appear here, and the answer layer enforces that
+// before the answer leaves the agent. FollowUps are suggested next questions,
+// at most three.
+type Answer struct {
+	Text      string   `json:"text"`
+	Citations []int64  `json:"citations,omitempty"`
+	FollowUps []string `json:"follow_ups,omitempty"`
+}

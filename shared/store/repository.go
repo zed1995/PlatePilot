@@ -112,12 +112,19 @@ type VectorSearchRequest struct {
 	Topic string
 }
 
-// ConversationRepository persists thread metadata and recoverable checkpoints.
+// ConversationRepository persists thread metadata, recoverable checkpoints,
+// and the per-thread message transcript.
 type ConversationRepository interface {
 	Get(ctx context.Context, threadID string) (conversation.Conversation, error)
 	Upsert(ctx context.Context, conv conversation.Conversation) error
 	SaveCheckpoint(ctx context.Context, checkpoint conversation.Checkpoint) error
 	LoadCheckpoint(ctx context.Context, threadID string) (conversation.Checkpoint, error)
+	// AppendMessage stores one message and assigns its per-thread seq.
+	AppendMessage(ctx context.Context, msg conversation.Message) error
+	// ListMessages returns up to limit messages immediately before beforeID
+	// (exclusive; the newest messages when beforeID is empty), in ascending
+	// chronological order. A non-positive limit means no limit.
+	ListMessages(ctx context.Context, threadID string, limit int, beforeID string) ([]conversation.Message, error)
 }
 
 // MemoryRepository manages user-controlled long-term memories.

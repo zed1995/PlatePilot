@@ -11,10 +11,15 @@ import (
 	"github.com/cloudwego/hertz/pkg/app/server"
 
 	adminapp "github.com/zed/platepilot/chat-service/internal/admin"
+	"github.com/zed/platepilot/chat-service/internal/agent"
+	"github.com/zed/platepilot/chat-service/internal/agent/audit"
+	"github.com/zed/platepilot/chat-service/internal/agent/toolreg"
+	"github.com/zed/platepilot/chat-service/internal/agent/tools"
 	"github.com/zed/platepilot/chat-service/internal/config"
 	"github.com/zed/platepilot/chat-service/internal/httpapi"
 	"github.com/zed/platepilot/chat-service/internal/retrieval"
 	"github.com/zed/platepilot/shared/chat"
+	"github.com/zed/platepilot/shared/chat/openai"
 	sharedcfg "github.com/zed/platepilot/shared/config"
 	"github.com/zed/platepilot/shared/embedding"
 	"github.com/zed/platepilot/shared/embedding/fake"
@@ -51,6 +56,7 @@ type App struct {
 	logger *slog.Logger
 	deps   Deps
 	search *retrieval.Service
+	agent  *agent.Runner
 	http   *server.Hertz
 	pool   *postgres.Client
 }
@@ -77,6 +83,54 @@ func New(cfg config.Config, logger *slog.Logger, deps Deps, version string) (*Ap
 		return nil, fmt.Errorf("build retrieval service: %w", err)
 	}
 	app.search = searchService
+
+	// The agent runner is assembled only when a chat provider was supplied.
+	// Without one the HTTP search/evidence API still runs; the conversational
+	// turn path simply stays unwired, mirroring the embedding degradation.
+	if deps.Chat != nil {
+		registry := toolreg.New(cfg.Agent.ToolTimeout)
+		if err := registry.Register(tools.SearchRestaurantsEntry(searchService)); err != nil {
+			return nil, fmt.Errorf("register search_restaurants tool: %w", err)
+		}
+		if err := registry.Register(tools.RestaurantEvidenceEntry(searchService)); err != nil {
+			return nil, fmt.Errorf("register get_restaurant_evidence tool: %w", err)
+		}
+		agentDeps := agent.Deps{
+			Chat:          deps.Chat,
+			ToolCalling:   deps.ToolCalling,
+			Registry:      registry,
+			Conversations: deps.Conversations,
+			Memories:      deps.Memories,
+		}
+		if deps.Runs != nil {
+			agentDeps.Auditor = audit.New(deps.Runs, logger, audit.Options{
+				ModelProvider: cfg.Chat.Provider,
+				ModelName:     cfg.Chat.Model,
+			})
+		} else {
+			logger.Warn("run audit repository not configured; agent turns run without audit trail")
+		}
+		runner, err := agent.NewRunner(agent.Config{
+			MaxToolRounds: cfg.Agent.MaxToolRounds,
+			ModelName:     cfg.Chat.Model,
+		}, agentDeps)
+		if err != nil {
+			return nil, fmt.Errorf("build agent runner: %w", err)
+		}
+		app.agent = runner
+		logger.Info("agent runner assembled",
+			slog.String("model", cfg.Chat.Model),
+			slog.Int("max_tool_rounds", cfg.Agent.MaxToolRounds),
+			slog.Duration("tool_timeout", cfg.Agent.ToolTimeout))
+	}
+
+	// The conversational surface needs the conversation store; the runner is
+	// optional inside it so thread/memory APIs keep working in a chat-less
+	// deployment.
+	var chatService httpapi.ChatService
+	if deps.Conversations != nil {
+		chatService = newChatService(app.agent, deps.Conversations, deps.Memories)
+	}
 
 	// The administration application service is assembled only when a store
 	// was supplied; with it absent the router simply leaves /admin/v1
@@ -106,6 +160,7 @@ func New(cfg config.Config, logger *slog.Logger, deps Deps, version string) (*Ap
 		Logger:           logger,
 		Search:           searchService,
 		Evidence:         httpapi.NewEvidenceService(searchService),
+		Chat:             chatService,
 		Admin:            adminService,
 		AdminEnabled:     cfg.Admin.Enabled,
 	})
@@ -170,6 +225,9 @@ func Connect(ctx context.Context, cfg config.Config, logger *slog.Logger, versio
 		deps.Restaurants = postgres.NewRestaurantSearchRepository(client)
 		deps.Knowledge = postgres.NewKnowledgeReadRepository(client)
 		deps.Admin = postgres.NewAdminStore(client)
+		deps.Runs = postgres.NewRunRepository(client)
+		deps.Conversations = postgres.NewConversationRepository(client)
+		deps.Memories = postgres.NewMemoryRepository(client)
 		logger.Info("postgres read store connected",
 			slog.String("database", client.DatabaseName()))
 	}
@@ -184,7 +242,60 @@ func Connect(ctx context.Context, cfg config.Config, logger *slog.Logger, versio
 		deps.Embedding = embedding
 	}
 
+	if cfg.Chat.Enabled() {
+		// Unlike the embedding side, a configured chat provider that fails to
+		// build is a startup failure: from M4 on the chat model is the primary
+		// capability, and silently serving without it would surface later as
+		// confusing runtime errors instead of a clear configuration fault.
+		chatClient, err := buildChatClient(cfg.Chat)
+		if err != nil {
+			return nil, fmt.Errorf("build chat provider: %w", err)
+		}
+		// One client satisfies all three chat ports; the agent decides which
+		// capability a turn needs.
+		deps.Chat = chatClient
+		deps.ToolCalling = chatClient
+		deps.Structured = chatClient
+		logger.Info("chat provider assembled",
+			slog.String("provider", cfg.Chat.Provider),
+			slog.String("model", cfg.Chat.Model),
+			slog.Bool("tools", cfg.Chat.SupportsTools),
+			slog.Bool("parallel_tools", cfg.Chat.SupportsParallelTools),
+			slog.Bool("json_schema", cfg.Chat.SupportsJSONSchema))
+	}
+
 	return New(cfg, logger, deps, version)
+}
+
+// providerOpenAICompatible is the only chat adapter shipped in M4. The value
+// is part of the environment contract documented in .env.example.
+const providerOpenAICompatible = "openai_compatible"
+
+// buildChatClient maps chat configuration onto the OpenAI-compatible adapter.
+func buildChatClient(cfg config.ChatConfig) (*openai.Client, error) {
+	if cfg.Provider != providerOpenAICompatible {
+		return nil, fmt.Errorf("unsupported CHAT_PROVIDER %q (supported value: %q)",
+			cfg.Provider, providerOpenAICompatible)
+	}
+	client, err := openai.New(openai.Options{
+		BaseURL:      cfg.BaseURL,
+		APIKey:       cfg.APIKey,
+		Model:        cfg.Model,
+		ExtraHeaders: cfg.ExtraHeaders,
+		Capabilities: openai.Capabilities{
+			Tools:         cfg.SupportsTools,
+			ParallelTools: cfg.SupportsParallelTools,
+			JSONSchema:    cfg.SupportsJSONSchema,
+			Streaming:     true,
+			ContextTokens: cfg.ContextTokens,
+		},
+		Timeout:    cfg.Timeout,
+		MaxRetries: cfg.MaxRetries,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return client, nil
 }
 
 // buildEmbedding resolves the configured embedding provider.

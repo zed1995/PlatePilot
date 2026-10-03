@@ -29,7 +29,10 @@ func (c CORSConfig) withDefaults() CORSConfig {
 		}
 	}
 	if len(c.AllowHeaders) == 0 {
-		c.AllowHeaders = []string{"Content-Type", "Authorization", HeaderRequestID, HeaderTraceID}
+		c.AllowHeaders = []string{
+			"Content-Type", "Authorization",
+			HeaderRequestID, HeaderTraceID, HeaderUserID,
+		}
 	}
 	if len(c.ExposeHeaders) == 0 {
 		c.ExposeHeaders = []string{HeaderRequestID, HeaderTraceID}

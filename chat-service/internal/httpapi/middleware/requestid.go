@@ -16,6 +16,9 @@ import (
 const (
 	HeaderRequestID = "X-Request-ID"
 	HeaderTraceID   = "X-Trace-ID"
+	// HeaderUserID is the placeholder caller identity until M6 provides real
+	// authentication.
+	HeaderUserID = "X-User-ID"
 )
 
 // RequestID reads or generates a request ID, echoes it back to the client, and
@@ -30,8 +33,9 @@ func RequestID() app.HandlerFunc {
 		if traceID == "" {
 			traceID = requestID
 		}
+		userID := strings.TrimSpace(string(c.GetHeader(HeaderUserID)))
 
-		rc := requestctx.New(requestID, traceID)
+		rc := requestctx.New(requestID, traceID).WithUserID(userID)
 		c.Response.Header.Set(HeaderRequestID, requestID)
 		c.Response.Header.Set(HeaderTraceID, traceID)
 
