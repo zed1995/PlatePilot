@@ -5,11 +5,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zed/platepilot/shared/domain/errs"
-	"github.com/zed/platepilot/shared/domain/evidence"
-	"github.com/zed/platepilot/shared/store"
-	"github.com/zed/platepilot/shared/store/contract"
-	"github.com/zed/platepilot/shared/store/postgres"
+	"github.com/zed1995/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/shared/domain/evidence"
+	"github.com/zed1995/platepilot/shared/store"
+	"github.com/zed1995/platepilot/shared/store/contract"
+	"github.com/zed1995/platepilot/shared/store/postgres"
 )
 
 // evidenceFixture is one seeded document plus the vector it was stored with.

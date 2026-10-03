@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	sharedcfg "github.com/zed/platepilot/shared/config"
+	sharedcfg "github.com/zed1995/platepilot/shared/config"
 )
 
 func baseConfig() Config {

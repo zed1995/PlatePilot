@@ -4,7 +4,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/zed/platepilot/shared/domain/restaurant"
+	"github.com/zed1995/platepilot/shared/domain/restaurant"
 )
 
 // weekdayByName maps the day tokens that appear in Google Local hours.

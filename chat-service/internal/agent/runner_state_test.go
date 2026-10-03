@@ -6,15 +6,15 @@ import (
 	"testing"
 	"time"
 
-	domainchat "github.com/zed/platepilot/shared/domain/chat"
-	"github.com/zed/platepilot/shared/domain/conversation"
-	"github.com/zed/platepilot/shared/domain/errs"
-	domainmemory "github.com/zed/platepilot/shared/domain/memory"
-	"github.com/zed/platepilot/shared/store"
-	"github.com/zed/platepilot/shared/testkit"
+	domainchat "github.com/zed1995/platepilot/shared/domain/chat"
+	"github.com/zed1995/platepilot/shared/domain/conversation"
+	"github.com/zed1995/platepilot/shared/domain/errs"
+	domainmemory "github.com/zed1995/platepilot/shared/domain/memory"
+	"github.com/zed1995/platepilot/shared/store"
+	"github.com/zed1995/platepilot/shared/testkit"
 
-	"github.com/zed/platepilot/chat-service/internal/agent"
-	"github.com/zed/platepilot/chat-service/internal/agent/toolreg"
+	"github.com/zed1995/platepilot/chat-service/internal/agent"
+	"github.com/zed1995/platepilot/chat-service/internal/agent/toolreg"
 )
 
 func directAnswerProvider(answers ...string) *scriptedProvider {

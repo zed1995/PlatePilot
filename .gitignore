@@ -27,6 +27,11 @@ __pycache__/
 venv/
 
 # Go
+# Multi-module repository: each project has its own go.mod. go.work is a local
+# convenience for editors and cross-module commands (`make work`), not a build
+# input — every project also builds standalone.
+go.work
+go.work.sum
 bin/
 dist/
 tmp/
@@ -55,3 +60,4 @@ scripts/
 data/boundaries/*.geojson
 
 .trae/
+.workbuddy

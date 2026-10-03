@@ -11,8 +11,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/zed/platepilot/shared/domain/retrieval"
-	"github.com/zed/platepilot/shared/domain/search"
+	"github.com/zed1995/platepilot/shared/domain/retrieval"
+	"github.com/zed1995/platepilot/shared/domain/search"
 )
 
 // Weights scale each channel's contribution to the fused score.

@@ -4,9 +4,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/zed/platepilot/shared/domain/restaurant"
+	"github.com/zed1995/platepilot/shared/domain/restaurant"
 
-	"github.com/zed/platepilot/data-pipeline/internal/pipeline/raw"
+	"github.com/zed1995/platepilot/data-pipeline/internal/pipeline/raw"
 )
 
 // canonicalTriStateKeys are always present in the curated document. Absent

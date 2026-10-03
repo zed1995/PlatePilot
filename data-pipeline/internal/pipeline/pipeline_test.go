@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/zed/platepilot/data-pipeline/internal/config"
-	sharedcfg "github.com/zed/platepilot/shared/config"
+	"github.com/zed1995/platepilot/data-pipeline/internal/config"
+	sharedcfg "github.com/zed1995/platepilot/shared/config"
 )
 
 func TestConfigSummarySummarisesConfiguration(t *testing.T) {

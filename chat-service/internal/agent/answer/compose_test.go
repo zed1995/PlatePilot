@@ -5,10 +5,10 @@ import (
 	"strings"
 	"testing"
 
-	chatport "github.com/zed/platepilot/shared/chat"
-	domainchat "github.com/zed/platepilot/shared/domain/chat"
-	"github.com/zed/platepilot/shared/domain/errs"
-	"github.com/zed/platepilot/shared/domain/evidence"
+	chatport "github.com/zed1995/platepilot/shared/chat"
+	domainchat "github.com/zed1995/platepilot/shared/domain/chat"
+	"github.com/zed1995/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/shared/domain/evidence"
 )
 
 // scriptedChat answers Complete from a queued script; it records every request

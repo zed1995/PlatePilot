@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/zed/platepilot/shared/domain/evidence"
-	"github.com/zed/platepilot/shared/store"
+	"github.com/zed1995/platepilot/shared/domain/evidence"
+	"github.com/zed1995/platepilot/shared/store"
 )
 
 func TestVectorSearchStatementIsMinimalWhenUnfiltered(t *testing.T) {

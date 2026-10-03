@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/zed/platepilot/shared/domain/chat"
-	"github.com/zed/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/shared/domain/chat"
+	"github.com/zed1995/platepilot/shared/domain/errs"
 )
 
 func drain(t *testing.T, stream interface {

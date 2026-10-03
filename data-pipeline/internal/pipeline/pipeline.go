@@ -5,7 +5,7 @@ package pipeline
 import (
 	"fmt"
 
-	"github.com/zed/platepilot/data-pipeline/internal/config"
+	"github.com/zed1995/platepilot/data-pipeline/internal/config"
 )
 
 // ConfigSummary summarises the pipeline configuration without touching any

@@ -8,9 +8,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/zed/platepilot/shared/domain/errs"
-	"github.com/zed/platepilot/shared/domain/restaurant"
-	"github.com/zed/platepilot/shared/domain/review"
+	"github.com/zed1995/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/shared/domain/restaurant"
+	"github.com/zed1995/platepilot/shared/domain/review"
 )
 
 // pgLocation adapts a geography(Point,4326) column to the domain GeoPoint.

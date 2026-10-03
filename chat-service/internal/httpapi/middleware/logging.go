@@ -7,8 +7,8 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 
-	"github.com/zed/platepilot/shared/observability/logging"
-	"github.com/zed/platepilot/shared/requestctx"
+	"github.com/zed1995/platepilot/shared/observability/logging"
+	"github.com/zed1995/platepilot/shared/requestctx"
 )
 
 // Logging attaches a request-scoped logger to the context and records one

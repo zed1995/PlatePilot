@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zed/platepilot/shared/domain/errs"
-	"github.com/zed/platepilot/shared/domain/evidence"
-	"github.com/zed/platepilot/shared/domain/restaurant"
-	"github.com/zed/platepilot/shared/domain/review"
-	"github.com/zed/platepilot/shared/store"
+	"github.com/zed1995/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/shared/domain/evidence"
+	"github.com/zed1995/platepilot/shared/domain/restaurant"
+	"github.com/zed1995/platepilot/shared/domain/review"
+	"github.com/zed1995/platepilot/shared/store"
 )
 
 // Stores bundles the ports under test.

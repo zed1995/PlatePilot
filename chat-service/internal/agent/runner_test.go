@@ -9,12 +9,12 @@ import (
 	"testing"
 	"time"
 
-	chatport "github.com/zed/platepilot/shared/chat"
-	domainchat "github.com/zed/platepilot/shared/domain/chat"
-	domaintool "github.com/zed/platepilot/shared/domain/tool"
+	chatport "github.com/zed1995/platepilot/shared/chat"
+	domainchat "github.com/zed1995/platepilot/shared/domain/chat"
+	domaintool "github.com/zed1995/platepilot/shared/domain/tool"
 
-	"github.com/zed/platepilot/chat-service/internal/agent"
-	"github.com/zed/platepilot/chat-service/internal/agent/toolreg"
+	"github.com/zed1995/platepilot/chat-service/internal/agent"
+	"github.com/zed1995/platepilot/chat-service/internal/agent/toolreg"
 )
 
 // scriptedProvider is a queue-driven fake of all three chat ports for the

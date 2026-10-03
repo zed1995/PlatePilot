@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zed/platepilot/chat-service/internal/agent/tools"
-	"github.com/zed/platepilot/shared/domain/errs"
-	"github.com/zed/platepilot/shared/domain/run"
+	"github.com/zed1995/platepilot/chat-service/internal/agent/tools"
+	"github.com/zed1995/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/shared/domain/run"
 )
 
 // fakeRunRepo captures audit writes and can force failures.

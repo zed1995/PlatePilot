@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/zed/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/shared/domain/errs"
 )
 
 // zeroEpsilon is the magnitude below which a component counts as zero.

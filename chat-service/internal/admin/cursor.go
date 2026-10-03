@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/zed/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/shared/domain/errs"
 )
 
 // idPosition is the encoded keyset position of a listing ordered by one

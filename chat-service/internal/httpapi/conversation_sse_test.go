@@ -14,10 +14,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zed/platepilot/shared/domain/chat"
-	"github.com/zed/platepilot/shared/domain/conversation"
-	"github.com/zed/platepilot/shared/domain/errs"
-	domainmemory "github.com/zed/platepilot/shared/domain/memory"
+	"github.com/zed1995/platepilot/shared/domain/chat"
+	"github.com/zed1995/platepilot/shared/domain/conversation"
+	"github.com/zed1995/platepilot/shared/domain/errs"
+	domainmemory "github.com/zed1995/platepilot/shared/domain/memory"
 
 	"github.com/cloudwego/hertz/pkg/common/ut"
 )

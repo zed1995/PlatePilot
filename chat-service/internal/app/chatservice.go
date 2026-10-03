@@ -4,13 +4,13 @@ import (
 	"context"
 	"time"
 
-	"github.com/zed/platepilot/chat-service/internal/agent"
-	"github.com/zed/platepilot/chat-service/internal/httpapi"
-	"github.com/zed/platepilot/shared/domain/conversation"
-	"github.com/zed/platepilot/shared/domain/errs"
-	domainmemory "github.com/zed/platepilot/shared/domain/memory"
-	"github.com/zed/platepilot/shared/idgen"
-	"github.com/zed/platepilot/shared/store"
+	"github.com/zed1995/platepilot/chat-service/internal/agent"
+	"github.com/zed1995/platepilot/chat-service/internal/httpapi"
+	"github.com/zed1995/platepilot/shared/domain/conversation"
+	"github.com/zed1995/platepilot/shared/domain/errs"
+	domainmemory "github.com/zed1995/platepilot/shared/domain/memory"
+	"github.com/zed1995/platepilot/shared/idgen"
+	"github.com/zed1995/platepilot/shared/store"
 )
 
 // chatService adapts the agent runner and the conversation/memory stores onto

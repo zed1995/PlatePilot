@@ -6,8 +6,8 @@ import (
 	"io"
 	"testing"
 
-	"github.com/zed/platepilot/shared/domain/chat"
-	"github.com/zed/platepilot/shared/domain/search"
+	"github.com/zed1995/platepilot/shared/domain/chat"
+	"github.com/zed1995/platepilot/shared/domain/search"
 )
 
 func TestMockChatProviderRecordsAndReturns(t *testing.T) {

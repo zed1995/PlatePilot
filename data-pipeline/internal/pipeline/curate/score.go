@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/zed/platepilot/shared/domain/restaurant"
+	"github.com/zed1995/platepilot/shared/domain/restaurant"
 )
 
 // Demo selection bounds from the PRD: the knowledge base should carry

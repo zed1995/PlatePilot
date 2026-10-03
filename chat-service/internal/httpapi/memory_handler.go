@@ -6,8 +6,8 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 
-	"github.com/zed/platepilot/chat-service/internal/httperr"
-	"github.com/zed/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/chat-service/internal/httperr"
+	"github.com/zed1995/platepilot/shared/domain/errs"
 )
 
 // ListMemoriesHandler answers GET /v1/memories.

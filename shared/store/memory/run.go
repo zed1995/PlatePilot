@@ -5,8 +5,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/zed/platepilot/shared/domain/errs"
-	"github.com/zed/platepilot/shared/domain/run"
+	"github.com/zed1995/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/shared/domain/run"
 )
 
 // RunRepository is an in-memory store.RunRepository.

@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/zed/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/shared/domain/errs"
 )
 
 func TestToolResultJSONRoundTrip(t *testing.T) {

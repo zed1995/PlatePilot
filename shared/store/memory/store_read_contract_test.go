@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/zed/platepilot/shared/domain/search"
-	"github.com/zed/platepilot/shared/store/contract"
-	"github.com/zed/platepilot/shared/store/memory"
+	"github.com/zed1995/platepilot/shared/domain/search"
+	"github.com/zed1995/platepilot/shared/store/contract"
+	"github.com/zed1995/platepilot/shared/store/memory"
 )
 
 // TestMemoryReadStoresSatisfyContract proves the in-memory read side honours the

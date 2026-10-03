@@ -8,9 +8,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/zed/platepilot/shared/domain/errs"
-	"github.com/zed/platepilot/shared/domain/evidence"
-	"github.com/zed/platepilot/shared/store"
+	"github.com/zed1995/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/shared/domain/evidence"
+	"github.com/zed1995/platepilot/shared/store"
 )
 
 // optionalString returns nil for an empty value so the column stores SQL NULL

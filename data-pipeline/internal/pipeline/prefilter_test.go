@@ -9,10 +9,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/zed/platepilot/data-pipeline/internal/pipeline"
-	"github.com/zed/platepilot/data-pipeline/internal/pipeline/raw"
-	"github.com/zed/platepilot/shared/domain/restaurant"
-	"github.com/zed/platepilot/shared/testkit"
+	"github.com/zed1995/platepilot/data-pipeline/internal/pipeline"
+	"github.com/zed1995/platepilot/data-pipeline/internal/pipeline/raw"
+	"github.com/zed1995/platepilot/shared/domain/restaurant"
+	"github.com/zed1995/platepilot/shared/testkit"
 )
 
 // prefilterFixture writes a review corpus covering every branch: a long usable

@@ -9,12 +9,12 @@ import (
 	"io"
 	"sync"
 
-	chatport "github.com/zed/platepilot/shared/chat"
-	"github.com/zed/platepilot/shared/domain/chat"
-	"github.com/zed/platepilot/shared/domain/search"
-	"github.com/zed/platepilot/shared/domain/tool"
-	"github.com/zed/platepilot/shared/embedding"
-	"github.com/zed/platepilot/shared/rerank"
+	chatport "github.com/zed1995/platepilot/shared/chat"
+	"github.com/zed1995/platepilot/shared/domain/chat"
+	"github.com/zed1995/platepilot/shared/domain/search"
+	"github.com/zed1995/platepilot/shared/domain/tool"
+	"github.com/zed1995/platepilot/shared/embedding"
+	"github.com/zed1995/platepilot/shared/rerank"
 )
 
 // Compile-time guarantees that the mocks satisfy the ports.

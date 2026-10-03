@@ -8,16 +8,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zed/platepilot/shared/domain/restaurant"
-	"github.com/zed/platepilot/shared/store"
+	"github.com/zed1995/platepilot/shared/domain/restaurant"
+	"github.com/zed1995/platepilot/shared/store"
 
-	"github.com/zed/platepilot/data-pipeline/internal/config"
-	"github.com/zed/platepilot/data-pipeline/internal/pipeline/curate"
-	"github.com/zed/platepilot/data-pipeline/internal/pipeline/knowledge"
-	"github.com/zed/platepilot/data-pipeline/internal/pipeline/report"
-	"github.com/zed/platepilot/shared/domain/errs"
-	"github.com/zed/platepilot/shared/domain/evidence"
-	"github.com/zed/platepilot/shared/domain/review"
+	"github.com/zed1995/platepilot/data-pipeline/internal/config"
+	"github.com/zed1995/platepilot/data-pipeline/internal/pipeline/curate"
+	"github.com/zed1995/platepilot/data-pipeline/internal/pipeline/knowledge"
+	"github.com/zed1995/platepilot/data-pipeline/internal/pipeline/report"
+	"github.com/zed1995/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/shared/domain/evidence"
+	"github.com/zed1995/platepilot/shared/domain/review"
 )
 
 // DocumentsOptions controls one build-documents invocation.

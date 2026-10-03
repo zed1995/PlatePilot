@@ -8,18 +8,18 @@ import (
 	"sync"
 	"time"
 
-	"github.com/zed/platepilot/data-pipeline/internal/config"
-	"github.com/zed/platepilot/data-pipeline/internal/pipeline/knowledge"
-	"github.com/zed/platepilot/data-pipeline/internal/pipeline/report"
-	sharedcfg "github.com/zed/platepilot/shared/config"
+	"github.com/zed1995/platepilot/data-pipeline/internal/config"
+	"github.com/zed1995/platepilot/data-pipeline/internal/pipeline/knowledge"
+	"github.com/zed1995/platepilot/data-pipeline/internal/pipeline/report"
+	sharedcfg "github.com/zed1995/platepilot/shared/config"
 
-	"github.com/zed/platepilot/shared/domain/errs"
-	"github.com/zed/platepilot/shared/domain/evidence"
-	"github.com/zed/platepilot/shared/domain/review"
-	"github.com/zed/platepilot/shared/embedding"
-	"github.com/zed/platepilot/shared/embedding/fake"
-	"github.com/zed/platepilot/shared/embedding/ollama"
-	"github.com/zed/platepilot/shared/store"
+	"github.com/zed1995/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/shared/domain/evidence"
+	"github.com/zed1995/platepilot/shared/domain/review"
+	"github.com/zed1995/platepilot/shared/embedding"
+	"github.com/zed1995/platepilot/shared/embedding/fake"
+	"github.com/zed1995/platepilot/shared/embedding/ollama"
+	"github.com/zed1995/platepilot/shared/store"
 )
 
 // EmbedOptions controls one embed invocation.

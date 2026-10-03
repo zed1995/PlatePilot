@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/zed/platepilot/shared/domain/review"
+	"github.com/zed1995/platepilot/shared/domain/review"
 )
 
 // Migration 0003 and the batch statements are the one part of M2 that cannot

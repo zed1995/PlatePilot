@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zed/platepilot/shared/domain/evidence"
-	"github.com/zed/platepilot/shared/domain/restaurant"
-	"github.com/zed/platepilot/shared/store"
-	"github.com/zed/platepilot/shared/store/contract"
-	"github.com/zed/platepilot/shared/store/postgres"
+	"github.com/zed1995/platepilot/shared/domain/evidence"
+	"github.com/zed1995/platepilot/shared/domain/restaurant"
+	"github.com/zed1995/platepilot/shared/store"
+	"github.com/zed1995/platepilot/shared/store/contract"
+	"github.com/zed1995/platepilot/shared/store/postgres"
 )
 
 // indexSearchDimensions is the width the column declares. The seed has to match

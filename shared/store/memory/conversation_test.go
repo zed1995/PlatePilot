@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zed/platepilot/shared/domain/conversation"
-	"github.com/zed/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/shared/domain/conversation"
+	"github.com/zed1995/platepilot/shared/domain/errs"
 )
 
 func TestConversationUpsertAndGet(t *testing.T) {

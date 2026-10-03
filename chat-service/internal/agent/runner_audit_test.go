@@ -6,14 +6,14 @@ import (
 	"testing"
 	"time"
 
-	domainchat "github.com/zed/platepilot/shared/domain/chat"
-	"github.com/zed/platepilot/shared/domain/errs"
-	"github.com/zed/platepilot/shared/domain/run"
-	"github.com/zed/platepilot/shared/idgen"
+	domainchat "github.com/zed1995/platepilot/shared/domain/chat"
+	"github.com/zed1995/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/shared/domain/run"
+	"github.com/zed1995/platepilot/shared/idgen"
 
-	"github.com/zed/platepilot/chat-service/internal/agent"
-	"github.com/zed/platepilot/chat-service/internal/agent/audit"
-	"github.com/zed/platepilot/chat-service/internal/agent/toolreg"
+	"github.com/zed1995/platepilot/chat-service/internal/agent"
+	"github.com/zed1995/platepilot/chat-service/internal/agent/audit"
+	"github.com/zed1995/platepilot/chat-service/internal/agent/toolreg"
 )
 
 // capturingRunRepo is a test RunRepository that records every write and can

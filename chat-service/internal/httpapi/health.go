@@ -8,7 +8,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol/consts"
 
-	"github.com/zed/platepilot/shared/requestctx"
+	"github.com/zed1995/platepilot/shared/requestctx"
 )
 
 // HealthResponse is the payload returned by GET /healthz.

@@ -10,9 +10,9 @@ import (
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/cloudwego/hertz/pkg/common/ut"
 
-	"github.com/zed/platepilot/shared/domain/errs"
-	"github.com/zed/platepilot/shared/domain/retrieval"
-	"github.com/zed/platepilot/shared/domain/search"
+	"github.com/zed1995/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/shared/domain/retrieval"
+	"github.com/zed1995/platepilot/shared/domain/search"
 )
 
 // stubSearch records what the handler passed down and returns a fixed answer.

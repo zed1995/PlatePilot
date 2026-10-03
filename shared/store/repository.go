@@ -3,11 +3,11 @@ package store
 import (
 	"context"
 
-	"github.com/zed/platepilot/shared/domain/conversation"
-	"github.com/zed/platepilot/shared/domain/evidence"
-	"github.com/zed/platepilot/shared/domain/memory"
-	"github.com/zed/platepilot/shared/domain/run"
-	"github.com/zed/platepilot/shared/domain/search"
+	"github.com/zed1995/platepilot/shared/domain/conversation"
+	"github.com/zed1995/platepilot/shared/domain/evidence"
+	"github.com/zed1995/platepilot/shared/domain/memory"
+	"github.com/zed1995/platepilot/shared/domain/run"
+	"github.com/zed1995/platepilot/shared/domain/search"
 )
 
 // RestaurantRepository reads restaurant master data for the retrieval layer.

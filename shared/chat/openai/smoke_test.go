@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zed/platepilot/shared/chat/openai"
-	sharedcfg "github.com/zed/platepilot/shared/config"
-	"github.com/zed/platepilot/shared/domain/chat"
-	"github.com/zed/platepilot/shared/domain/tool"
+	"github.com/zed1995/platepilot/shared/chat/openai"
+	sharedcfg "github.com/zed1995/platepilot/shared/config"
+	"github.com/zed1995/platepilot/shared/domain/chat"
+	"github.com/zed1995/platepilot/shared/domain/tool"
 )
 
 // loadRepoDotEnv makes `go test` behave like the application: it loads the

@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zed/platepilot/shared/domain/admin"
-	"github.com/zed/platepilot/shared/store/postgres"
+	"github.com/zed1995/platepilot/shared/domain/admin"
+	"github.com/zed1995/platepilot/shared/store/postgres"
 )
 
 // defaultAdminDSN points at the development database rather than the

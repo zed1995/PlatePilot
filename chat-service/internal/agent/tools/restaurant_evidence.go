@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/zed/platepilot/chat-service/internal/retrieval"
-	"github.com/zed/platepilot/shared/domain/errs"
-	"github.com/zed/platepilot/shared/domain/evidence"
-	domaintool "github.com/zed/platepilot/shared/domain/tool"
+	"github.com/zed1995/platepilot/chat-service/internal/retrieval"
+	"github.com/zed1995/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/shared/domain/evidence"
+	domaintool "github.com/zed1995/platepilot/shared/domain/tool"
 
-	"github.com/zed/platepilot/chat-service/internal/agent/toolreg"
+	"github.com/zed1995/platepilot/chat-service/internal/agent/toolreg"
 )
 
 // EvidenceReader is the evidence slice of the retrieval service.

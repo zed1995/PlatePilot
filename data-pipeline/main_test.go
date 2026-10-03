@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/zed/platepilot/data-pipeline/internal/config"
-	"github.com/zed/platepilot/data-pipeline/internal/pipeline"
-	"github.com/zed/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/data-pipeline/internal/config"
+	"github.com/zed1995/platepilot/data-pipeline/internal/pipeline"
+	"github.com/zed1995/platepilot/shared/domain/errs"
 )
 
 func TestRunVersionAndHelpSucceedWithoutConfiguration(t *testing.T) {

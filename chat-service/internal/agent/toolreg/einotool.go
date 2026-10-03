@@ -9,7 +9,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 	einojsonschema "github.com/eino-contrib/jsonschema"
 
-	domaintool "github.com/zed/platepilot/shared/domain/tool"
+	domaintool "github.com/zed1995/platepilot/shared/domain/tool"
 )
 
 // einoTool bridges one registered entry onto Eino's tool.InvokableTool so the

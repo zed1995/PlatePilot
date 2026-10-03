@@ -12,14 +12,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zed/platepilot/data-pipeline/internal/config"
-	"github.com/zed/platepilot/data-pipeline/internal/pipeline/curate"
-	"github.com/zed/platepilot/data-pipeline/internal/pipeline/raw"
-	"github.com/zed/platepilot/data-pipeline/internal/pipeline/report"
-	"github.com/zed/platepilot/shared/domain/errs"
-	"github.com/zed/platepilot/shared/domain/restaurant"
-	"github.com/zed/platepilot/shared/domain/review"
-	"github.com/zed/platepilot/shared/store"
+	"github.com/zed1995/platepilot/data-pipeline/internal/config"
+	"github.com/zed1995/platepilot/data-pipeline/internal/pipeline/curate"
+	"github.com/zed1995/platepilot/data-pipeline/internal/pipeline/raw"
+	"github.com/zed1995/platepilot/data-pipeline/internal/pipeline/report"
+	"github.com/zed1995/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/shared/domain/restaurant"
+	"github.com/zed1995/platepilot/shared/domain/review"
+	"github.com/zed1995/platepilot/shared/store"
 )
 
 // Source file names inside PIPELINE_DATA_DIR.

@@ -3,7 +3,7 @@ package rerank
 import (
 	"context"
 
-	"github.com/zed/platepilot/shared/domain/search"
+	"github.com/zed1995/platepilot/shared/domain/search"
 )
 
 // RerankProvider optionally reorders candidates. The system must work without

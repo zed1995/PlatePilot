@@ -9,14 +9,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zed/platepilot/data-pipeline/internal/config"
-	"github.com/zed/platepilot/data-pipeline/internal/pipeline/knowledge"
-	sharedcfg "github.com/zed/platepilot/shared/config"
-	"github.com/zed/platepilot/shared/domain/errs"
-	"github.com/zed/platepilot/shared/domain/evidence"
-	"github.com/zed/platepilot/shared/domain/review"
-	"github.com/zed/platepilot/shared/embedding"
-	"github.com/zed/platepilot/shared/store"
+	"github.com/zed1995/platepilot/data-pipeline/internal/config"
+	"github.com/zed1995/platepilot/data-pipeline/internal/pipeline/knowledge"
+	sharedcfg "github.com/zed1995/platepilot/shared/config"
+	"github.com/zed1995/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/shared/domain/evidence"
+	"github.com/zed1995/platepilot/shared/domain/review"
+	"github.com/zed1995/platepilot/shared/embedding"
+	"github.com/zed1995/platepilot/shared/store"
 )
 
 // fakeEmbeddingConfig is a configuration the fake provider satisfies, so the

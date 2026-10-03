@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
-	chatport "github.com/zed/platepilot/shared/chat"
-	"github.com/zed/platepilot/shared/domain/chat"
-	"github.com/zed/platepilot/shared/domain/errs"
-	"github.com/zed/platepilot/shared/domain/tool"
+	chatport "github.com/zed1995/platepilot/shared/chat"
+	"github.com/zed1995/platepilot/shared/domain/chat"
+	"github.com/zed1995/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/shared/domain/tool"
 )
 
 // Defaults for the tunables an operator is not forced to set.

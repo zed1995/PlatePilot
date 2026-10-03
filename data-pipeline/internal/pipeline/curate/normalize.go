@@ -5,11 +5,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zed/platepilot/shared/domain/errs"
-	"github.com/zed/platepilot/shared/domain/restaurant"
-	"github.com/zed/platepilot/shared/domain/review"
+	"github.com/zed1995/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/shared/domain/restaurant"
+	"github.com/zed1995/platepilot/shared/domain/review"
 
-	"github.com/zed/platepilot/data-pipeline/internal/pipeline/raw"
+	"github.com/zed1995/platepilot/data-pipeline/internal/pipeline/raw"
 )
 
 // CurationVersion identifies the normalisation rules. It is recorded on every

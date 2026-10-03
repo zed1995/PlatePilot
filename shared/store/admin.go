@@ -3,7 +3,7 @@ package store
 import (
 	"context"
 
-	"github.com/zed/platepilot/shared/domain/admin"
+	"github.com/zed1995/platepilot/shared/domain/admin"
 )
 
 // AdminStore is the read-only query surface of the administration console.

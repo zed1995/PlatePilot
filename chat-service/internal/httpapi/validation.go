@@ -7,8 +7,8 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/protocol"
 
-	"github.com/zed/platepilot/chat-service/internal/httperr"
-	"github.com/zed/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/chat-service/internal/httperr"
+	"github.com/zed1995/platepilot/shared/domain/errs"
 )
 
 // Validatable is implemented by request DTOs that can validate themselves. It is

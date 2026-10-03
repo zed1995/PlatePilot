@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zed/platepilot/chat-service/internal/config"
-	"github.com/zed/platepilot/shared/testkit"
+	"github.com/zed1995/platepilot/chat-service/internal/config"
+	"github.com/zed1995/platepilot/shared/testkit"
 )
 
 func assemblyConfig() config.Config {

@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zed/platepilot/shared/domain/errs"
-	"github.com/zed/platepilot/shared/domain/run"
+	"github.com/zed1995/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/shared/domain/run"
 )
 
 func TestRunStartAndFinish(t *testing.T) {

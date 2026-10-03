@@ -3,7 +3,7 @@ package conversation
 import (
 	"time"
 
-	domaintool "github.com/zed/platepilot/shared/domain/tool"
+	domaintool "github.com/zed1995/platepilot/shared/domain/tool"
 )
 
 // Message roles persisted in conversation_messages.

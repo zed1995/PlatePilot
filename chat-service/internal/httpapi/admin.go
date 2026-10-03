@@ -7,10 +7,10 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/server"
 
-	"github.com/zed/platepilot/chat-service/internal/httpapi/middleware"
-	"github.com/zed/platepilot/chat-service/internal/httperr"
-	domainadmin "github.com/zed/platepilot/shared/domain/admin"
-	"github.com/zed/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/chat-service/internal/httpapi/middleware"
+	"github.com/zed1995/platepilot/chat-service/internal/httperr"
+	domainadmin "github.com/zed1995/platepilot/shared/domain/admin"
+	"github.com/zed1995/platepilot/shared/domain/errs"
 )
 
 // AdminService is the read-only administration application layer this

@@ -3,9 +3,9 @@ package store
 import (
 	"context"
 
-	"github.com/zed/platepilot/shared/domain/evidence"
-	"github.com/zed/platepilot/shared/domain/restaurant"
-	"github.com/zed/platepilot/shared/domain/review"
+	"github.com/zed1995/platepilot/shared/domain/evidence"
+	"github.com/zed1995/platepilot/shared/domain/restaurant"
+	"github.com/zed1995/platepilot/shared/domain/review"
 )
 
 // RestaurantStore is the write-side restaurant port used by the data pipeline.

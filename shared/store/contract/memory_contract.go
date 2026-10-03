@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zed/platepilot/shared/domain/errs"
-	domainmemory "github.com/zed/platepilot/shared/domain/memory"
-	"github.com/zed/platepilot/shared/store"
+	"github.com/zed1995/platepilot/shared/domain/errs"
+	domainmemory "github.com/zed1995/platepilot/shared/domain/memory"
+	"github.com/zed1995/platepilot/shared/store"
 )
 
 // runMemoryRepositoryContract pins the user-memory lifecycle for both

@@ -1,7 +1,7 @@
 package testkit
 
 import (
-	memrepo "github.com/zed/platepilot/shared/store/memory"
+	memrepo "github.com/zed1995/platepilot/shared/store/memory"
 )
 
 // In-memory repository re-exports so tests can depend on testkit alone.

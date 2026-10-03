@@ -12,9 +12,9 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/zed/platepilot/chat-service/internal/app"
-	"github.com/zed/platepilot/chat-service/internal/config"
-	"github.com/zed/platepilot/shared/observability/logging"
+	"github.com/zed1995/platepilot/chat-service/internal/app"
+	"github.com/zed1995/platepilot/chat-service/internal/config"
+	"github.com/zed1995/platepilot/shared/observability/logging"
 )
 
 // version is overridden at build time with -ldflags "-X main.version=...".

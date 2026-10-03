@@ -12,7 +12,7 @@ import (
 
 // domainImportAllowPrefix is the only non-stdlib import prefix the domain layer
 // may use: the domain may depend on itself and nothing else.
-const domainImportAllowPrefix = "github.com/zed/platepilot/shared/domain"
+const domainImportAllowPrefix = "github.com/zed1995/platepilot/shared/domain"
 
 // TestDomainLayerHasNoFrameworkOrVendorDependencies enforces the PRD's rule that
 // the domain layer depends on no database driver, Eino, Hertz, Ollama, or vendor
@@ -96,8 +96,8 @@ func TestServicesDoNotDependOnEachOther(t *testing.T) {
 		service      string
 		otherService string
 	}{
-		{"data-pipeline", "github.com/zed/platepilot/chat-service"},
-		{"chat-service", "github.com/zed/platepilot/data-pipeline"},
+		{"data-pipeline", "github.com/zed1995/platepilot/chat-service"},
+		{"chat-service", "github.com/zed1995/platepilot/data-pipeline"},
 	}
 	for _, rule := range rules {
 		base := filepath.Join(root, rule.service)

@@ -7,9 +7,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/zed/platepilot/shared/domain/conversation"
-	"github.com/zed/platepilot/shared/domain/errs"
-	"github.com/zed/platepilot/shared/idgen"
+	"github.com/zed1995/platepilot/shared/domain/conversation"
+	"github.com/zed1995/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/shared/idgen"
 )
 
 // ConversationRepository is an in-memory store.ConversationRepository.

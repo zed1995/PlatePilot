@@ -5,11 +5,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zed/platepilot/shared/domain/restaurant"
-	"github.com/zed/platepilot/shared/domain/search"
-	"github.com/zed/platepilot/shared/store"
-	"github.com/zed/platepilot/shared/store/contract"
-	"github.com/zed/platepilot/shared/store/postgres"
+	"github.com/zed1995/platepilot/shared/domain/restaurant"
+	"github.com/zed1995/platepilot/shared/domain/search"
+	"github.com/zed1995/platepilot/shared/store"
+	"github.com/zed1995/platepilot/shared/store/contract"
+	"github.com/zed1995/platepilot/shared/store/postgres"
 )
 
 // newReadStores returns a migrated, empty database seeded with the read

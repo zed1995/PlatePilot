@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zed/platepilot/shared/domain/run"
-	"github.com/zed/platepilot/shared/store/postgres"
+	"github.com/zed1995/platepilot/shared/domain/run"
+	"github.com/zed1995/platepilot/shared/store/postgres"
 )
 
 // TestAgentRuntimeIndexStrategy asserts the operational audit queries are

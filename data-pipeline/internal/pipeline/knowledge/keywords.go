@@ -5,7 +5,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/zed/platepilot/shared/domain/review"
+	"github.com/zed1995/platepilot/shared/domain/review"
 )
 
 // stopWords are dropped before counting. They are the words that dominate any

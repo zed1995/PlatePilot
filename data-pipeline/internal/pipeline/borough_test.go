@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/zed/platepilot/data-pipeline/internal/pipeline/curate"
+	"github.com/zed1995/platepilot/data-pipeline/internal/pipeline/curate"
 )
 
 // The meta stage must label restaurants from real geometry when it is

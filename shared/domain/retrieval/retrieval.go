@@ -7,7 +7,7 @@
 package retrieval
 
 import (
-	"github.com/zed/platepilot/shared/domain/search"
+	"github.com/zed1995/platepilot/shared/domain/search"
 )
 
 // Channel names one recall strategy. The set is closed: a new strategy needs a

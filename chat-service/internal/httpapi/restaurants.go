@@ -6,11 +6,11 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 
-	"github.com/zed/platepilot/chat-service/internal/httperr"
-	"github.com/zed/platepilot/shared/domain/errs"
-	"github.com/zed/platepilot/shared/domain/evidence"
-	"github.com/zed/platepilot/shared/domain/retrieval"
-	"github.com/zed/platepilot/shared/domain/search"
+	"github.com/zed1995/platepilot/chat-service/internal/httperr"
+	"github.com/zed1995/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/shared/domain/evidence"
+	"github.com/zed1995/platepilot/shared/domain/retrieval"
+	"github.com/zed1995/platepilot/shared/domain/search"
 )
 
 // SearchService is the read path this transport talks to.

@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zed/platepilot/shared/domain/evidence"
-	"github.com/zed/platepilot/shared/domain/restaurant"
+	"github.com/zed1995/platepilot/shared/domain/evidence"
+	"github.com/zed1995/platepilot/shared/domain/restaurant"
 )
 
 // maxDescriptionRunes bounds the description inside a profile document.

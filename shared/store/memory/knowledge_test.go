@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zed/platepilot/shared/domain/errs"
-	"github.com/zed/platepilot/shared/domain/evidence"
-	"github.com/zed/platepilot/shared/store"
+	"github.com/zed1995/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/shared/domain/evidence"
+	"github.com/zed1995/platepilot/shared/store"
 )
 
 func knowledgeFixture(id int64, restaurantID int64, scope evidence.RetrievalScope, embedding []float32) evidence.KnowledgeDocument {

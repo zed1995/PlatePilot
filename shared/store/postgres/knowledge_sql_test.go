@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/zed/platepilot/shared/domain/evidence"
-	"github.com/zed/platepilot/shared/store"
+	"github.com/zed1995/platepilot/shared/domain/evidence"
+	"github.com/zed1995/platepilot/shared/store"
 )
 
 // placeholderPattern finds every $n the statement references.

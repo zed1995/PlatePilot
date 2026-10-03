@@ -17,12 +17,12 @@ import (
 	"strconv"
 	"syscall"
 
-	"github.com/zed/platepilot/data-pipeline/internal/config"
-	"github.com/zed/platepilot/data-pipeline/internal/pipeline"
-	"github.com/zed/platepilot/shared/domain/errs"
-	"github.com/zed/platepilot/shared/domain/review"
-	"github.com/zed/platepilot/shared/observability/logging"
-	"github.com/zed/platepilot/shared/store/postgres"
+	"github.com/zed1995/platepilot/data-pipeline/internal/config"
+	"github.com/zed1995/platepilot/data-pipeline/internal/pipeline"
+	"github.com/zed1995/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/shared/domain/review"
+	"github.com/zed1995/platepilot/shared/observability/logging"
+	"github.com/zed1995/platepilot/shared/store/postgres"
 )
 
 // version is overridden at build time with -ldflags "-X main.version=...".

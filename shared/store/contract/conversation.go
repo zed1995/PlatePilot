@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zed/platepilot/shared/domain/conversation"
-	"github.com/zed/platepilot/shared/domain/errs"
-	domaintool "github.com/zed/platepilot/shared/domain/tool"
-	"github.com/zed/platepilot/shared/store"
+	"github.com/zed1995/platepilot/shared/domain/conversation"
+	"github.com/zed1995/platepilot/shared/domain/errs"
+	domaintool "github.com/zed1995/platepilot/shared/domain/tool"
+	"github.com/zed1995/platepilot/shared/store"
 )
 
 // runConversationRepositoryContract pins thread metadata, optimistic

@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zed/platepilot/data-pipeline/internal/pipeline/curate"
-	"github.com/zed/platepilot/data-pipeline/internal/pipeline/raw"
-	"github.com/zed/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/data-pipeline/internal/pipeline/curate"
+	"github.com/zed1995/platepilot/data-pipeline/internal/pipeline/raw"
+	"github.com/zed1995/platepilot/shared/domain/errs"
 )
 
 // prefilterSentinelID stands in for a resolved restaurant id when prefilter

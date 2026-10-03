@@ -9,7 +9,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/cloudwego/hertz/pkg/common/ut"
 
-	domainadmin "github.com/zed/platepilot/shared/domain/admin"
+	domainadmin "github.com/zed1995/platepilot/shared/domain/admin"
 )
 
 // fakeAdmin is a test AdminService.

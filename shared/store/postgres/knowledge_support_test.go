@@ -3,7 +3,7 @@ package postgres
 import (
 	"testing"
 
-	"github.com/zed/platepilot/shared/domain/evidence"
+	"github.com/zed1995/platepilot/shared/domain/evidence"
 )
 
 // The borough is not a label. It is the predicate that decides which of the six

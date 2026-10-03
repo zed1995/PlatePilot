@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	sharedcfg "github.com/zed/platepilot/shared/config"
-	"github.com/zed/platepilot/shared/store/contract"
-	"github.com/zed/platepilot/shared/store/postgres"
+	sharedcfg "github.com/zed1995/platepilot/shared/config"
+	"github.com/zed1995/platepilot/shared/store/contract"
+	"github.com/zed1995/platepilot/shared/store/postgres"
 )
 
 // defaultTestDSN is the scratch database the suite is allowed to destroy.

@@ -5,7 +5,7 @@
 // and from these types inside the adapter layer.
 package chat
 
-import "github.com/zed/platepilot/shared/domain/tool"
+import "github.com/zed1995/platepilot/shared/domain/tool"
 
 // Role identifies the author of a chat message.
 type Role string

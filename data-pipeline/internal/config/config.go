@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/zed/platepilot/data-pipeline/internal/pipeline/curate"
-	sharedcfg "github.com/zed/platepilot/shared/config"
+	"github.com/zed1995/platepilot/data-pipeline/internal/pipeline/curate"
+	sharedcfg "github.com/zed1995/platepilot/shared/config"
 )
 
 // DotEnvFile is the optional local development configuration file.

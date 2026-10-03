@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/zed/platepilot/shared/domain/errs"
-	domainmemory "github.com/zed/platepilot/shared/domain/memory"
+	"github.com/zed1995/platepilot/shared/domain/errs"
+	domainmemory "github.com/zed1995/platepilot/shared/domain/memory"
 )
 
 func TestMemoryUpsertAssignsIDAndList(t *testing.T) {

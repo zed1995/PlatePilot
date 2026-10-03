@@ -3,8 +3,8 @@ package memory_test
 import (
 	"testing"
 
-	"github.com/zed/platepilot/shared/store/contract"
-	"github.com/zed/platepilot/shared/store/memory"
+	"github.com/zed1995/platepilot/shared/store/contract"
+	"github.com/zed1995/platepilot/shared/store/memory"
 )
 
 // TestMemoryStoresSatisfyContract proves the in-memory write stores honour the

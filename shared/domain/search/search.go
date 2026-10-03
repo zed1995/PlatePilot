@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zed/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/shared/domain/errs"
 )
 
 // Boroughs are the administrative areas the corpus is scoped to. The list is

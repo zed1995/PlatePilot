@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	domainmemory "github.com/zed/platepilot/shared/domain/memory"
+	domainmemory "github.com/zed1995/platepilot/shared/domain/memory"
 )
 
 // maxInjectedMemories bounds how many memories one turn can inject.

@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zed/platepilot/shared/domain/restaurant"
-	"github.com/zed/platepilot/shared/domain/review"
+	"github.com/zed1995/platepilot/shared/domain/restaurant"
+	"github.com/zed1995/platepilot/shared/domain/review"
 
-	"github.com/zed/platepilot/data-pipeline/internal/pipeline/raw"
+	"github.com/zed1995/platepilot/data-pipeline/internal/pipeline/raw"
 )
 
 func ptr[T any](v T) *T { return &v }

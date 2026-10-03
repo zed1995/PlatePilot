@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zed/platepilot/chat-service/internal/config"
+	"github.com/zed1995/platepilot/chat-service/internal/config"
 )
 
 func validChatConfig() config.ChatConfig {

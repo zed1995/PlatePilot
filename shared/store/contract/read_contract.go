@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zed/platepilot/shared/domain/errs"
-	"github.com/zed/platepilot/shared/domain/search"
-	"github.com/zed/platepilot/shared/store"
+	"github.com/zed1995/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/shared/domain/search"
+	"github.com/zed1995/platepilot/shared/store"
 )
 
 // ReadStores bundles the read-side ports under test.

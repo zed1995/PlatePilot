@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/zed/platepilot/shared/domain/evidence"
+	"github.com/zed1995/platepilot/shared/domain/evidence"
 )
 
 // captureLogs redirects the default logger for the duration of one test.

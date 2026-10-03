@@ -5,8 +5,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/zed/platepilot/shared/domain/search"
-	"github.com/zed/platepilot/shared/rerank"
+	"github.com/zed1995/platepilot/shared/domain/search"
+	"github.com/zed1995/platepilot/shared/rerank"
 )
 
 // DefaultRerankTimeout bounds an optional reranking pass.

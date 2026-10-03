@@ -7,18 +7,18 @@ import (
 	"strings"
 	"time"
 
-	domainchat "github.com/zed/platepilot/shared/domain/chat"
-	"github.com/zed/platepilot/shared/domain/errs"
-	domainretrieval "github.com/zed/platepilot/shared/domain/retrieval"
-	"github.com/zed/platepilot/shared/domain/run"
-	domaintool "github.com/zed/platepilot/shared/domain/tool"
-	"github.com/zed/platepilot/shared/idgen"
+	domainchat "github.com/zed1995/platepilot/shared/domain/chat"
+	"github.com/zed1995/platepilot/shared/domain/errs"
+	domainretrieval "github.com/zed1995/platepilot/shared/domain/retrieval"
+	"github.com/zed1995/platepilot/shared/domain/run"
+	domaintool "github.com/zed1995/platepilot/shared/domain/tool"
+	"github.com/zed1995/platepilot/shared/idgen"
 
-	"github.com/zed/platepilot/chat-service/internal/agent/answer"
-	"github.com/zed/platepilot/chat-service/internal/agent/audit"
-	"github.com/zed/platepilot/chat-service/internal/agent/einomodel"
-	"github.com/zed/platepilot/chat-service/internal/agent/tools"
-	"github.com/zed/platepilot/chat-service/internal/retrieval"
+	"github.com/zed1995/platepilot/chat-service/internal/agent/answer"
+	"github.com/zed1995/platepilot/chat-service/internal/agent/audit"
+	"github.com/zed1995/platepilot/chat-service/internal/agent/einomodel"
+	"github.com/zed1995/platepilot/chat-service/internal/agent/tools"
+	"github.com/zed1995/platepilot/chat-service/internal/retrieval"
 )
 
 // ingress initializes the turn state and opens the event stream.

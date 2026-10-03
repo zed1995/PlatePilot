@@ -3,8 +3,8 @@ package retrieval
 import (
 	"testing"
 
-	"github.com/zed/platepilot/shared/domain/retrieval"
-	"github.com/zed/platepilot/shared/domain/search"
+	"github.com/zed1995/platepilot/shared/domain/retrieval"
+	"github.com/zed1995/platepilot/shared/domain/search"
 )
 
 func candidate(id int64, name string) search.RestaurantCandidate {

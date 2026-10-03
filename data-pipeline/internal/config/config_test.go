@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	sharedcfg "github.com/zed/platepilot/shared/config"
+	sharedcfg "github.com/zed1995/platepilot/shared/config"
 )
 
 // clearEnv unsets the given variables for the duration of the test.

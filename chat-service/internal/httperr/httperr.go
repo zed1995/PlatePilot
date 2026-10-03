@@ -10,9 +10,9 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 
-	"github.com/zed/platepilot/shared/domain/errs"
-	"github.com/zed/platepilot/shared/observability/logging"
-	"github.com/zed/platepilot/shared/requestctx"
+	"github.com/zed1995/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/shared/observability/logging"
+	"github.com/zed1995/platepilot/shared/requestctx"
 )
 
 // Body is the inner error object.

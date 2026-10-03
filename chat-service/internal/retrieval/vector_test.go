@@ -6,12 +6,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/zed/platepilot/shared/domain/errs"
-	"github.com/zed/platepilot/shared/domain/evidence"
-	"github.com/zed/platepilot/shared/domain/retrieval"
-	"github.com/zed/platepilot/shared/domain/search"
-	"github.com/zed/platepilot/shared/embedding"
-	"github.com/zed/platepilot/shared/store"
+	"github.com/zed1995/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/shared/domain/evidence"
+	"github.com/zed1995/platepilot/shared/domain/retrieval"
+	"github.com/zed1995/platepilot/shared/domain/search"
+	"github.com/zed1995/platepilot/shared/embedding"
+	"github.com/zed1995/platepilot/shared/store"
 )
 
 // stubKnowledge is a read-side knowledge repository a test can steer.

@@ -7,8 +7,8 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 
-	"github.com/zed/platepilot/chat-service/internal/httperr"
-	"github.com/zed/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/chat-service/internal/httperr"
+	"github.com/zed1995/platepilot/shared/domain/errs"
 )
 
 // Recovery converts a panic in the handler chain into a canonical 500 response

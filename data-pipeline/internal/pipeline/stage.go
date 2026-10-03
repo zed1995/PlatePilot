@@ -4,10 +4,10 @@ import (
 	"context"
 	"time"
 
-	"github.com/zed/platepilot/data-pipeline/internal/pipeline/curate"
-	"github.com/zed/platepilot/data-pipeline/internal/pipeline/report"
-	"github.com/zed/platepilot/shared/domain/review"
-	"github.com/zed/platepilot/shared/store"
+	"github.com/zed1995/platepilot/data-pipeline/internal/pipeline/curate"
+	"github.com/zed1995/platepilot/data-pipeline/internal/pipeline/report"
+	"github.com/zed1995/platepilot/shared/domain/review"
+	"github.com/zed1995/platepilot/shared/store"
 )
 
 // newStageCollector opens an audit record for one M2 stage.

@@ -9,7 +9,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/zed/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/shared/domain/errs"
 )
 
 // DefaultBoundaryFile is the borough geometry used to label restaurants. The

@@ -9,10 +9,10 @@ import (
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/server"
 
-	"github.com/zed/platepilot/chat-service/internal/httperr"
-	"github.com/zed/platepilot/shared/domain/conversation"
-	"github.com/zed/platepilot/shared/domain/errs"
-	"github.com/zed/platepilot/shared/requestctx"
+	"github.com/zed1995/platepilot/chat-service/internal/httperr"
+	"github.com/zed1995/platepilot/shared/domain/conversation"
+	"github.com/zed1995/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/shared/requestctx"
 )
 
 // HeaderUserID carries the caller's user identity until M6 introduces real

@@ -3,8 +3,8 @@ package curate
 import (
 	"time"
 
-	"github.com/zed/platepilot/shared/domain/restaurant"
-	"github.com/zed/platepilot/shared/domain/review"
+	"github.com/zed1995/platepilot/shared/domain/restaurant"
+	"github.com/zed1995/platepilot/shared/domain/review"
 )
 
 // BuildReviewStats materialises a restaurant's review rollup. Fields owned by

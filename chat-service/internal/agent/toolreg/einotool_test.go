@@ -8,9 +8,9 @@ import (
 
 	einotool "github.com/cloudwego/eino/components/tool"
 	einoschema "github.com/cloudwego/eino/schema"
-	domaintool "github.com/zed/platepilot/shared/domain/tool"
+	domaintool "github.com/zed1995/platepilot/shared/domain/tool"
 
-	"github.com/zed/platepilot/chat-service/internal/agent/toolreg"
+	"github.com/zed1995/platepilot/chat-service/internal/agent/toolreg"
 )
 
 func TestEinoToolsRoundTrip(t *testing.T) {

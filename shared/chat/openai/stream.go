@@ -6,10 +6,10 @@ import (
 	"io"
 	"strings"
 
-	chatport "github.com/zed/platepilot/shared/chat"
-	"github.com/zed/platepilot/shared/domain/chat"
-	"github.com/zed/platepilot/shared/domain/errs"
-	"github.com/zed/platepilot/shared/domain/tool"
+	chatport "github.com/zed1995/platepilot/shared/chat"
+	"github.com/zed1995/platepilot/shared/domain/chat"
+	"github.com/zed1995/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/shared/domain/tool"
 )
 
 // sseLineLimit bounds one SSE line. Tool-call frames stay small (fragments),

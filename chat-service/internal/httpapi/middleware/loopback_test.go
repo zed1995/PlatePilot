@@ -12,7 +12,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/common/ut"
 	"github.com/cloudwego/hertz/pkg/network"
 
-	"github.com/zed/platepilot/chat-service/internal/httperr"
+	"github.com/zed1995/platepilot/chat-service/internal/httperr"
 )
 
 // fakeAddr is a net.Addr for the decision tests.

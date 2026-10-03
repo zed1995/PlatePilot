@@ -10,8 +10,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/zed/platepilot/data-pipeline/internal/pipeline/curate"
-	"github.com/zed/platepilot/shared/domain/evidence"
+	"github.com/zed1995/platepilot/data-pipeline/internal/pipeline/curate"
+	"github.com/zed1995/platepilot/shared/domain/evidence"
 )
 
 // ContentHash is the identity of a document's text.

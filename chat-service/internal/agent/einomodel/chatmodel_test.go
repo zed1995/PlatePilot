@@ -10,11 +10,11 @@ import (
 	"github.com/cloudwego/eino/schema"
 	einojsonschema "github.com/eino-contrib/jsonschema"
 
-	chatport "github.com/zed/platepilot/shared/chat"
-	domainchat "github.com/zed/platepilot/shared/domain/chat"
-	domaintool "github.com/zed/platepilot/shared/domain/tool"
+	chatport "github.com/zed1995/platepilot/shared/chat"
+	domainchat "github.com/zed1995/platepilot/shared/domain/chat"
+	domaintool "github.com/zed1995/platepilot/shared/domain/tool"
 
-	"github.com/zed/platepilot/chat-service/internal/agent/einomodel"
+	"github.com/zed1995/platepilot/chat-service/internal/agent/einomodel"
 )
 
 type fakeChat struct {

@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zed/platepilot/shared/domain/errs"
-	domaintool "github.com/zed/platepilot/shared/domain/tool"
+	"github.com/zed1995/platepilot/shared/domain/errs"
+	domaintool "github.com/zed1995/platepilot/shared/domain/tool"
 
-	"github.com/zed/platepilot/chat-service/internal/agent/toolreg"
+	"github.com/zed1995/platepilot/chat-service/internal/agent/toolreg"
 )
 
 func goodEntry(name string, handler toolreg.Handler) toolreg.Entry {

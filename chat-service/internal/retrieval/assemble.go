@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zed/platepilot/shared/domain/errs"
-	"github.com/zed/platepilot/shared/domain/evidence"
-	"github.com/zed/platepilot/shared/domain/retrieval"
+	"github.com/zed1995/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/shared/domain/evidence"
+	"github.com/zed1995/platepilot/shared/domain/retrieval"
 )
 
 // DefaultEvidenceTokenBudget is how much evidence an answer is assembled from

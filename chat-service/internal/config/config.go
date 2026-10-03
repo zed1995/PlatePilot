@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	sharedcfg "github.com/zed/platepilot/shared/config"
+	sharedcfg "github.com/zed1995/platepilot/shared/config"
 )
 
 // DotEnvFile is the optional local development configuration file.

@@ -5,18 +5,30 @@ provider + local Qwen embedding + PostgreSQL (pgvector + PostGIS).
 
 ## Services
 
-The repository is a single Go module hosting two independently runnable services,
-with room for a frontend alongside them.
+Each directory is a self-contained project with its own module and Makefile — a
+multi-module repository, not one module with several `main` packages. There is no
+`go.mod` at the repository root.
 
-| Directory | Service | Responsibility |
-|---|---|---|
-| `data-pipeline/` | 数据生产 | Batch CLI: import raw Google Local data into PostgreSQL, build knowledge documents, generate embeddings (M1–M2) |
-| `chat-service/` | 聊天服务 | HTTP/SSE API: agent runtime, tools, two-stage retrieval, answers and citations (M3–M5) |
-| `shared/` | 共享库 | Domain DTOs, provider/repository ports, adapters, logging, config primitives |
-| `web/` | 前端 | Reserved for the future frontend project |
+| Directory | Project | Kind | Responsibility |
+|---|---|---|---|
+| `data-pipeline/` | 数据生产 | Go module, CLI | Batch CLI: import raw Google Local data into PostgreSQL, build knowledge documents, generate embeddings (M1–M2) |
+| `chat-service/` | 聊天服务 | Go module, service | HTTP/SSE API: agent runtime, tools, two-stage retrieval, answers and citations (M3–M5) |
+| `shared/` | 共享库 | Go module, library | Domain DTOs, provider/repository ports, adapters, logging, config primitives |
+| `web/` | 前端 | npm project | Admin console (Vite + React) |
 
-Both binaries are built from the same module and can be run and deployed
-separately.
+The two services depend on `shared` through a `replace` directive pointing at
+`../shared`, so each one builds, tests, and deploys on its own:
+
+```bash
+make -C chat-service  run     # or: cd chat-service  && go run .
+make -C data-pipeline migrate # or: cd data-pipeline && go run . migrate
+```
+
+`make work` writes a `go.work` at the root for editors and for cross-module
+commands; it is a local convenience (git-ignored), never a build requirement.
+
+The root `Makefile` only forwards to the projects and owns what is not a
+service: `deploy/` (local PostgreSQL), `docs/`, `data/`, and `.env.example`.
 
 ## Status
 
@@ -76,7 +88,8 @@ curl -s localhost:8080/healthz
 # {"status":"ok","version":"dev","request_id":"..."}
 
 make run-pipeline               # data pipeline config check
-make build                      # bin/chat-service and bin/data-pipeline
+make build                      # chat-service/bin/… and data-pipeline/bin/…
+make -C <project> help          # the project-local targets
 ```
 
 ## Storage: PostgreSQL
@@ -335,13 +348,13 @@ the whole 2.5 GB once before ingestion starts.
 ## Common commands
 
 ```bash
-make test          # go test ./...
-make test-race     # go test -race ./...
-make vet           # go vet ./...
-make build         # build both binaries
+make test          # go test ./... in every Go project
+make test-race     # go test -race ./... in every Go project
+make vet           # go vet ./... in every Go project
+make build         # build both binaries into their own ./bin
 make migrate       # apply SQL migrations (needs POSTGRES_DSN)
 make test-postgres # Postgres adapter contract suite (needs `make pg-up`)
-make cover         # cross-package coverage
+make cover         # coverage per project (<project>/coverage.out)
 make lint          # golangci-lint (if installed)
 ```
 
@@ -382,7 +395,7 @@ contributed.
 
 ```bash
 make pg-up && make migrate
-go run ./chat-service
+make -C chat-service run        # or: cd chat-service && go run .
 ```
 
 ```bash

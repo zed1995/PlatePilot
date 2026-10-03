@@ -8,9 +8,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/zed/platepilot/shared/domain/errs"
-	"github.com/zed/platepilot/shared/domain/search"
-	"github.com/zed/platepilot/shared/store"
+	"github.com/zed1995/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/shared/domain/search"
+	"github.com/zed1995/platepilot/shared/store"
 )
 
 // defaultTopK bounds search results when the caller does not set one.

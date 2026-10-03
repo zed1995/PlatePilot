@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/zed/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/shared/domain/errs"
 )
 
 func TestIsDeterministic(t *testing.T) {

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zed/platepilot/shared/store/postgres"
+	"github.com/zed1995/platepilot/shared/store/postgres"
 )
 
 // M3-03 fixed a silent correctness bug by partitioning the vector index by

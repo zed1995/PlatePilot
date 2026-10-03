@@ -8,7 +8,7 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/common/hlog"
 
-	"github.com/zed/platepilot/shared/observability/logging"
+	"github.com/zed1995/platepilot/shared/observability/logging"
 )
 
 // hertzLogger adapts Hertz's logging interface onto log/slog so that framework

@@ -8,8 +8,8 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 
-	"github.com/zed/platepilot/shared/idgen"
-	"github.com/zed/platepilot/shared/requestctx"
+	"github.com/zed1995/platepilot/shared/idgen"
+	"github.com/zed1995/platepilot/shared/requestctx"
 )
 
 // Correlation headers used by the request ID middleware.

@@ -7,10 +7,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/zed/platepilot/data-pipeline/internal/pipeline"
-	"github.com/zed/platepilot/shared/domain/restaurant"
-	"github.com/zed/platepilot/shared/domain/review"
-	"github.com/zed/platepilot/shared/testkit"
+	"github.com/zed1995/platepilot/data-pipeline/internal/pipeline"
+	"github.com/zed1995/platepilot/shared/domain/restaurant"
+	"github.com/zed1995/platepilot/shared/domain/review"
+	"github.com/zed1995/platepilot/shared/testkit"
 )
 
 func writeGzJSONL(t *testing.T, path string, lines []string) {

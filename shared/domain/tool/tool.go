@@ -7,7 +7,7 @@ package tool
 import (
 	"encoding/json"
 
-	"github.com/zed/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/shared/domain/errs"
 )
 
 // ToolSpec describes a tool the model may call. Parameters holds a JSON Schema.

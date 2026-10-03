@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zed/platepilot/shared/domain/review"
+	"github.com/zed1995/platepilot/shared/domain/review"
 )
 
 // fakeSource drives the printer without a real gzip file.

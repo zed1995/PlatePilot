@@ -7,14 +7,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zed/platepilot/shared/domain/errs"
-	"github.com/zed/platepilot/shared/domain/evidence"
-	"github.com/zed/platepilot/shared/domain/retrieval"
-	"github.com/zed/platepilot/shared/domain/search"
-	"github.com/zed/platepilot/shared/embedding"
-	"github.com/zed/platepilot/shared/observability/logging"
-	"github.com/zed/platepilot/shared/rerank"
-	"github.com/zed/platepilot/shared/store"
+	"github.com/zed1995/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/shared/domain/evidence"
+	"github.com/zed1995/platepilot/shared/domain/retrieval"
+	"github.com/zed1995/platepilot/shared/domain/search"
+	"github.com/zed1995/platepilot/shared/embedding"
+	"github.com/zed1995/platepilot/shared/observability/logging"
+	"github.com/zed1995/platepilot/shared/rerank"
+	"github.com/zed1995/platepilot/shared/store"
 )
 
 // ServiceConfig is the retrieval layer's tunable behaviour.

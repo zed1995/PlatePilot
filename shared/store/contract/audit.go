@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zed/platepilot/shared/domain/errs"
-	"github.com/zed/platepilot/shared/domain/run"
-	"github.com/zed/platepilot/shared/store"
+	"github.com/zed1995/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/shared/domain/run"
+	"github.com/zed1995/platepilot/shared/store"
 )
 
 // runRunRepositoryContract pins the audit lifecycle both adapters must share:

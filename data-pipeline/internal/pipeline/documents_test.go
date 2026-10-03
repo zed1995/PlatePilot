@@ -6,14 +6,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zed/platepilot/data-pipeline/internal/config"
-	sharedcfg "github.com/zed/platepilot/shared/config"
-	"github.com/zed/platepilot/shared/domain/errs"
-	"github.com/zed/platepilot/shared/domain/evidence"
-	"github.com/zed/platepilot/shared/domain/restaurant"
-	"github.com/zed/platepilot/shared/domain/review"
-	"github.com/zed/platepilot/shared/store/memory"
-	"github.com/zed/platepilot/shared/testkit"
+	"github.com/zed1995/platepilot/data-pipeline/internal/config"
+	sharedcfg "github.com/zed1995/platepilot/shared/config"
+	"github.com/zed1995/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/shared/domain/evidence"
+	"github.com/zed1995/platepilot/shared/domain/restaurant"
+	"github.com/zed1995/platepilot/shared/domain/review"
+	"github.com/zed1995/platepilot/shared/store/memory"
+	"github.com/zed1995/platepilot/shared/testkit"
 )
 
 func testConfig() config.Config {

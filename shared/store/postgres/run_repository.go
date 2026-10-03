@@ -7,9 +7,9 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/zed/platepilot/shared/domain/errs"
-	"github.com/zed/platepilot/shared/domain/run"
-	"github.com/zed/platepilot/shared/store"
+	"github.com/zed1995/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/shared/domain/run"
+	"github.com/zed1995/platepilot/shared/store"
 )
 
 var _ store.RunRepository = (*RunRepository)(nil)

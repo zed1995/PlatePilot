@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zed/platepilot/shared/domain/evidence"
-	"github.com/zed/platepilot/shared/domain/review"
+	"github.com/zed1995/platepilot/shared/domain/evidence"
+	"github.com/zed1995/platepilot/shared/domain/review"
 )
 
 // Selection bounds. The PRD fixes the shape of the rule: a tenth of the text

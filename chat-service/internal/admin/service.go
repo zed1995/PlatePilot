@@ -8,9 +8,9 @@ package admin
 
 import (
 	"context"
-	"github.com/zed/platepilot/shared/store"
+	"github.com/zed1995/platepilot/shared/store"
 
-	domainadmin "github.com/zed/platepilot/shared/domain/admin"
+	domainadmin "github.com/zed1995/platepilot/shared/domain/admin"
 )
 
 // Defaults used when the configuration leaves a value unset.

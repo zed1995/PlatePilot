@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zed/platepilot/shared/domain/errs"
-	"github.com/zed/platepilot/shared/domain/search"
+	"github.com/zed1995/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/shared/domain/search"
 )
 
 func newRestaurant(id int64, name, neighborhood string, cuisines []string, price int, rating float64, openNow string) search.RestaurantDetail {

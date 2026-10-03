@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	domainchat "github.com/zed/platepilot/shared/domain/chat"
-	"github.com/zed/platepilot/shared/domain/conversation"
-	"github.com/zed/platepilot/shared/testkit"
+	domainchat "github.com/zed1995/platepilot/shared/domain/chat"
+	"github.com/zed1995/platepilot/shared/domain/conversation"
+	"github.com/zed1995/platepilot/shared/testkit"
 )
 
 // TestMidTurnFailureLeavesRecoverablePendingCheckpoint covers M4-08's

@@ -17,10 +17,10 @@ import (
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 
-	chatport "github.com/zed/platepilot/shared/chat"
-	domainchat "github.com/zed/platepilot/shared/domain/chat"
-	"github.com/zed/platepilot/shared/domain/errs"
-	domaintool "github.com/zed/platepilot/shared/domain/tool"
+	chatport "github.com/zed1995/platepilot/shared/chat"
+	domainchat "github.com/zed1995/platepilot/shared/domain/chat"
+	"github.com/zed1995/platepilot/shared/domain/errs"
+	domaintool "github.com/zed1995/platepilot/shared/domain/tool"
 )
 
 // Deps are the chat ports the adapter delegates to. ToolCalling may be nil when

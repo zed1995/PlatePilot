@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/zed/platepilot/shared/domain/tool"
+	"github.com/zed1995/platepilot/shared/domain/tool"
 )
 
 func TestChatRequestJSONRoundTrip(t *testing.T) {

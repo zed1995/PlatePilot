@@ -13,10 +13,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/zed/platepilot/chat-service/internal/agent/tools"
-	"github.com/zed/platepilot/shared/domain/errs"
-	"github.com/zed/platepilot/shared/domain/run"
-	"github.com/zed/platepilot/shared/store"
+	"github.com/zed1995/platepilot/chat-service/internal/agent/tools"
+	"github.com/zed1995/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/shared/domain/run"
+	"github.com/zed1995/platepilot/shared/store"
 )
 
 const (

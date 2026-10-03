@@ -4,18 +4,18 @@ import (
 	"context"
 	"time"
 
-	chatport "github.com/zed/platepilot/shared/chat"
-	"github.com/zed/platepilot/shared/domain/errs"
-	"github.com/zed/platepilot/shared/idgen"
-	"github.com/zed/platepilot/shared/store"
+	chatport "github.com/zed1995/platepilot/shared/chat"
+	"github.com/zed1995/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/shared/idgen"
+	"github.com/zed1995/platepilot/shared/store"
 
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/compose"
 
-	"github.com/zed/platepilot/chat-service/internal/agent/answer"
-	"github.com/zed/platepilot/chat-service/internal/agent/audit"
-	"github.com/zed/platepilot/chat-service/internal/agent/einomodel"
-	"github.com/zed/platepilot/chat-service/internal/agent/toolreg"
+	"github.com/zed1995/platepilot/chat-service/internal/agent/answer"
+	"github.com/zed1995/platepilot/chat-service/internal/agent/audit"
+	"github.com/zed1995/platepilot/chat-service/internal/agent/einomodel"
+	"github.com/zed1995/platepilot/chat-service/internal/agent/toolreg"
 )
 
 // Defaults for the reasoning loop knobs.

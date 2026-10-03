@@ -17,8 +17,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zed/platepilot/shared/config"
-	"github.com/zed/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/shared/config"
+	"github.com/zed1995/platepilot/shared/domain/errs"
 )
 
 // Defaults for the tunables that config does not force an operator to set.

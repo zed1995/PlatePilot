@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/zed/platepilot/shared/domain/search"
-	"github.com/zed/platepilot/shared/rerank"
+	"github.com/zed1995/platepilot/shared/domain/search"
+	"github.com/zed1995/platepilot/shared/rerank"
 )
 
 // stubRerank returns whatever the test tells it to.

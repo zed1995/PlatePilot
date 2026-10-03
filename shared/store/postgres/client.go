@@ -17,8 +17,8 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	sharedcfg "github.com/zed/platepilot/shared/config"
-	"github.com/zed/platepilot/shared/domain/errs"
+	sharedcfg "github.com/zed1995/platepilot/shared/config"
+	"github.com/zed1995/platepilot/shared/domain/errs"
 )
 
 // Client owns the connection pool.

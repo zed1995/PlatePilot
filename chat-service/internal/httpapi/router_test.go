@@ -12,7 +12,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/cloudwego/hertz/pkg/common/ut"
 
-	"github.com/zed/platepilot/chat-service/internal/httperr"
+	"github.com/zed1995/platepilot/chat-service/internal/httperr"
 )
 
 func quietLogger() *slog.Logger {

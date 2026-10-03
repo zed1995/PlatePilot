@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zed/platepilot/chat-service/internal/admin"
-	domainadmin "github.com/zed/platepilot/shared/domain/admin"
+	"github.com/zed1995/platepilot/chat-service/internal/admin"
+	domainadmin "github.com/zed1995/platepilot/shared/domain/admin"
 )
 
 // fakeStore is an in-memory AdminStore for the application layer tests.

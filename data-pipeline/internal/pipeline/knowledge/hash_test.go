@@ -3,7 +3,7 @@ package knowledge
 import (
 	"testing"
 
-	"github.com/zed/platepilot/shared/domain/evidence"
+	"github.com/zed1995/platepilot/shared/domain/evidence"
 )
 
 func TestContentHashIsStable(t *testing.T) {

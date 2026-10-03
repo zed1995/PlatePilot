@@ -6,13 +6,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/zed/platepilot/chat-service/internal/agent/toolreg"
-	"github.com/zed/platepilot/chat-service/internal/retrieval"
-	"github.com/zed/platepilot/shared/domain/errs"
-	"github.com/zed/platepilot/shared/domain/evidence"
-	domainretrieval "github.com/zed/platepilot/shared/domain/retrieval"
-	"github.com/zed/platepilot/shared/domain/search"
-	domaintool "github.com/zed/platepilot/shared/domain/tool"
+	"github.com/zed1995/platepilot/chat-service/internal/agent/toolreg"
+	"github.com/zed1995/platepilot/chat-service/internal/retrieval"
+	"github.com/zed1995/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/shared/domain/evidence"
+	domainretrieval "github.com/zed1995/platepilot/shared/domain/retrieval"
+	"github.com/zed1995/platepilot/shared/domain/search"
+	domaintool "github.com/zed1995/platepilot/shared/domain/tool"
 )
 
 // ---- fakes ----------------------------------------------------------------

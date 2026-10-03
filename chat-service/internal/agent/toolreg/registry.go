@@ -17,8 +17,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/zed/platepilot/shared/domain/errs"
-	domaintool "github.com/zed/platepilot/shared/domain/tool"
+	"github.com/zed1995/platepilot/shared/domain/errs"
+	domaintool "github.com/zed1995/platepilot/shared/domain/tool"
 )
 
 // namePattern pins tool names to lowercase snake-case identifiers that every

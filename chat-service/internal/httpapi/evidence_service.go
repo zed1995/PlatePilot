@@ -3,8 +3,8 @@ package httpapi
 import (
 	"context"
 
-	"github.com/zed/platepilot/chat-service/internal/retrieval"
-	domainretrieval "github.com/zed/platepilot/shared/domain/retrieval"
+	"github.com/zed1995/platepilot/chat-service/internal/retrieval"
+	domainretrieval "github.com/zed1995/platepilot/shared/domain/retrieval"
 )
 
 // evidenceAdapter bridges the transport's request type onto the retrieval
