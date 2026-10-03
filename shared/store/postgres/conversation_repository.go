@@ -84,14 +84,21 @@ func (r *ConversationRepository) SaveCheckpoint(ctx context.Context, checkpoint 
 	if checkpoint.EvidenceIDs == nil {
 		checkpoint.EvidenceIDs = []int64{}
 	}
+	// jsonb rejects a NULL, and an absent parked action must read back as the
+	// empty object rather than as a missing value.
+	pendingArguments := checkpoint.PendingArguments
+	if len(pendingArguments) == 0 {
+		pendingArguments = []byte(`{}`)
+	}
 	ctx, cancel := r.client.withTimeout(ctx)
 	defer cancel()
 
 	tag, err := r.client.pool.Exec(ctx, `
 		INSERT INTO conversation_checkpoints (
 			thread_id, version, state, pending_action, missing_slots,
-			evidence_ids, selected_restaurant_id, created_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			evidence_ids, selected_restaurant_id, created_at,
+			pending_tool_call_id, pending_arguments, clarification_count
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		ON CONFLICT (thread_id) DO UPDATE SET
 			version                = EXCLUDED.version,
 			state                  = EXCLUDED.state,
@@ -99,11 +106,15 @@ func (r *ConversationRepository) SaveCheckpoint(ctx context.Context, checkpoint 
 			missing_slots          = EXCLUDED.missing_slots,
 			evidence_ids           = EXCLUDED.evidence_ids,
 			selected_restaurant_id = EXCLUDED.selected_restaurant_id,
-			created_at             = EXCLUDED.created_at
+			created_at             = EXCLUDED.created_at,
+			pending_tool_call_id   = EXCLUDED.pending_tool_call_id,
+			pending_arguments      = EXCLUDED.pending_arguments,
+			clarification_count    = EXCLUDED.clarification_count
 		WHERE conversation_checkpoints.version < EXCLUDED.version`,
 		checkpoint.ThreadID, checkpoint.Version, string(checkpoint.State),
 		checkpoint.PendingAction, checkpoint.MissingSlots,
-		checkpoint.EvidenceIDs, checkpoint.SelectedRestaurantID, checkpoint.CreatedAt)
+		checkpoint.EvidenceIDs, checkpoint.SelectedRestaurantID, checkpoint.CreatedAt,
+		checkpoint.PendingToolCallID, pendingArguments, checkpoint.ClarificationCount)
 	if err != nil {
 		return operationError("postgres: save checkpoint", err)
 	}
@@ -120,18 +131,124 @@ func (r *ConversationRepository) LoadCheckpoint(ctx context.Context, threadID st
 	ctx, cancel := r.client.withTimeout(ctx)
 	defer cancel()
 
-	var checkpoint conversation.Checkpoint
+	var (
+		checkpoint       conversation.Checkpoint
+		pendingArguments []byte
+	)
 	err := r.client.pool.QueryRow(ctx, `
 		SELECT thread_id, version, state, pending_action, missing_slots,
-		       evidence_ids, selected_restaurant_id, created_at
+		       evidence_ids, selected_restaurant_id, created_at,
+		       pending_tool_call_id, pending_arguments, clarification_count
 		FROM conversation_checkpoints WHERE thread_id = $1`, threadID).Scan(
 		&checkpoint.ThreadID, &checkpoint.Version, &checkpoint.State,
 		&checkpoint.PendingAction, &checkpoint.MissingSlots,
-		&checkpoint.EvidenceIDs, &checkpoint.SelectedRestaurantID, &checkpoint.CreatedAt)
+		&checkpoint.EvidenceIDs, &checkpoint.SelectedRestaurantID, &checkpoint.CreatedAt,
+		&checkpoint.PendingToolCallID, &pendingArguments, &checkpoint.ClarificationCount)
 	if err != nil {
 		return conversation.Checkpoint{}, operationError("postgres: load checkpoint", err)
 	}
+	if len(pendingArguments) > 0 {
+		checkpoint.PendingArguments = pendingArguments
+	}
 	return checkpoint, nil
+}
+
+// ReplaceCandidates swaps a thread's candidate snapshot inside one transaction.
+//
+// Delete-then-insert rather than an upsert keyed on position: the snapshot's
+// length changes between turns, and a merge would leave a stale tail behind —
+// position 4 still pointing at a restaurant from the previous search.
+func (r *ConversationRepository) ReplaceCandidates(ctx context.Context, threadID string, candidates []conversation.Candidate) error {
+	if strings.TrimSpace(threadID) == "" {
+		return errs.New(errs.CodeInvalidArgument, "thread_id is required")
+	}
+	seen := make(map[int]struct{}, len(candidates))
+	for i := range candidates {
+		candidate := &candidates[i]
+		if candidate.Position <= 0 {
+			return errs.Newf(errs.CodeInvalidArgument,
+				"candidate position must be positive (got %d)", candidate.Position)
+		}
+		if candidate.RestaurantID <= 0 {
+			return errs.Newf(errs.CodeInvalidArgument,
+				"candidate restaurant_id must be positive (got %d)", candidate.RestaurantID)
+		}
+		if _, dup := seen[candidate.Position]; dup {
+			return errs.Newf(errs.CodeInvalidArgument, "duplicate candidate position %d", candidate.Position)
+		}
+		seen[candidate.Position] = struct{}{}
+		candidate.ThreadID = threadID
+		if candidate.CreatedAt.IsZero() {
+			candidate.CreatedAt = time.Now().UTC()
+		}
+		if candidate.Reasons == nil {
+			candidate.Reasons = []string{}
+		}
+	}
+	ctx, cancel := r.client.withTimeout(ctx)
+	defer cancel()
+
+	tx, err := r.client.pool.Begin(ctx)
+	if err != nil {
+		return operationError("postgres: begin replace candidates", err)
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+
+	if _, err := tx.Exec(ctx, `DELETE FROM conversation_candidates WHERE thread_id = $1`, threadID); err != nil {
+		return operationError("postgres: clear candidates", err)
+	}
+	for _, candidate := range candidates {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO conversation_candidates (
+				thread_id, position, restaurant_id, name, score,
+				reasons, snapshot_at, created_at
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+			candidate.ThreadID, candidate.Position, candidate.RestaurantID, candidate.Name,
+			candidate.Score, candidate.Reasons, candidate.SnapshotAt, candidate.CreatedAt); err != nil {
+			return operationError("postgres: insert candidate", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return operationError("postgres: commit replace candidates", err)
+	}
+	return nil
+}
+
+// ListCandidates returns a thread's candidates in position order.
+func (r *ConversationRepository) ListCandidates(ctx context.Context, threadID string) ([]conversation.Candidate, error) {
+	if strings.TrimSpace(threadID) == "" {
+		return nil, errs.New(errs.CodeInvalidArgument, "thread_id is required")
+	}
+	ctx, cancel := r.client.withTimeout(ctx)
+	defer cancel()
+
+	rows, err := r.client.pool.Query(ctx, `
+		SELECT thread_id, position, restaurant_id, name, score, reasons, snapshot_at, created_at
+		FROM conversation_candidates
+		WHERE thread_id = $1
+		ORDER BY position ASC`, threadID)
+	if err != nil {
+		return nil, operationError("postgres: list candidates", err)
+	}
+	defer rows.Close()
+
+	out := make([]conversation.Candidate, 0)
+	for rows.Next() {
+		var candidate conversation.Candidate
+		if err := rows.Scan(&candidate.ThreadID, &candidate.Position, &candidate.RestaurantID,
+			&candidate.Name, &candidate.Score, &candidate.Reasons,
+			&candidate.SnapshotAt, &candidate.CreatedAt); err != nil {
+			return nil, operationError("postgres: scan candidate", err)
+		}
+		if candidate.Reasons == nil {
+			candidate.Reasons = []string{}
+		}
+		out = append(out, candidate)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, operationError("postgres: iterate candidates", err)
+	}
+	return out, nil
 }
 
 // AppendMessage stores one message, assigning seq as max(seq)+1 for the

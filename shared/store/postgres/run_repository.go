@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 
@@ -126,4 +127,123 @@ func (r *RunRepository) RecordToolCall(ctx context.Context, call run.ToolCallRec
 		return operationError("postgres: record tool call", err)
 	}
 	return nil
+}
+
+// runColumns is the projection every read of agent_runs shares.
+const runColumns = `
+	run_id, trace_id, thread_id, status, model_provider, model_name,
+	started_at, finished_at, latency_ms, token_input, token_output,
+	retrieval_count, tool_call_count, error_code`
+
+// scanRun reads one agent_runs row from a scanner.
+func scanRun(scan func(dest ...any) error) (run.AgentRun, error) {
+	var agentRun run.AgentRun
+	if err := scan(&agentRun.RunID, &agentRun.TraceID, &agentRun.ThreadID, &agentRun.Status,
+		&agentRun.ModelProvider, &agentRun.ModelName, &agentRun.StartedAt, &agentRun.FinishedAt,
+		&agentRun.LatencyMS, &agentRun.TokenInput, &agentRun.TokenOutput,
+		&agentRun.RetrievalCount, &agentRun.ToolCallCount, &agentRun.ErrorCode); err != nil {
+		return run.AgentRun{}, err
+	}
+	return agentRun, nil
+}
+
+// GetRun returns one run by id.
+func (r *RunRepository) GetRun(ctx context.Context, runID string) (run.AgentRun, error) {
+	if strings.TrimSpace(runID) == "" {
+		return run.AgentRun{}, errs.New(errs.CodeInvalidArgument, "run_id is required")
+	}
+	ctx, cancel := r.client.withTimeout(ctx)
+	defer cancel()
+
+	agentRun, err := scanRun(r.client.pool.QueryRow(ctx,
+		`SELECT `+runColumns+` FROM agent_runs WHERE run_id = $1`, runID).Scan)
+	if err != nil {
+		if pgErrNoRows(err) {
+			return run.AgentRun{}, errs.Newf(errs.CodeNotFound, "run %q not found", runID)
+		}
+		return run.AgentRun{}, operationError("postgres: get run", err)
+	}
+	return agentRun, nil
+}
+
+// ListRuns returns a thread's runs, newest first, bounded by limit and the
+// optional before_id cursor.
+func (r *RunRepository) ListRuns(ctx context.Context, threadID string, limit int, beforeID string) ([]run.AgentRun, error) {
+	if strings.TrimSpace(threadID) == "" {
+		return nil, errs.New(errs.CodeInvalidArgument, "thread_id is required")
+	}
+	ctx, cancel := r.client.withTimeout(ctx)
+	defer cancel()
+
+	var limitArg any
+	if limit > 0 {
+		limitArg = limit
+	}
+	rows, err := r.client.pool.Query(ctx, `
+		SELECT `+runColumns+`
+		FROM agent_runs
+		WHERE thread_id = $1
+		  AND ($2 = '' OR (started_at, run_id) < (
+		      SELECT started_at, run_id FROM agent_runs WHERE run_id = $2))
+		ORDER BY started_at DESC, run_id DESC
+		LIMIT $3`,
+		threadID, beforeID, limitArg)
+	if err != nil {
+		return nil, operationError("postgres: list runs", err)
+	}
+	defer rows.Close()
+
+	out := make([]run.AgentRun, 0)
+	for rows.Next() {
+		agentRun, err := scanRun(rows.Scan)
+		if err != nil {
+			return nil, operationError("postgres: scan run", err)
+		}
+		out = append(out, agentRun)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, operationError("postgres: iterate runs", err)
+	}
+	return out, nil
+}
+
+// ListToolCalls returns one run's tool calls in invocation order. An unknown
+// run yields an empty slice, not an error.
+func (r *RunRepository) ListToolCalls(ctx context.Context, runID string) ([]run.ToolCallRecord, error) {
+	if strings.TrimSpace(runID) == "" {
+		return nil, errs.New(errs.CodeInvalidArgument, "run_id is required")
+	}
+	ctx, cancel := r.client.withTimeout(ctx)
+	defer cancel()
+
+	rows, err := r.client.pool.Query(ctx, `
+		SELECT call_id, run_id, tool_name, arguments, result_summary,
+		       status, latency_ms, created_at
+		FROM tool_calls
+		WHERE run_id = $1
+		ORDER BY created_at ASC, call_id ASC`, runID)
+	if err != nil {
+		return nil, operationError("postgres: list tool calls", err)
+	}
+	defer rows.Close()
+
+	out := make([]run.ToolCallRecord, 0)
+	for rows.Next() {
+		var (
+			record    run.ToolCallRecord
+			arguments []byte
+		)
+		if err := rows.Scan(&record.CallID, &record.RunID, &record.ToolName, &arguments,
+			&record.ResultSummary, &record.Status, &record.LatencyMS, &record.CreatedAt); err != nil {
+			return nil, operationError("postgres: scan tool call", err)
+		}
+		if len(arguments) > 0 {
+			record.Arguments = json.RawMessage(arguments)
+		}
+		out = append(out, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, operationError("postgres: iterate tool calls", err)
+	}
+	return out, nil
 }

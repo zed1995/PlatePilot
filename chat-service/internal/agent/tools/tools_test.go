@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zed1995/platepilot/chat-service/internal/agent/toolreg"
 	"github.com/zed1995/platepilot/chat-service/internal/retrieval"
@@ -130,7 +131,7 @@ func TestSearchRestaurantsRendersCandidatesAndDataRoundtrip(t *testing.T) {
 	h := SearchRestaurantsEntry(svc).Handler
 
 	out := invoke(t, h, `{"query":"italian"}`)
-	for _, want := range []string{"id=42", "Trattoria Bella", "manhattan", "italian", "评分4.6", "价格2", "12 Spring St", "降级提示：rerank unavailable"} {
+	for _, want := range []string{"id=42", "Trattoria Bella", "manhattan", "italian", "评分4.6", "价格2", "12 Spring St", "检索说明：rerank unavailable"} {
 		if !strings.Contains(out.Content, want) {
 			t.Fatalf("content missing %q:\n%s", want, out.Content)
 		}
@@ -168,6 +169,130 @@ func TestSearchRestaurantsPropagatesRetrievalError(t *testing.T) {
 	_, err := h(context.Background(), json.RawMessage(`{"borough":"nowhere"}`))
 	if errs.CodeOf(err) != errs.CodeRetrievalInvalidFilter {
 		t.Fatalf("err = %v, want retrieval_invalid_filter", err)
+	}
+}
+
+// TestSearchRestaurantsMapsExtendedArguments covers the M5-01 argument set.
+func TestSearchRestaurantsMapsExtendedArguments(t *testing.T) {
+	svc := &fakeSearcher{}
+	h := SearchRestaurantsEntry(svc).Handler
+
+	out := invoke(t, h, `{
+		"query":"安静点的意餐",
+		"name":"Trattoria",
+		"neighborhood":"Midtown",
+		"price_levels":[2,3],
+		"soft_conditions":["安静","适合约会"]
+	}`)
+	if out.Status != domaintool.ToolStatusOK {
+		t.Fatalf("status = %s err = %+v", out.Status, out.Error)
+	}
+	req := svc.lastReq
+	if req.Query != "安静点的意餐" {
+		t.Errorf("query = %q, want the whole question", req.Query)
+	}
+	// The name fragment travels separately so the keyword channel matches a name
+	// while the semantic channel matches a question.
+	if req.Text != "Trattoria" {
+		t.Errorf("text = %q, want the name fragment", req.Text)
+	}
+	if req.Filter.Neighborhood != "Midtown" {
+		t.Errorf("neighborhood = %q", req.Filter.Neighborhood)
+	}
+	if len(req.Filter.PriceLevels) != 2 || req.Filter.PriceLevels[0] != 2 || req.Filter.PriceLevels[1] != 3 {
+		t.Errorf("price levels = %v", req.Filter.PriceLevels)
+	}
+	if len(req.SoftConditions) != 2 {
+		t.Errorf("soft conditions = %v", req.SoftConditions)
+	}
+}
+
+// TestSearchRestaurantsKeepsSoftConditionsOutOfTheFilter is the M5-01/M5-02
+// red line: a soft condition may rank, never exclude.
+func TestSearchRestaurantsKeepsSoftConditionsOutOfTheFilter(t *testing.T) {
+	svc := &fakeSearcher{}
+	h := SearchRestaurantsEntry(svc).Handler
+
+	invoke(t, h, `{"soft_conditions":["安静","适合约会"]}`)
+
+	req := svc.lastReq
+	if len(req.SoftConditions) != 2 {
+		t.Fatalf("soft conditions did not reach the request: %v", req.SoftConditions)
+	}
+	// Every condition must carry a review topic: the words alone cannot be
+	// matched against the corpus's topic tags, and the whole point of the M5-02
+	// slice is that the mapping survives the trip from sentence to recall.
+	for _, soft := range req.SoftConditions {
+		if soft.Topic == "" {
+			t.Fatalf("soft condition %q reached the request with no review topic", soft.Text)
+		}
+	}
+	filter := req.Filter
+	if filter.IsEmpty() {
+		// A soft-only search has an empty hard filter; that is correct, but the
+		// query must still carry the user's words into the soft channels.
+		return
+	}
+	for _, soft := range req.SoftConditions {
+		for _, hard := range append([]string{filter.Borough, filter.Neighborhood}, filter.Cuisines...) {
+			if strings.EqualFold(strings.TrimSpace(hard), soft.Text) {
+				t.Fatalf("soft condition %q leaked into the hard filter: %+v", soft.Text, filter)
+			}
+		}
+	}
+}
+
+// TestSearchRestaurantsRejectsAnInvalidPriceBand keeps an out-of-range band from
+// silently matching nothing: it is a request defect and says so.
+func TestSearchRestaurantsRejectsAnInvalidPriceBand(t *testing.T) {
+	svc := &fakeSearcher{}
+	h := SearchRestaurantsEntry(svc).Handler
+
+	_, err := h(context.Background(), json.RawMessage(`{"price_levels":[5]}`))
+	if errs.CodeOf(err) != errs.CodeRetrievalInvalidFilter {
+		t.Fatalf("err = %v, want retrieval_invalid_filter", err)
+	}
+	if svc.called != 0 {
+		t.Fatal("retrieval must not be reached with an unexecutable filter")
+	}
+}
+
+// TestSearchRestaurantsAcceptsASoftOnlySearch pins that a soft-only question is
+// still a search: the user asked for something, and refusing it would leave the
+// soft channels with nothing to rank.
+func TestSearchRestaurantsAcceptsASoftOnlySearch(t *testing.T) {
+	svc := &fakeSearcher{}
+	h := SearchRestaurantsEntry(svc).Handler
+
+	invoke(t, h, `{"soft_conditions":["安静"]}`)
+	if svc.called != 1 {
+		t.Fatalf("search called %d times, want 1", svc.called)
+	}
+}
+
+// TestSearchRestaurantsRendersReasonsAndSnapshotTime covers the result card:
+// the model must be able to quote why a candidate matched and when the data was
+// observed, instead of inventing a justification.
+func TestSearchRestaurantsRendersReasonsAndSnapshotTime(t *testing.T) {
+	snapshot := time.Date(2021, 9, 1, 12, 0, 0, 0, time.UTC)
+	svc := &fakeSearcher{result: domainretrieval.SearchResult{
+		Candidates: []search.RestaurantCandidate{
+			{
+				RestaurantID: 42, Name: "Trattoria Bella", Borough: "manhattan",
+				Cuisines: []string{"italian"}, Rating: ptrFloat(4.6),
+				PriceLevel: ptrInt(2), Address: "12 Spring St",
+				Reasons:    []string{"满足全部硬条件（borough=manhattan）", "语义匹配“安静”（相似度 0.812）"},
+				SnapshotAt: snapshot,
+			},
+		},
+	}}
+	h := SearchRestaurantsEntry(svc).Handler
+
+	out := invoke(t, h, `{"query":"italian"}`)
+	for _, want := range []string{"匹配原因", "满足全部硬条件", "语义匹配", "数据时间：2021-09-01"} {
+		if !strings.Contains(out.Content, want) {
+			t.Fatalf("content missing %q:\n%s", want, out.Content)
+		}
 	}
 }
 

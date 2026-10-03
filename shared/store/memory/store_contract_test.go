@@ -19,6 +19,7 @@ func TestMemoryStoresSatisfyContract(t *testing.T) {
 			Runs:          memory.NewRunRepository(),
 			Conversations: memory.NewConversationRepository(),
 			Memories:      memory.NewMemoryRepository(),
+			Reservations:  memory.NewReservationRepository(),
 		}
 	})
 }

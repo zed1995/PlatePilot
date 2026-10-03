@@ -34,6 +34,157 @@ func goodEntry(name string, handler toolreg.Handler) toolreg.Entry {
 	}
 }
 
+// writingEntry is a tool that changes something outside the conversation.
+func writingEntry(name string, policy toolreg.Confirmation) toolreg.Entry {
+	entry := goodEntry(name, okHandler())
+	entry.Spec.ReadOnly = false
+	entry.Confirmation = policy
+	if policy == toolreg.ConfirmationRequired {
+		entry.SummarizeApproval = func(_ context.Context, raw json.RawMessage) (string, error) {
+			return "will run with " + string(raw), nil
+		}
+	}
+	return entry
+}
+
+// The confirmation declaration is a startup check, not a runtime one: a writing
+// tool whose author never said how it is authorised must not reach the model at
+// all, because the failure it guards against is a write nothing approved and
+// the first place that can be caught is registration.
+func TestRegisterRefusesAWriteWithNoConfirmationPolicy(t *testing.T) {
+	cases := []struct {
+		name    string
+		entry   toolreg.Entry
+		wantErr bool
+		why     string
+	}{
+		{
+			name:    "write with no policy",
+			entry:   writingEntry("no_policy", ""),
+			wantErr: true,
+			why:     "the omitted declaration is exactly the case the check exists for",
+		},
+		{
+			name:    "write declaring no side effects",
+			entry:   writingEntry("claims_none", toolreg.ConfirmationNone),
+			wantErr: true,
+			why:     "a non-read-only spec cannot claim it has nothing to authorise",
+		},
+		{
+			name:    "write awaiting confirmation",
+			entry:   writingEntry("needs_approval", toolreg.ConfirmationRequired),
+			wantErr: false,
+		},
+		{
+			name:    "write the user's own words authorise",
+			entry:   writingEntry("save_it", toolreg.ConfirmationImplicit),
+			wantErr: false,
+		},
+		{
+			name:    "read-only with no policy",
+			entry:   goodEntry("plain_read", okHandler()),
+			wantErr: false,
+			why:     "a read has no side effects to describe",
+		},
+		{
+			name: "read-only declaring none",
+			entry: func() toolreg.Entry {
+				e := goodEntry("read_none", okHandler())
+				e.Confirmation = toolreg.ConfirmationNone
+				return e
+			}(),
+			wantErr: false,
+		},
+		{
+			name: "read-only claiming it needs confirmation",
+			entry: func() toolreg.Entry {
+				e := goodEntry("read_gated", okHandler())
+				e.Confirmation = toolreg.ConfirmationRequired
+				return e
+			}(),
+			wantErr: true,
+			why:     "gating a lookup would turn a lookup into a question",
+		},
+		{
+			name: "unknown policy",
+			entry: func() toolreg.Entry {
+				e := writingEntry("mystery", "maybe")
+				return e
+			}(),
+			wantErr: true,
+		},
+		{
+			name: "gated write with nothing to show the user",
+			entry: func() toolreg.Entry {
+				e := writingEntry("no_summary", toolreg.ConfirmationRequired)
+				e.SummarizeApproval = nil
+				return e
+			}(),
+			wantErr: true,
+			why:     "a parked call whose description is missing cannot be approved meaningfully",
+		},
+		{
+			name: "renderer on a tool that never parks",
+			entry: func() toolreg.Entry {
+				e := writingEntry("stray_summary", toolreg.ConfirmationImplicit)
+				e.SummarizeApproval = func(context.Context, json.RawMessage) (string, error) {
+					return "never used", nil
+				}
+				return e
+			}(),
+			wantErr: true,
+			why:     "the renderer exists to describe a park, so having one without a park is a mistake",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := toolreg.New(time.Second).Register(tc.entry)
+			switch {
+			case tc.wantErr && err == nil:
+				t.Fatalf("registration succeeded; want an error (%s)", tc.why)
+			case !tc.wantErr && err != nil:
+				t.Fatalf("registration failed: %v", err)
+			}
+		})
+	}
+}
+
+// The gate is asked by name at call time, so the registry has to answer it, and
+// it has to answer "no" for a tool that is not there — an unknown tool cannot
+// run either, so there is no write to miss.
+func TestRegistryReportsWhichToolsNeedConfirmation(t *testing.T) {
+	reg := toolreg.New(time.Second)
+	if err := reg.Register(writingEntry("request_thing", toolreg.ConfirmationRequired)); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if err := reg.Register(writingEntry("save_thing", toolreg.ConfirmationImplicit)); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if err := reg.Register(goodEntry("read_thing", okHandler())); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	for name, want := range map[string]bool{
+		"request_thing": true,
+		"save_thing":    false,
+		"read_thing":    false,
+		"absent_thing":  false,
+	} {
+		if got := reg.RequiresConfirmation(name); got != want {
+			t.Fatalf("RequiresConfirmation(%q) = %v, want %v", name, got, want)
+		}
+	}
+
+	// And the helper on the entry agrees with the lookup, so a caller holding
+	// the entry does not have to go through the registry.
+	if !writingEntry("x", toolreg.ConfirmationRequired).RequiresConfirmation() {
+		t.Fatal("an entry declaring ConfirmationRequired must report RequiresConfirmation")
+	}
+	if writingEntry("x", toolreg.ConfirmationImplicit).RequiresConfirmation() {
+		t.Fatal("an entry declaring ConfirmationImplicit must not report RequiresConfirmation")
+	}
+}
+
 func okHandler() toolreg.Handler {
 	return func(_ context.Context, raw json.RawMessage) (domaintool.ToolResult, error) {
 		return domaintool.ToolResult{Content: "got " + string(raw)}, nil

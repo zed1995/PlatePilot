@@ -12,6 +12,7 @@ import (
 	"github.com/zed1995/platepilot/chat-service/internal/httperr"
 	"github.com/zed1995/platepilot/shared/domain/conversation"
 	"github.com/zed1995/platepilot/shared/domain/errs"
+	domainmemory "github.com/zed1995/platepilot/shared/domain/memory"
 	"github.com/zed1995/platepilot/shared/requestctx"
 )
 
@@ -43,7 +44,14 @@ type ChatService interface {
 	// the calling goroutine; a non-nil emit error means the client is gone and
 	// the service must abandon the turn.
 	SendMessage(ctx context.Context, in SendMessageInput, emit func(StreamEvent) error) error
+	// ConfirmAction applies the user's answer to the thread's pending action.
+	// It is separate from SendMessage because it is not a turn: no model runs,
+	// and the outcome is a decision rather than a reply.
+	ConfirmAction(ctx context.Context, in ConfirmInput) (ConfirmResult, error)
 	ListMemories(ctx context.Context, userID string) (MemoryPage, error)
+	// UpdateMemory applies an edit to one of the user's memories. The user id
+	// scopes the lookup, so an id belonging to someone else is not found.
+	UpdateMemory(ctx context.Context, in UpdateMemoryInput) (MemoryView, error)
 	DeleteMemory(ctx context.Context, userID, memoryID string) error
 }
 
@@ -85,6 +93,19 @@ type MemoryView struct {
 	Confidence float64   `json:"confidence"`
 	CreatedAt  time.Time `json:"created_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+// UpdateMemoryInput is one requested edit.
+//
+// The two fields are pointers so "not mentioned" is distinguishable from
+// "cleared". A PATCH that sent neither is refused rather than answered with a
+// no-op, because a client that meant to change something and got a 200 back
+// would have no way to learn that nothing changed.
+type UpdateMemoryInput struct {
+	UserID   string
+	MemoryID string
+	Content  *string
+	Type     *domainmemory.MemoryType
 }
 
 // ---------------------------------------------------------------------------
@@ -208,7 +229,12 @@ func registerChatRoutes(h *server.Hertz, svc ChatService) {
 	v1.GET("/conversations/:id", GetThreadHandler(svc))
 	v1.GET("/conversations/:id/messages", ListMessagesHandler(svc))
 	v1.POST("/conversations/:id/messages", SendMessageHandler(svc))
+	// The decision endpoint sits beside the message endpoint rather than inside
+	// it: a confirmation is answered by its own route, and a thread that has
+	// nothing pending is told so instead of having its text re-read as a yes.
+	v1.POST("/conversations/:id/confirm", ConfirmHandler(svc))
 	v1.GET("/memories", ListMemoriesHandler(svc))
+	v1.PATCH("/memories/:memory_id", UpdateMemoryHandler(svc))
 	v1.DELETE("/memories/:memory_id", DeleteMemoryHandler(svc))
 }
 

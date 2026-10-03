@@ -23,6 +23,30 @@ const (
 	DocTypeRestaurantRepresentativeReviews DocType = "restaurant_representative_reviews"
 )
 
+// MinAnswerableDocTypes is how many distinct document kinds an evidence bundle
+// needs before an answer may be stated without qualification.
+//
+// Two, not one. A single document is one source's word about one aspect of a
+// restaurant, and an answer built on it can only report that source — it cannot
+// distinguish "the profile says the service is attentive" from "diners say the
+// service is attentive", which is the distinction the review-inference rule
+// depends on. Two kinds is the smallest bundle in which that distinction exists.
+//
+// It lives in the domain because it is a rule about evidence, and because three
+// stages have to agree on it: the assembler decides whether the token budget may
+// cut a bundle down to one kind, the composer decides whether an answer needs a
+// caveat, and a test that asserts "≥2 citations" is asserting this number.
+const MinAnswerableDocTypes = 2
+
+// DocTypesFrom returns the distinct kinds present in a bundle.
+func DocTypesFrom(items []Evidence) int {
+	kinds := make(map[DocType]struct{}, len(items))
+	for _, item := range items {
+		kinds[item.DocType] = struct{}{}
+	}
+	return len(kinds)
+}
+
 // Evidence is a cited fragment returned by retrieval. Every value carries its
 // source and snapshot time so answers can be grounded and explained.
 type Evidence struct {

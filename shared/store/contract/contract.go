@@ -28,6 +28,9 @@ type Stores struct {
 	Runs          store.RunRepository
 	Conversations store.ConversationRepository
 	Memories      store.MemoryRepository
+
+	// M5 mock reservation port.
+	Reservations store.ReservationRepository
 }
 
 // Factory returns a fresh, empty Stores for one subtest.
@@ -44,6 +47,7 @@ func Run(t *testing.T, newStores Factory) {
 	t.Run("RunRepository", func(t *testing.T) { runRunRepositoryContract(t, newStores(t).Runs) })
 	t.Run("ConversationRepository", func(t *testing.T) { runConversationRepositoryContract(t, newStores(t).Conversations) })
 	t.Run("MemoryRepository", func(t *testing.T) { runMemoryRepositoryContract(t, newStores(t).Memories) })
+	t.Run("ReservationRepository", func(t *testing.T) { runReservationRepositoryContract(t, newStores(t).Reservations) })
 }
 
 var baseTime = time.Date(2021, 9, 1, 0, 0, 0, 0, time.UTC)

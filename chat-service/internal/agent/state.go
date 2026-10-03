@@ -9,12 +9,15 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	domainchat "github.com/zed1995/platepilot/shared/domain/chat"
 	"github.com/zed1995/platepilot/shared/domain/conversation"
 	"github.com/zed1995/platepilot/shared/domain/evidence"
 	"github.com/zed1995/platepilot/shared/domain/search"
+
+	"github.com/zed1995/platepilot/chat-service/internal/agent/slots"
 )
 
 // Intent labels the minimal M4 routing decision.
@@ -59,6 +62,19 @@ type TurnState struct {
 	// CheckpointVersion is the version loaded at ingress, or zero for a new
 	// thread; finalize writes version+1.
 	CheckpointVersion int64
+	// LoadedCheckpoint is the checkpoint read at ingress, nil for a new thread.
+	//
+	// It is kept as a whole rather than flattened into the fields above because
+	// a follow-up turn has to read state the current turn does not otherwise
+	// care about: which slot was left open, which action was parked, and which
+	// restaurant the conversation had settled on.
+	LoadedCheckpoint *conversation.Checkpoint
+	// LoadedCandidates is the thread's candidate snapshot as it stood before
+	// this turn, in position order. It is separate from Candidates, which holds
+	// what this turn's own search returned: "第二家" refers to the list the user
+	// was shown last time, and a field that mixed the two would make an ordinal
+	// mean something different depending on when it was read.
+	LoadedCandidates []conversation.Candidate
 	// MemoryContext is the system-segment built from the user's long-term
 	// memories. Empty when there is nothing to inject.
 	MemoryContext string
@@ -69,6 +85,13 @@ type TurnState struct {
 	Candidates []search.RestaurantCandidate
 	Evidence   []evidence.Evidence
 
+	// Plan is this turn's interpretation of the user's message: the intent, the
+	// hard filters a search can enforce, and the soft conditions only reviews
+	// can support. It is produced once, at ingress, and then consumed by every
+	// tool that needs a default — which is what keeps one turn from containing
+	// two different readings of the same sentence.
+	Plan slots.Plan
+
 	// Recoverable conversation state, persisted into the checkpoint. Nodes
 	// that decide the turn needs more user input set State to a pending value
 	// together with PendingAction/MissingSlots and trigger a mid-turn
@@ -78,6 +101,25 @@ type TurnState struct {
 	MissingSlots         []string
 	SelectedRestaurantID int64
 
+	// PendingToolCallID names the write this turn parked for approval, and
+	// PendingArguments carries the call verbatim. They are stored beside the
+	// checkpoint because the approval arrives as a later request: without them
+	// the confirmation would know which tool to run but not with which
+	// arguments, and a booking is entirely made of its arguments.
+	//
+	// The id is minted here rather than taken from the model's call, so it
+	// identifies this approval attempt and cannot collide with a provider that
+	// reuses call ids across requests. It is what an idempotency key derived
+	// downstream commits to.
+	PendingToolCallID string
+	PendingArguments  json.RawMessage
+
+	// ConfirmationSummary is the sentence shown to the user for the parked
+	// call, and ConfirmationRequired records that this turn ended by asking for
+	// approval rather than by answering.
+	ConfirmationSummary  string
+	ConfirmationRequired bool
+
 	// UsedTools records that at least one tool ran this turn. It lets the answer
 	// node distinguish pure chit-chat from a restaurant question that retrieved
 	// nothing citable.
@@ -86,6 +128,22 @@ type TurnState struct {
 	// candidates nor evidence. The answer node then uses the fixed refusal
 	// template instead of shipping an ungrounded generation.
 	RetrievalEmpty bool
+
+	// ClarificationOptions are the restaurants a name matched equally well. When
+	// non-empty the turn stops and asks, because answering about "the" Katz's
+	// when the user meant a different one is a wrong answer that reads as a
+	// confident one.
+	ClarificationOptions []search.RestaurantCandidate
+	// ClarificationCount is how many consecutive clarification rounds this
+	// thread has had, loaded from the checkpoint at ingress. The cap exists so a
+	// name that cannot be disambiguated ends in a stated assumption rather than
+	// an unbounded question loop.
+	ClarificationCount int
+	// ClarificationAssumed records that the cap was reached and the turn
+	// proceeded with the best match instead of asking again. The answer has to
+	// say so; a silent assumption is the failure the cap is supposed to avoid,
+	// not a way around it.
+	ClarificationAssumed bool
 
 	// ToolRounds counts completed tool-execution rounds.
 	ToolRounds int
@@ -127,6 +185,30 @@ const (
 	EventToolFinish EventType = "tool.finish"
 	// EventCitation carries the validated evidence IDs attached to the answer.
 	EventCitation EventType = "citation"
+	// EventAwaitingInput reports that the thread parked a question for the
+	// user: it is waiting for a clarification or a confirmation, and the turn
+	// ended without an answer.
+	//
+	// It is a separate event from EventEnd because a client that only reads
+	// message.end cannot tell "the answer is complete" from "the answer is
+	// deliberately empty and something is expected of you".
+	EventAwaitingInput EventType = "state.awaiting_input"
+	// EventConfirmationRequired reports that the turn parked a write and is
+	// waiting for the user to approve it.
+	//
+	// It is separate from EventAwaitingInput because the two asks are answered
+	// by different endpoints: a clarification is answered by sending another
+	// message, a confirmation by POSTing a decision. A client that could not
+	// tell them apart would offer the user a text box for a yes/no.
+	EventConfirmationRequired EventType = "confirmation.required"
+	// EventMemorySaved reports that the turn wrote one long-term memory because
+	// the user asked it to.
+	//
+	// It is emitted so the client can show that something was kept without
+	// scraping the answer text. A memory is a durable side effect the user can
+	// later list and delete, so "when did that get saved" has to have an
+	// answer in the stream rather than only in the store.
+	EventMemorySaved EventType = "memory.saved"
 	// EventEnd closes a successful turn.
 	EventEnd EventType = "message.end"
 	// EventError closes a failed turn; the code is an errs.Code.
@@ -149,6 +231,22 @@ type Event struct {
 	// Text / citation events.
 	Delta     string
 	Citations []int64
+
+	// Awaiting-input event.
+	State         string
+	PendingAction string
+	MissingSlots  []string
+
+	// Confirmation event.
+	ConfirmationSummary string
+
+	// Memory event: the row the turn wrote.
+	MemoryID      string
+	MemoryType    string
+	MemoryContent string
+	// MemoryRefreshed reports that an identical memory already existed, so a
+	// client can say "already remembered" instead of announcing a new one.
+	MemoryRefreshed bool
 
 	// End / error events.
 	FinishReason string

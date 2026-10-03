@@ -16,7 +16,7 @@ LDFLAGS := -X main.version=$(VERSION)
 # root's as a fallback, so the two services can share one set of secrets.
 ENV_FILE := $(shell [ -f .env ] && echo .env || echo ../.env)
 
-.PHONY: help build run run-admin test test-race vet cover lint tidy clean eval-retrieval
+.PHONY: help build run run-admin check-config test test-race vet cover lint tidy clean eval-retrieval
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
@@ -29,6 +29,9 @@ run: ## Run the service (HTTP, default :8080)
 
 run-admin: ## Run the service with the admin API enabled (loopback only)
 	@set -a; . ./$(ENV_FILE); set +a; ADMIN_ENABLED=true go run .
+
+check-config: ## Print the resolved configuration and exit
+	@set -a; . ./$(ENV_FILE); set +a; go run . check-config
 
 # The retrieval fixtures score against a live corpus, so they skip unless the
 # database is actually there: a green suite that quietly asserted nothing is

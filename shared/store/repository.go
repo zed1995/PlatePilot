@@ -2,10 +2,12 @@ package store
 
 import (
 	"context"
+	"time"
 
 	"github.com/zed1995/platepilot/shared/domain/conversation"
 	"github.com/zed1995/platepilot/shared/domain/evidence"
 	"github.com/zed1995/platepilot/shared/domain/memory"
+	"github.com/zed1995/platepilot/shared/domain/reservation"
 	"github.com/zed1995/platepilot/shared/domain/run"
 	"github.com/zed1995/platepilot/shared/domain/search"
 )
@@ -125,6 +127,20 @@ type ConversationRepository interface {
 	// (exclusive; the newest messages when beforeID is empty), in ascending
 	// chronological order. A non-positive limit means no limit.
 	ListMessages(ctx context.Context, threadID string, limit int, beforeID string) ([]conversation.Message, error)
+
+	// ReplaceCandidates swaps a thread's candidate snapshot for the given set.
+	//
+	// It replaces rather than appends because position is the whole point: a
+	// follow-up says "第二家", and that ordinal is only well defined against one
+	// ordered list. Appending would leave two lists and an ordinal that means
+	// different restaurants depending on which turn it was spoken in.
+	//
+	// An empty set is a real request and clears the snapshot, which is what a
+	// turn that produced no candidates needs. A turn that produced none but did
+	// not search simply never calls this.
+	ReplaceCandidates(ctx context.Context, threadID string, candidates []conversation.Candidate) error
+	// ListCandidates returns a thread's current candidates in position order.
+	ListCandidates(ctx context.Context, threadID string) ([]conversation.Candidate, error)
 }
 
 // MemoryRepository manages user-controlled long-term memories.
@@ -135,8 +151,61 @@ type MemoryRepository interface {
 }
 
 // RunRepository records agent runs and tool call audits.
+//
+// M4 wrote these rows and never read them; M5 adds the read side so a
+// recommendation's tool chain can be replayed afterwards. The reads return the
+// same rows the writer stored — arguments on a tool call are the redacted
+// digest the audit assembled, never the raw model payload — because a read
+// endpoint that widened what it returns would undo the redaction at the point
+// where it is easiest to overlook.
 type RunRepository interface {
 	Start(ctx context.Context, agentRun run.AgentRun) error
 	Finish(ctx context.Context, agentRun run.AgentRun) error
 	RecordToolCall(ctx context.Context, call run.ToolCallRecord) error
+
+	// GetRun returns one run by id, or errs.ErrNotFound.
+	GetRun(ctx context.Context, runID string) (run.AgentRun, error)
+	// ListRuns returns up to limit runs for a thread, newest first. beforeID is
+	// an exclusive cursor in the same style as the message paging API: when
+	// non-empty, only runs started strictly before that run are returned.
+	ListRuns(ctx context.Context, threadID string, limit int, beforeID string) ([]run.AgentRun, error)
+	// ListToolCalls returns one run's tool calls in invocation order. An
+	// unknown run is not an error and yields an empty slice: a run that called
+	// no tools and a run id that does not exist are both "no rows", and the
+	// caller that needs to tell them apart reads the run first.
+	ListToolCalls(ctx context.Context, runID string) ([]run.ToolCallRecord, error)
+}
+
+// ReservationRepository persists mock reservation slots, holds, and bookings.
+//
+// The capability is deliberately Mock-sized: one table of slots per restaurant
+// per date, capacity tracked as a counter, and a unique idempotency key that
+// makes a repeated confirmation idempotent. It is not a booking system and the
+// port says so by having no cancel or reschedule method.
+type ReservationRepository interface {
+	// EnsureSlots creates any missing slots and returns nothing when they all
+	// exist. The mock inventory is generated from a template rather than
+	// imported, so the first read of a day materialises that day's slots.
+	EnsureSlots(ctx context.Context, slots []reservation.Slot) error
+	// ListSlots returns one restaurant's slots for one date, in time order.
+	ListSlots(ctx context.Context, restaurantID int64, date string) ([]reservation.Slot, error)
+	// GetSlot returns one slot by id, or errs.ErrNotFound.
+	GetSlot(ctx context.Context, slotID string) (reservation.Slot, error)
+	// HoldSlot atomically reserves partySize seats when the slot has room, and
+	// returns errs.ErrReservationUnavailable otherwise. The check and the
+	// increment must be one operation: a read-then-write would let two
+	// concurrent holds both see the last seat.
+	HoldSlot(ctx context.Context, slotID string, partySize int) (reservation.Slot, error)
+	// ReleaseSlot returns seats to a slot after a hold is cancelled or expires.
+	ReleaseSlot(ctx context.Context, slotID string, partySize int) error
+	// SaveReservation inserts or updates a reservation.
+	SaveReservation(ctx context.Context, res reservation.Reservation) error
+	// GetReservation returns one reservation by id, or errs.ErrNotFound.
+	GetReservation(ctx context.Context, reservationID string) (reservation.Reservation, error)
+	// GetByIdempotencyKey returns the reservation a key already produced, or
+	// errs.ErrNotFound. It is the read half of the idempotent confirmation.
+	GetByIdempotencyKey(ctx context.Context, key string) (reservation.Reservation, error)
+	// ReleaseExpiredHolds expires held reservations whose TTL passed and
+	// returns the seats to their slots. It returns how many it expired.
+	ReleaseExpiredHolds(ctx context.Context, now time.Time) (int, error)
 }

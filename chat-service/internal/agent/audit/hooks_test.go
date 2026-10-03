@@ -48,6 +48,53 @@ func (f *fakeRunRepo) RecordToolCall(_ context.Context, call run.ToolCallRecord)
 	return f.callErr
 }
 
+// The read path is not what these tests exercise, but the port requires it:
+// a fake that only implements the writes would let a change to the read
+// contract slip through as long as nothing called it.
+func (f *fakeRunRepo) GetRun(_ context.Context, runID string) (run.AgentRun, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := len(f.finishes) - 1; i >= 0; i-- {
+		if f.finishes[i].RunID == runID {
+			return f.finishes[i], nil
+		}
+	}
+	for i := len(f.starts) - 1; i >= 0; i-- {
+		if f.starts[i].RunID == runID {
+			return f.starts[i], nil
+		}
+	}
+	return run.AgentRun{}, errs.ErrNotFound
+}
+
+func (f *fakeRunRepo) ListRuns(_ context.Context, threadID string, limit int, _ string) ([]run.AgentRun, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []run.AgentRun
+	for _, record := range f.finishes {
+		if record.ThreadID != threadID {
+			continue
+		}
+		out = append(out, record)
+		if limit > 0 && len(out) == limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeRunRepo) ListToolCalls(_ context.Context, runID string) ([]run.ToolCallRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []run.ToolCallRecord
+	for _, call := range f.calls {
+		if call.RunID == runID {
+			out = append(out, call)
+		}
+	}
+	return out, nil
+}
+
 func (f *fakeRunRepo) snapshot() ([]run.AgentRun, []run.AgentRun, []run.ToolCallRecord) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

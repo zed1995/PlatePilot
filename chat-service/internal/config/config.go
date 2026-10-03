@@ -20,17 +20,18 @@ const DotEnvFile = ".env"
 
 // Config is the fully resolved chat-service configuration.
 type Config struct {
-	App       sharedcfg.AppConfig
-	HTTP      HTTPConfig
-	Log       sharedcfg.LogConfig
-	Postgres  sharedcfg.PostgresConfig
-	Chat      ChatConfig
-	Agent     AgentConfig
-	Embedding sharedcfg.EmbeddingConfig
-	Retrieval sharedcfg.RetrievalConfig
-	Rerank    RerankConfig
-	Admin     AdminConfig
-	Timeout   sharedcfg.TimeoutConfig
+	App         sharedcfg.AppConfig
+	HTTP        HTTPConfig
+	Log         sharedcfg.LogConfig
+	Postgres    sharedcfg.PostgresConfig
+	Chat        ChatConfig
+	Agent       AgentConfig
+	Embedding   sharedcfg.EmbeddingConfig
+	Retrieval   sharedcfg.RetrievalConfig
+	Rerank      RerankConfig
+	Admin       AdminConfig
+	Reservation ReservationConfig
+	Timeout     sharedcfg.TimeoutConfig
 }
 
 // Agent defaults bound the tool-use loop so a model that keeps requesting
@@ -38,6 +39,20 @@ type Config struct {
 const (
 	defaultAgentMaxToolRounds = 5
 	defaultAgentToolTimeout   = 15 * time.Second
+
+	// Interpretation defaults. They are the same values the slot layer falls
+	// back to, repeated here because configuration is where an operator looks
+	// for them and a default that exists in two places must at least agree.
+	defaultAgentSlotExtractTimeout   = 10 * time.Second
+	defaultAgentMaxClarifications    = 3
+	defaultAgentResolveMinSimilarity = 0.55
+	defaultAgentResolveAmbiguityGap  = 0.10
+
+	// defaultAgentMemoryWriteEnabled keeps the user-requested memory path on by
+	// default. It is the only way a memory is ever created, and it is guarded by
+	// its own input check rather than by a confirmation step, so switching it
+	// off removes a capability the user asked for rather than closing a hole.
+	defaultAgentMemoryWriteEnabled = true
 )
 
 // AgentConfig holds the agent runtime knobs. They stay effective even when no
@@ -49,6 +64,31 @@ type AgentConfig struct {
 	MaxToolRounds int
 	// ToolTimeout bounds one tool invocation.
 	ToolTimeout time.Duration
+
+	// SlotExtractTimeout bounds the once-per-turn structured extraction call.
+	// It is shorter than the chat timeout because extraction is an optional
+	// refinement: a turn can proceed on a rule-derived plan, and a user waiting
+	// on a model that is still deciding what a sentence meant should get the
+	// rules answer instead.
+	SlotExtractTimeout time.Duration
+	// MaxClarifications bounds how many turns may be spent asking the user to
+	// disambiguate before the agent proceeds on its best assumption. Without a
+	// bound, a model that keeps finding two plausible restaurants can keep the
+	// thread asking forever.
+	MaxClarifications int
+	// ResolveMinSimilarity is the name-match similarity at or above which a
+	// named restaurant counts as found.
+	ResolveMinSimilarity float64
+	// ResolveAmbiguityGap is the top1/top2 similarity difference below which a
+	// name match is ambiguous rather than resolved.
+	ResolveAmbiguityGap float64
+
+	// MemoryWriteEnabled registers the save_memory tool. It is on by default:
+	// the tool is the only way a long-term memory is created, and it is already
+	// guarded by an input check that refuses anything the user did not ask for.
+	// Switching it off removes the capability rather than closing a hole, which
+	// is why it is a separate switch from anything about retrieval.
+	MemoryWriteEnabled bool
 }
 
 // AdminConfig holds the administration console settings. The console is off by
@@ -59,6 +99,36 @@ type AdminConfig struct {
 	DefaultPageSize int
 	MaxPageSize     int
 	MaxRejections   int
+}
+
+// Reservation defaults. The TTL and the policy version are repeated here rather
+// than imported from the reservation package so configuration stays a leaf, and
+// a value that exists in two places must at least agree; the service falls back
+// to the same numbers when it is handed a zero.
+const (
+	defaultReservationHoldTTL      = 10 * time.Minute
+	defaultReservationPolicyName   = "mock-v1"
+	defaultReservationEnabledState = false
+)
+
+// ReservationConfig holds the mock reservation capability's settings.
+//
+// The capability is off by default and that is a decision, not an oversight:
+// these two tools are the only ones in the registry that can write outside the
+// conversation, and a write path should be switched on deliberately. Turning it
+// off removes the tools from the registry entirely rather than leaving them
+// registered and failing, so a deployment without it presents a model that
+// cannot even ask for a table.
+type ReservationConfig struct {
+	// Enabled registers get_availability and request_reservation.
+	Enabled bool
+	// HoldTTL bounds how long a hold keeps its seats before the TTL sweep
+	// returns them. It must be long enough to read a summary and answer.
+	HoldTTL time.Duration
+	// PolicyVersion identifies the rules a booking was made under. It is
+	// recorded on every slot and quoted in the approval summary, so a user is
+	// told which policy they are agreeing to.
+	PolicyVersion string
 }
 
 // RerankConfig holds the optional reranking settings. An empty provider name
@@ -157,14 +227,24 @@ func Load() (Config, error) {
 			ContextTokens:         l.Int("CHAT_CONTEXT_TOKENS", defaultChatContextTokens),
 		},
 		Agent: AgentConfig{
-			MaxToolRounds: l.Int("AGENT_MAX_TOOL_ROUNDS", defaultAgentMaxToolRounds),
-			ToolTimeout:   l.Duration("AGENT_TOOL_TIMEOUT", defaultAgentToolTimeout),
+			MaxToolRounds:        l.Int("AGENT_MAX_TOOL_ROUNDS", defaultAgentMaxToolRounds),
+			ToolTimeout:          l.Duration("AGENT_TOOL_TIMEOUT", defaultAgentToolTimeout),
+			SlotExtractTimeout:   l.Duration("AGENT_SLOT_EXTRACT_TIMEOUT", defaultAgentSlotExtractTimeout),
+			MaxClarifications:    l.Int("AGENT_MAX_CLARIFICATIONS", defaultAgentMaxClarifications),
+			ResolveMinSimilarity: l.Float("AGENT_RESOLVE_MIN_SIMILARITY", defaultAgentResolveMinSimilarity),
+			ResolveAmbiguityGap:  l.Float("AGENT_RESOLVE_AMBIGUITY_GAP", defaultAgentResolveAmbiguityGap),
+			MemoryWriteEnabled:   l.Bool("AGENT_MEMORY_WRITE_ENABLED", defaultAgentMemoryWriteEnabled),
 		},
 		Admin: AdminConfig{
 			Enabled:         l.Bool("ADMIN_ENABLED", false),
 			DefaultPageSize: l.Int("ADMIN_DEFAULT_PAGE_SIZE", 25),
 			MaxPageSize:     l.Int("ADMIN_MAX_PAGE_SIZE", 100),
 			MaxRejections:   l.Int("ADMIN_MAX_REJECTIONS", 200),
+		},
+		Reservation: ReservationConfig{
+			Enabled:       l.Bool("RESERVATION_ENABLED", defaultReservationEnabledState),
+			HoldTTL:       l.Duration("RESERVATION_HOLD_TTL", defaultReservationHoldTTL),
+			PolicyVersion: l.String("RESERVATION_POLICY_VERSION", defaultReservationPolicyName),
 		},
 	}
 	if err := l.Err(); err != nil {
@@ -188,7 +268,27 @@ func (c Config) Validate() error {
 		c.Retrieval.Validate(),
 		c.Rerank.validate(),
 		c.Admin.validate(),
+		c.Reservation.validate(),
 	)
+}
+
+// validate reserves its checks for the enabled capability. A switched-off
+// reservation path has no hold and no policy to get wrong, and refusing to
+// start because an unused knob is nonsensical would block the deployments that
+// never touch it.
+func (c ReservationConfig) validate() []string {
+	if !c.Enabled {
+		return nil
+	}
+	var problems []string
+	if c.HoldTTL <= 0 {
+		problems = append(problems, fmt.Sprintf(
+			"RESERVATION_HOLD_TTL: must be > 0 (got %s)", c.HoldTTL))
+	}
+	if strings.TrimSpace(c.PolicyVersion) == "" {
+		problems = append(problems, "RESERVATION_POLICY_VERSION: must not be empty")
+	}
+	return problems
 }
 
 func (c AdminConfig) validate() []string {
@@ -262,6 +362,22 @@ func (c AgentConfig) validate() []string {
 		problems = append(problems, fmt.Sprintf(
 			"AGENT_TOOL_TIMEOUT: must be > 0 (got %s)", c.ToolTimeout))
 	}
+	if c.SlotExtractTimeout <= 0 {
+		problems = append(problems, fmt.Sprintf(
+			"AGENT_SLOT_EXTRACT_TIMEOUT: must be > 0 (got %s)", c.SlotExtractTimeout))
+	}
+	if c.MaxClarifications <= 0 {
+		problems = append(problems, fmt.Sprintf(
+			"AGENT_MAX_CLARIFICATIONS: must be > 0 (got %d)", c.MaxClarifications))
+	}
+	if c.ResolveMinSimilarity <= 0 || c.ResolveMinSimilarity > 1 {
+		problems = append(problems, fmt.Sprintf(
+			"AGENT_RESOLVE_MIN_SIMILARITY: must be in (0,1] (got %g)", c.ResolveMinSimilarity))
+	}
+	if c.ResolveAmbiguityGap < 0 || c.ResolveAmbiguityGap > 1 {
+		problems = append(problems, fmt.Sprintf(
+			"AGENT_RESOLVE_AMBIGUITY_GAP: must be in [0,1] (got %g)", c.ResolveAmbiguityGap))
+	}
 	return problems
 }
 
@@ -314,6 +430,11 @@ func (c Config) Summary() map[string]any {
 		"chat_context_tokens":          c.Chat.ContextTokens,
 		"agent_max_tool_rounds":        c.Agent.MaxToolRounds,
 		"agent_tool_timeout":           c.Agent.ToolTimeout.String(),
+		"agent_slot_extract_timeout":   c.Agent.SlotExtractTimeout.String(),
+		"agent_max_clarifications":     c.Agent.MaxClarifications,
+		"agent_resolve_min_similarity": c.Agent.ResolveMinSimilarity,
+		"agent_resolve_ambiguity_gap":  c.Agent.ResolveAmbiguityGap,
+		"agent_memory_write_enabled":   c.Agent.MemoryWriteEnabled,
 		"embedding_provider":           c.Embedding.Provider,
 		"embedding_model":              c.Embedding.Model,
 		"embedding_dimensions":         c.Embedding.Dimensions,
@@ -329,6 +450,9 @@ func (c Config) Summary() map[string]any {
 		"admin_enabled":                c.Admin.Enabled,
 		"admin_default_page_size":      c.Admin.DefaultPageSize,
 		"admin_max_page_size":          c.Admin.MaxPageSize,
+		"reservation_enabled":          c.Reservation.Enabled,
+		"reservation_hold_ttl":         c.Reservation.HoldTTL.String(),
+		"reservation_policy_version":   c.Reservation.PolicyVersion,
 	}
 }
 

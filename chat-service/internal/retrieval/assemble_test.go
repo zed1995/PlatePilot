@@ -321,3 +321,122 @@ func TestAssembleAndReturnReportsBothStages(t *testing.T) {
 		t.Fatalf("scope_size = %d, want 2", trace.ScopeSize)
 	}
 }
+
+// The budget admits in score order, which is the right order for relevance and
+// the wrong one for support: two review summaries are two restatements of the
+// same channel. When the cut leaves one kind standing and another kind is
+// available, the weakest admitted document trades places with it.
+func TestAssemblyTradesABudgetCutForDocTypeDiversity(t *testing.T) {
+	items := []evidence.Evidence{
+		citable(1, 7, evidence.DocTypeRestaurantReviewSummary, 0.9, longText(40)), // 50 tokens
+		citable(2, 8, evidence.DocTypeRestaurantReviewSummary, 0.8, longText(40)), // 50 tokens
+		citable(3, 9, evidence.DocTypeRestaurantHours, 0.7, longText(32)),         // 40 tokens
+	}
+
+	kept, report, err := AssembleEvidence(items, AssembleOptions{TokenBudget: 100})
+	if err != nil {
+		t.Fatalf("assemble: %v", err)
+	}
+	if got := evidence.DocTypesFrom(kept); got != evidence.MinAnswerableDocTypes {
+		t.Fatalf("kept %d doc types, want %d: %+v", got, evidence.MinAnswerableDocTypes, kept)
+	}
+	ids := make([]int64, 0, len(kept))
+	for _, item := range kept {
+		ids = append(ids, item.EvidenceID)
+	}
+	// The strongest document stays; the weaker same-kind one gives way to the
+	// hours document, which is weaker but adds a kind.
+	if len(ids) != 2 || ids[0] != 1 || ids[1] != 3 {
+		t.Fatalf("kept %v, want [1 3]", ids)
+	}
+	if report.Tokens > report.TokenBudget {
+		t.Fatalf("spent %d tokens against a budget of %d", report.Tokens, report.TokenBudget)
+	}
+	if report.DroppedByReason["doc_type_floor"] != 1 {
+		t.Fatalf("the trade must be reported: %v", report.DroppedByReason)
+	}
+	if report.Considered != 3 || report.Kept != 2 || report.Dropped != 1 {
+		t.Fatalf("accounting: considered=%d kept=%d dropped=%d",
+			report.Considered, report.Kept, report.Dropped)
+	}
+}
+
+// A single citation beats a single weaker one: the trade is abandoned rather
+// than pursued past the point where it would empty the bundle.
+func TestAssemblyNeverTradesBelowOneDocument(t *testing.T) {
+	items := []evidence.Evidence{
+		citable(1, 7, evidence.DocTypeRestaurantReviewSummary, 0.9, longText(40)), // 50 tokens
+		citable(2, 8, evidence.DocTypeRestaurantReviewSummary, 0.8, longText(40)), // 50 tokens
+		citable(3, 9, evidence.DocTypeRestaurantHours, 0.7, longText(80)),         // 100 tokens
+	}
+
+	kept, report, err := AssembleEvidence(items, AssembleOptions{TokenBudget: 100})
+	if err != nil {
+		t.Fatalf("assemble: %v", err)
+	}
+	if len(kept) != 2 || kept[0].EvidenceID != 1 || kept[1].EvidenceID != 2 {
+		t.Fatalf("kept %+v, want the two review summaries", kept)
+	}
+	if report.DroppedByReason["doc_type_floor"] != 0 {
+		t.Fatalf("an abandoned trade must not be reported as a drop: %v", report.DroppedByReason)
+	}
+}
+
+// Nothing to buy: when the whole corpus is one kind, the floor is a no-op and
+// must not invent a drop.
+func TestAssemblyDoesNotTradeWhenTheCorpusHasOneKind(t *testing.T) {
+	items := []evidence.Evidence{
+		citable(1, 7, evidence.DocTypeRestaurantReviewSummary, 0.9, longText(40)),
+		citable(2, 8, evidence.DocTypeRestaurantReviewSummary, 0.8, longText(40)),
+		citable(3, 9, evidence.DocTypeRestaurantReviewSummary, 0.7, longText(40)),
+	}
+
+	kept, report, err := AssembleEvidence(items, AssembleOptions{TokenBudget: 100})
+	if err != nil {
+		t.Fatalf("assemble: %v", err)
+	}
+	if len(kept) != 2 {
+		t.Fatalf("kept %d, want 2", len(kept))
+	}
+	if report.DroppedByReason["doc_type_floor"] != 0 {
+		t.Fatalf("no trade was possible, yet one was reported: %v", report.DroppedByReason)
+	}
+	if report.DroppedByReason["token_budget"] != 1 {
+		t.Fatalf("budget drops = %v, want 1", report.DroppedByReason)
+	}
+}
+
+// The floor must not reorder what it keeps: the answer still reads strongest
+// first, and two runs over the same input still agree.
+func TestAssemblyKeepsScoreOrderAfterTheTrade(t *testing.T) {
+	items := []evidence.Evidence{
+		citable(1, 7, evidence.DocTypeRestaurantReviewSummary, 0.95, longText(40)),
+		citable(2, 8, evidence.DocTypeRestaurantReviewSummary, 0.90, longText(40)),
+		citable(3, 9, evidence.DocTypeRestaurantHours, 0.70, longText(32)),
+	}
+
+	first, _, err := AssembleEvidence(items, AssembleOptions{TokenBudget: 100})
+	if err != nil {
+		t.Fatalf("assemble: %v", err)
+	}
+	for i := 1; i < len(first); i++ {
+		if first[i-1].Score < first[i].Score {
+			t.Fatalf("kept out of score order: %+v", first)
+		}
+	}
+	for run := 0; run < 5; run++ {
+		again, _, err := AssembleEvidence(items, AssembleOptions{TokenBudget: 100})
+		if err != nil {
+			t.Fatalf("assemble: %v", err)
+		}
+		if len(again) != len(first) {
+			t.Fatalf("run %d kept %d, first kept %d", run, len(again), len(first))
+		}
+		for i := range first {
+			if again[i].EvidenceID != first[i].EvidenceID {
+				t.Fatalf("run %d position %d: evidence %d, want %d",
+					run, i, again[i].EvidenceID, first[i].EvidenceID)
+			}
+		}
+	}
+}

@@ -31,10 +31,21 @@ type Config struct {
 	// unscoped, which reads as a wrong URL rather than a wrong request.
 	Search   SearchService
 	Evidence EvidenceService
+	// Interpret is the read-only slot-extraction surface. It is separate from
+	// Search because it answers a different question — "what did you understand?"
+	// rather than "what matched?" — and because it must stay available even when
+	// no chat provider is configured, which is exactly the deployment where a
+	// rules-derived plan is the only plan there is.
+	Interpret SlotInterpreter
 	// Chat is the conversational application service: threads, transcript
 	// history, the SSE turn endpoint, and user memories. When nil those routes
 	// are not registered, while the read-only retrieval API still serves.
 	Chat ChatService
+	// Runs is the read-only replay surface: the audit rows a completed turn
+	// wrote. It is a separate service from Chat because a deployment can serve
+	// conversations without a run store, and because the two answer different
+	// questions — what the user saw versus what the system did.
+	Runs RunService
 	// Admin is the read-only administration application service. When
 	// AdminEnabled is true, the /admin/v1 group is mounted behind the
 	// local-host guard; with it false (the default) no administration path
@@ -93,8 +104,22 @@ func NewRouter(cfg Config) *server.Hertz {
 		v1.POST("/restaurants/evidence", EvidenceHandler(cfg.Evidence))
 		v1.POST("/restaurants/:id/evidence", RestaurantEvidenceHandler(cfg.Evidence))
 	}
+	// The interpret route is registered on its own service so it survives a
+	// deployment with no chat provider: understanding a sentence is a purely
+	// local parse when there is no model to ask, and it still answers.
+	if cfg.Interpret != nil {
+		v1 := h.Group("/v1")
+		v1.POST("/restaurants/interpret", InterpretHandler(cfg.Interpret))
+	}
 	if cfg.Chat != nil {
 		registerChatRoutes(h, cfg.Chat)
+	}
+	// The replay routes are registered on their own service. A deployment that
+	// has conversations but no run store (the in-memory assembly) serves a
+	// transcript and no tool chain, which is a narrower API rather than a
+	// broken one.
+	if cfg.Runs != nil {
+		registerRunRoutes(h, cfg.Runs)
 	}
 
 	// Administration console. Mounted only when explicitly enabled: the guard

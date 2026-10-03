@@ -9,7 +9,6 @@ package retrieval
 import (
 	"fmt"
 	"sort"
-	"strings"
 
 	"github.com/zed1995/platepilot/shared/domain/retrieval"
 	"github.com/zed1995/platepilot/shared/domain/search"
@@ -354,32 +353,11 @@ const (
 )
 
 // describeFilters renders the active filters for a trace note.
+//
+// The rendering itself lives in the domain, because the answer prompt quotes
+// the same sentence: a second renderer here would be free to name a different
+// subset of the conditions than the one the search actually enforced, and the
+// user reading the answer would have no way to notice.
 func describeFilters(filter search.RestaurantFilter) string {
-	var parts []string
-	if len(filter.Cuisines) > 0 {
-		parts = append(parts, "菜系="+strings.Join(filter.Cuisines, "/"))
-	}
-	if len(filter.PriceLevels) > 0 {
-		levels := make([]string, 0, len(filter.PriceLevels))
-		for _, level := range filter.PriceLevels {
-			levels = append(levels, fmt.Sprintf("$%d", level))
-		}
-		parts = append(parts, "价格="+strings.Join(levels, "/"))
-	}
-	if filter.MinRating != nil {
-		parts = append(parts, fmt.Sprintf("评分>=%.1f", *filter.MinRating))
-	}
-	if filter.Neighborhood != "" {
-		parts = append(parts, "地区="+filter.Neighborhood)
-	}
-	if filter.Borough != "" {
-		parts = append(parts, "行政区="+filter.Borough)
-	}
-	if filter.OpenNow != nil {
-		parts = append(parts, fmt.Sprintf("营业=%t", *filter.OpenNow))
-	}
-	if filter.HasDistance() {
-		parts = append(parts, fmt.Sprintf("距离<%dm", *filter.MaxDistanceMeters))
-	}
-	return strings.Join(parts, "、")
+	return filter.Describe()
 }

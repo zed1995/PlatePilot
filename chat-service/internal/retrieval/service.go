@@ -141,7 +141,7 @@ func (s *Service) Search(ctx context.Context, req retrieval.Request) (retrieval.
 	}
 	text := strings.TrimSpace(req.Text)
 	query := strings.TrimSpace(req.Query)
-	if text == "" && query == "" && req.Filter.IsEmpty() {
+	if text == "" && query == "" && req.Filter.IsEmpty() && !req.HasSoftConditions() {
 		return retrieval.SearchResult{}, errs.New(errs.CodeRetrievalEmptyQuery,
 			"a search needs text, a filter, or both")
 	}
@@ -192,7 +192,7 @@ func (s *Service) Search(ctx context.Context, req retrieval.Request) (retrieval.
 	mergePool(candidates, priors, keywordCandidates, keywordPriors)
 
 	vectorInput, vectorCandidates, vectorPriors, vectorDim, err :=
-		s.vectorChannel(ctx, query, req.Filter, depth)
+		s.vectorChannel(ctx, query, req.Filter, req.SoftConditions, depth)
 	if err != nil {
 		// Unlike the other two channels, the vector one can refuse outright: see
 		// vectorChannel for why a misconfigured corpus is not something to
@@ -460,10 +460,28 @@ func firstNonNilFloat(values ...*float64) *float64 {
 // returned rows. Retrieving first and filtering afterwards would rank against
 // restaurants the user excluded, then throw most of them away, and a soft
 // condition could promote a restaurant that does not satisfy a hard one.
+// softConditionNote is the trace line for a vector recall that was steered by
+// soft conditions.
+//
+// It says "inference from reviews" in the trace, not only in the answer, for
+// the same reason the trace exists at all: the ranking a reader has to check is
+// the one the channels actually produced, and a ranking half of which came from
+// review text must not look like a ranking that came from columns. The phrase
+// is deliberately repeated in the prompt and here rather than derived from one
+// place — the trace is read by an operator and the sentence by a user, and a
+// shared constant would only couple two vocabularies that should be free to
+// diverge.
+const softConditionNote = "软条件按评论主题与向量召回，属于评论推断"
+
+// softReasonPrefix labels a contribution that came from review text rather than
+// from a column. It is the wording the answer layer is told to reuse.
+const softReasonPrefix = "评论推断："
+
 func (s *Service) vectorChannel(
 	ctx context.Context,
 	query string,
 	filter search.RestaurantFilter,
+	soft []retrieval.SoftCondition,
 	depth int,
 ) (ChannelInput, map[int64]search.RestaurantCandidate, map[int64]float64, int, error) {
 	skipped := func(note string) (ChannelInput, map[int64]search.RestaurantCandidate, map[int64]float64, int, error) {
@@ -479,13 +497,22 @@ func (s *Service) vectorChannel(
 	if s.embedding == nil {
 		return skipped("向量通道不可用：未配置 embedding provider")
 	}
-	if strings.TrimSpace(query) == "" {
+
+	// The embedded text is the question plus the soft conditions the corpus can
+	// only answer through reviews.
+	//
+	// It is built here rather than passed in as one string because the caller's
+	// Query is also what the reranker and the trace name: folding "安静 适合约会"
+	// into it would make every downstream reader believe the user asked for
+	// those words as a subject, when what they did was constrain the ranking.
+	embeddingText := composeEmbeddingText(query, soft)
+	if strings.TrimSpace(embeddingText) == "" {
 		// Embedding an empty string yields a vector that means nothing. A
 		// filter-only search has no soft condition to interpret.
 		return skipped("无自然语言查询，向量通道跳过")
 	}
 
-	vector, err := s.embedQuery(ctx, query)
+	vector, err := s.embedQuery(ctx, embeddingText)
 	if err != nil {
 		// The vector channel answers a question the user only implied, so its
 		// absence must not fail a search the other channels can still answer.
@@ -520,15 +547,40 @@ func (s *Service) vectorChannel(
 	}
 
 	input := ChannelInput{Channel: retrieval.ChannelVector, Ran: true}
+	// The note is attached to a channel that ran, which is the one case the
+	// fusion layer would otherwise record nothing about. A vector recall steered
+	// by soft conditions is not a degradation, but it is a fact about the
+	// ranking that a reader cannot recover from the scores: two candidates with
+	// the same similarity were not necessarily recalled for the same reason.
+	if len(soft) > 0 {
+		input.Note = softConditionNote
+	}
+	// Every hit from this channel was recalled by the same query, so when that
+	// query carried soft conditions, each of them was recalled partly for them.
+	// The reason says so once, with the topics named, rather than per candidate
+	// pretending to know which candidate matched which condition — the corpus
+	// returns documents, not per-condition verdicts.
+	softReason := describeSoftConditions(soft)
+	// The semantic half of the reason quotes the question when there is one. It
+	// does not repeat the soft words: those already appear in their own half,
+	// and a reason that says the same thing twice reads as two pieces of
+	// evidence for one fact.
+	display := truncateForReason(query)
+	if strings.TrimSpace(display) == "" {
+		display = truncateForReason(embeddingText)
+	}
 	candidates := make(map[int64]search.RestaurantCandidate, len(docs))
 	priors := make(map[int64]float64, len(docs))
 	for _, doc := range docs {
 		similarity := cosineSimilarity(doc.Distance)
+		reason := fmt.Sprintf("语义匹配“%s”（相似度 %.3f）", display, similarity)
+		if softReason != "" {
+			reason = softReason + "；" + reason
+		}
 		input.Hits = append(input.Hits, retrieval.ChannelHit{
 			RestaurantID: doc.RestaurantID,
 			Score:        similarity,
-			Reason: fmt.Sprintf("语义匹配“%s”（相似度 %.3f）",
-				truncateForReason(query), similarity),
+			Reason:       reason,
 			Detail: map[string]any{
 				"query":      query,
 				"similarity": similarity,
@@ -619,6 +671,64 @@ func truncateForReason(query string) string {
 		return string(runes)
 	}
 	return string(runes[:limit]) + "…"
+}
+
+// composeEmbeddingText builds the string the query is embedded as.
+//
+// The soft conditions are appended to the question rather than replacing it,
+// because the two answer different halves of the same request: the question
+// says what the user is looking for, and the conditions say what would make one
+// result better than another. Embedding only the conditions would recall
+// restaurants that are quiet and Italian when the user wanted quiet and
+// Japanese; embedding only the question would make the conditions decorative.
+func composeEmbeddingText(query string, soft []retrieval.SoftCondition) string {
+	parts := make([]string, 0, 2)
+	if trimmed := strings.TrimSpace(query); trimmed != "" {
+		parts = append(parts, trimmed)
+	}
+	if softText := retrieval.SoftQueryText(soft); softText != "" {
+		parts = append(parts, softText)
+	}
+	return strings.Join(parts, " ")
+}
+
+// describeSoftConditions renders "评论推断：安静（ambience）、适合约会（ambience）".
+//
+// The topic key is shown beside the user's words rather than the localised
+// label, because the key is what the stored reviews are tagged with: a reader
+// checking the claim can search for "ambience" and find it. A condition that
+// mapped onto no topic is still listed, with no parenthetical — hiding it would
+// make the reason claim the ranking understood something it did not.
+func describeSoftConditions(soft []retrieval.SoftCondition) string {
+	if len(soft) == 0 {
+		return ""
+	}
+	var parts []string
+	seen := map[string]struct{}{}
+	for _, condition := range soft {
+		text := strings.TrimSpace(condition.Text)
+		topic := strings.TrimSpace(condition.Topic)
+		if text == "" && topic == "" {
+			continue
+		}
+		key := strings.ToLower(text) + "\x00" + topic
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		switch {
+		case text == "":
+			parts = append(parts, topic)
+		case topic == "":
+			parts = append(parts, text)
+		default:
+			parts = append(parts, fmt.Sprintf("%s（%s）", text, topic))
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return softReasonPrefix + strings.Join(parts, "、")
 }
 
 // detailAsCandidate folds a repository row into a recalled candidate.

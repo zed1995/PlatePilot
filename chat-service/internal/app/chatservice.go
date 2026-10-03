@@ -2,10 +2,13 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/zed1995/platepilot/chat-service/internal/agent"
+	"github.com/zed1995/platepilot/chat-service/internal/hitl"
 	"github.com/zed1995/platepilot/chat-service/internal/httpapi"
+	"github.com/zed1995/platepilot/chat-service/internal/memorywrite"
 	"github.com/zed1995/platepilot/shared/domain/conversation"
 	"github.com/zed1995/platepilot/shared/domain/errs"
 	domainmemory "github.com/zed1995/platepilot/shared/domain/memory"
@@ -20,17 +23,55 @@ type chatService struct {
 	runner        *agent.Runner
 	conversations store.ConversationRepository
 	memories      store.MemoryRepository
+
+	// confirm decides the pending write a turn parked. It is nil in a
+	// deployment with no confirmed-write capability — the reservation mock
+	// switched off, or no chat provider at all — and the decision endpoint then
+	// reports the capability as unavailable rather than pretending the thread
+	// has nothing pending.
+	confirm *hitl.Service
+	// summarize re-renders the approval sentence for a decided call. It is the
+	// same renderer the gate used to ask the question, injected rather than
+	// reimplemented so the echo in a decision response is literally the words
+	// the user approved.
+	summarize ApprovalSummarizer
+	// memoryWrite applies the edit policy to a user's memories. Listing and
+	// deleting go straight to the repository; an edit does not, because an edit
+	// has rules — the confidence follows the type, the id is kept, and an id
+	// belonging to somebody else is not found — and those rules are the same
+	// ones the write path enforces.
+	memoryWrite *memorywrite.Service
 }
 
-// newChatService builds the adapter. runner may be nil when no chat provider
+// ApprovalSummarizer renders the sentence a user is asked to approve for one
+// call. It is the registry's own renderer behind a function type, so this
+// adapter depends on the capability and not on the tool registry.
+type ApprovalSummarizer func(ctx context.Context, name string, args json.RawMessage) (string, error)
+
+// chatServiceDeps names what the adapter is assembled from. It is a struct
+// rather than a parameter list because the confirmation capability is optional
+// and a nil-able positional argument would be a position a caller gets wrong.
+type chatServiceDeps struct {
+	Runner        *agent.Runner
+	Conversations store.ConversationRepository
+	Memories      store.MemoryRepository
+	Confirmation  *hitl.Service
+	Summarize     ApprovalSummarizer
+	MemoryWrite   *memorywrite.Service
+}
+
+// newChatService builds the adapter. Runner may be nil when no chat provider
 // is configured: thread and memory routes still work, and sending a message
-// returns provider_unavailable.
-func newChatService(
-	runner *agent.Runner,
-	conversations store.ConversationRepository,
-	memories store.MemoryRepository,
-) *chatService {
-	return &chatService{runner: runner, conversations: conversations, memories: memories}
+// returns provider_unavailable. Confirmation may be nil for the same reason.
+func newChatService(deps chatServiceDeps) *chatService {
+	return &chatService{
+		runner:        deps.Runner,
+		conversations: deps.Conversations,
+		memories:      deps.Memories,
+		confirm:       deps.Confirmation,
+		summarize:     deps.Summarize,
+		memoryWrite:   deps.MemoryWrite,
+	}
 }
 
 func (s *chatService) CreateThread(ctx context.Context, userID, title string) (conversation.Conversation, error) {
@@ -90,6 +131,30 @@ func (s *chatService) DeleteMemory(ctx context.Context, userID, memoryID string)
 	return s.memories.Delete(ctx, userID, memoryID)
 }
 
+// UpdateMemory applies a user's edit to one of their memories.
+//
+// The edit is routed through the write policy rather than the repository so the
+// rules a memory obeys hold on both paths: the id is kept (an edit is not a
+// soft-delete plus an insert, which would show the user two rows for one
+// preference), the confidence follows the type, and an id belonging to somebody
+// else is not found rather than forbidden.
+func (s *chatService) UpdateMemory(
+	ctx context.Context, in httpapi.UpdateMemoryInput,
+) (httpapi.MemoryView, error) {
+	if s.memoryWrite == nil {
+		return httpapi.MemoryView{}, errs.New(errs.CodeInvalidArgument,
+			"当前部署未启用记忆管理")
+	}
+	updated, err := s.memoryWrite.Update(ctx, in.UserID, in.MemoryID, memorywrite.Set{
+		Content: in.Content,
+		Type:    in.Type,
+	})
+	if err != nil {
+		return httpapi.MemoryView{}, err
+	}
+	return toMemoryView(updated), nil
+}
+
 func toMemoryView(mem domainmemory.Memory) httpapi.MemoryView {
 	return httpapi.MemoryView{
 		ID:         mem.ID,
@@ -100,6 +165,74 @@ func toMemoryView(mem domainmemory.Memory) httpapi.MemoryView {
 		CreatedAt:  mem.CreatedAt,
 		UpdatedAt:  mem.UpdatedAt,
 	}
+}
+
+// ConfirmAction applies the user's answer to the thread's pending write.
+//
+// It is deliberately not a turn: no model runs, nothing is streamed, and the
+// endpoint answers with one outcome. Routing a yes/no through the chat path
+// would make the booking depend on the model reading "确认" correctly, which is
+// the dependency the whole gate exists to remove.
+//
+// The caller's identity is not compared against the thread's owner, matching
+// the rest of this surface (GetThread, ListMessages) on the mock deployment.
+// The approval the tool receives does carry the thread's stored owner, so a
+// derived idempotency key still commits to the real user rather than to
+// whoever posted the decision.
+func (s *chatService) ConfirmAction(
+	ctx context.Context, in httpapi.ConfirmInput,
+) (httpapi.ConfirmResult, error) {
+	if s.confirm == nil {
+		return httpapi.ConfirmResult{}, errs.New(errs.CodeInvalidArgument,
+			"当前部署未启用预约确认")
+	}
+	outcome, err := s.confirm.Decide(ctx, in.ThreadID, hitl.Decision(in.Decision))
+	if err != nil {
+		return httpapi.ConfirmResult{}, err
+	}
+
+	result := httpapi.ConfirmResult{
+		ThreadID:      outcome.ThreadID,
+		Decision:      string(outcome.Decision),
+		PendingAction: outcome.Action,
+		State:         string(outcome.State),
+		Replayed:      outcome.Replayed,
+		Message:       confirmMessage(outcome),
+		Summary:       s.echoApproval(ctx, outcome),
+	}
+	if outcome.Result != nil {
+		result.Output = outcome.Result.Data
+	}
+	return result, nil
+}
+
+// confirmMessage states the outcome in the terms the user just acted in.
+func confirmMessage(outcome hitl.Outcome) string {
+	switch {
+	case outcome.Cancelled:
+		return "已取消该预约请求，没有产生任何预订。"
+	case outcome.Replayed:
+		return "该确认此前已经处理过，返回的是同一笔预约。"
+	default:
+		return "预约已确认。"
+	}
+}
+
+// echoApproval re-renders the sentence the user approved.
+//
+// A failure here does not fail the response: the booking either happened or did
+// not, and reporting "the confirmation failed" because a display string could
+// not be rebuilt would be false — and would invite the client to retry a write
+// that already took place. The empty field is the honest degradation.
+func (s *chatService) echoApproval(ctx context.Context, outcome hitl.Outcome) string {
+	if s.summarize == nil || len(outcome.Arguments) == 0 {
+		return ""
+	}
+	summary, err := s.summarize(ctx, outcome.Action, outcome.Arguments)
+	if err != nil {
+		return ""
+	}
+	return summary
 }
 
 // SendMessage runs one turn and forwards its events to emit in order.
@@ -154,19 +287,33 @@ func (s *chatService) SendMessage(
 // The two share event-name strings by contract, but never share a type.
 func toStreamEvent(ev agent.Event) httpapi.StreamEvent {
 	out := httpapi.StreamEvent{
-		Type:         httpapi.StreamEventType(ev.Type),
-		RunID:        ev.RunID,
-		ThreadID:     ev.ThreadID,
-		CallID:       ev.CallID,
-		Tool:         ev.Tool,
-		LatencyMS:    ev.LatencyMS,
-		Delta:        ev.Delta,
-		EvidenceIDs:  ev.Citations,
-		FinishReason: ev.FinishReason,
-		Usage:        ev.Usage,
-		Warnings:     ev.Warnings,
-		Code:         ev.Code,
-		Message:      ev.Message,
+		Type:          httpapi.StreamEventType(ev.Type),
+		RunID:         ev.RunID,
+		ThreadID:      ev.ThreadID,
+		CallID:        ev.CallID,
+		Tool:          ev.Tool,
+		LatencyMS:     ev.LatencyMS,
+		Delta:         ev.Delta,
+		EvidenceIDs:   ev.Citations,
+		FinishReason:  ev.FinishReason,
+		Usage:         ev.Usage,
+		Warnings:      ev.Warnings,
+		Code:          ev.Code,
+		Message:       ev.Message,
+		State:         ev.State,
+		PendingAction: ev.PendingAction,
+		MissingSlots:  ev.MissingSlots,
+		// The approval sentence has to survive this hop for the same reason the
+		// pending state does: it is the whole content of a confirmation ask, and
+		// a frame that reported "something needs confirming" without saying what
+		// would leave the user with nothing to approve.
+		ConfirmationSummary: ev.ConfirmationSummary,
+		// The memory event is its payload for the same reason: "something was
+		// saved" is only actionable if it says what.
+		MemoryID:        ev.MemoryID,
+		MemoryType:      ev.MemoryType,
+		MemoryContent:   ev.MemoryContent,
+		MemoryRefreshed: ev.MemoryRefreshed,
 	}
 	if ev.Type == agent.EventToolFinish {
 		if ev.OK {

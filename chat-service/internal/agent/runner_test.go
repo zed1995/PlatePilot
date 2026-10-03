@@ -35,6 +35,11 @@ type scriptedProvider struct {
 	supportTools    bool
 	supportParallel bool
 
+	structuredResps   []domainchat.StructuredResponse
+	structuredErr     error
+	structuredReqs    []domainchat.StructuredRequest
+	supportJSONSchema bool
+
 	chunks    []domainchat.ChatChunk
 	streamErr error
 }
@@ -107,6 +112,31 @@ func (s *scriptedStream) Recv() (domainchat.ChatChunk, error) {
 }
 
 func (s *scriptedStream) Close() error { return nil }
+
+// SupportsJSONSchema reports the scripted capability. It defaults to false,
+// which is the degraded path: the adapter falls back to a json_object response
+// with the schema in the prompt, and the graph sees no difference.
+func (p *scriptedProvider) SupportsJSONSchema() bool { return p.supportJSONSchema }
+
+// CompleteStructured pops the next scripted structured response. The slot
+// extractor is the only caller, and it is called once per turn.
+func (p *scriptedProvider) CompleteStructured(
+	_ context.Context, req domainchat.StructuredRequest, _ json.RawMessage,
+) (domainchat.StructuredResponse, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.structuredReqs = append(p.structuredReqs, req)
+	if p.structuredErr != nil {
+		return domainchat.StructuredResponse{}, p.structuredErr
+	}
+	if len(p.structuredResps) == 0 {
+		return domainchat.StructuredResponse{}, errors.New(
+			"scripted provider: no more CompleteStructured responses queued")
+	}
+	resp := p.structuredResps[0]
+	p.structuredResps = p.structuredResps[1:]
+	return resp, nil
+}
 
 func assistantText(content string) domainchat.ToolCallResponse {
 	return domainchat.ToolCallResponse{

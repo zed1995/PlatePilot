@@ -24,13 +24,23 @@ const heartbeatInterval = 15 * time.Second
 type StreamEventType string
 
 const (
-	StreamStart      StreamEventType = "message.start"
-	StreamDelta      StreamEventType = "message.delta"
-	StreamToolStart  StreamEventType = "tool.start"
-	StreamToolFinish StreamEventType = "tool.finish"
-	StreamCitation   StreamEventType = "citation"
-	StreamEnd        StreamEventType = "message.end"
-	StreamError      StreamEventType = "error"
+	StreamStart         StreamEventType = "message.start"
+	StreamDelta         StreamEventType = "message.delta"
+	StreamToolStart     StreamEventType = "tool.start"
+	StreamToolFinish    StreamEventType = "tool.finish"
+	StreamCitation      StreamEventType = "citation"
+	StreamAwaitingInput StreamEventType = "state.awaiting_input"
+	// StreamConfirmationRequired reports that the turn parked a write and is
+	// waiting for the user to approve it. It is a distinct event from
+	// StreamAwaitingInput because the two are answered by different endpoints:
+	// a clarification by another message, a confirmation by a decision POST.
+	StreamConfirmationRequired StreamEventType = "confirmation.required"
+	// StreamMemorySaved reports that the turn wrote one long-term memory because
+	// the user asked it to. It is a durable side effect the user can later list
+	// and delete, so the moment it happened belongs in the stream.
+	StreamMemorySaved StreamEventType = "memory.saved"
+	StreamEnd         StreamEventType = "message.end"
+	StreamError       StreamEventType = "error"
 )
 
 // StreamEvent is the transport-neutral shape of one turn event. The
@@ -51,6 +61,22 @@ type StreamEvent struct {
 	// Text / citation events.
 	Delta       string
 	EvidenceIDs []int64
+
+	// Awaiting-input event: the thread parked a question for the user.
+	State         string
+	PendingAction string
+	MissingSlots  []string
+
+	// Confirmation event: the thread parked a write for the user to approve.
+	// The summary is the same sentence the turn answered with, so a client can
+	// render the decision without re-reading the message stream.
+	ConfirmationSummary string
+
+	// Memory event: the row the turn wrote.
+	MemoryID        string
+	MemoryType      string
+	MemoryContent   string
+	MemoryRefreshed bool
 
 	// End event.
 	FinishReason string
@@ -86,6 +112,46 @@ type sseToolFinishData struct {
 
 type sseCitationData struct {
 	EvidenceIDs []int64 `json:"evidence_ids"`
+}
+
+// sseAwaitingInputData tells the client what the thread is waiting for.
+//
+// The three fields are the checkpoint's own vocabulary rather than a bespoke
+// shape: a client that stored them could reconstruct the pending state, and the
+// same values are what GET /v1/conversations/:id reports, so the stream and the
+// read path cannot disagree about what "waiting" means.
+type sseAwaitingInputData struct {
+	State         string   `json:"state"`
+	PendingAction string   `json:"pending_action,omitempty"`
+	MissingSlots  []string `json:"missing_slots,omitempty"`
+}
+
+// sseConfirmationData tells the client what it is being asked to approve.
+//
+// The summary is carried rather than derived from pending_action because the
+// action names a tool and the user is approving a sentence about a booking.
+// A client that had to render the tool name would be asking its user to approve
+// "request_reservation", which is not a decision anyone can make.
+type sseConfirmationData struct {
+	State   string `json:"state"`
+	Action  string `json:"pending_action"`
+	Summary string `json:"summary"`
+}
+
+// sseMemorySavedData tells the client what was kept.
+//
+// The content is carried because it is the memory: a client that showed only an
+// id would be telling the user "something was saved" and asking them to go look
+// it up, when the whole point of the turn was the sentence. The id travels
+// beside it so the row can be edited or deleted without a list round-trip.
+type sseMemorySavedData struct {
+	MemoryID   string `json:"memory_id"`
+	MemoryType string `json:"memory_type"`
+	Content    string `json:"content"`
+	// Refreshed distinguishes "remembered" from "already remembered". The two
+	// are the same row, and a client that announced a new memory each time
+	// would be describing a duplicate that does not exist.
+	Refreshed bool `json:"refreshed,omitempty"`
 }
 
 type sseUsageData struct {
@@ -150,6 +216,12 @@ func (ev StreamEvent) payload() ([]byte, error) {
 		return json.Marshal(sseToolFinishData{CallID: ev.CallID, Status: ev.ToolStatus, LatencyMS: ev.LatencyMS})
 	case StreamCitation:
 		return json.Marshal(sseCitationData{EvidenceIDs: ev.EvidenceIDs})
+	case StreamAwaitingInput:
+		return json.Marshal(sseAwaitingInputData{
+			State:         ev.State,
+			PendingAction: ev.PendingAction,
+			MissingSlots:  ev.MissingSlots,
+		})
 	case StreamEnd:
 		data := sseEndData{FinishReason: ev.FinishReason, Warnings: ev.Warnings}
 		if ev.Usage != nil {
@@ -160,6 +232,19 @@ func (ev StreamEvent) payload() ([]byte, error) {
 			}
 		}
 		return json.Marshal(data)
+	case StreamConfirmationRequired:
+		return json.Marshal(sseConfirmationData{
+			State:   ev.State,
+			Action:  ev.PendingAction,
+			Summary: ev.ConfirmationSummary,
+		})
+	case StreamMemorySaved:
+		return json.Marshal(sseMemorySavedData{
+			MemoryID:   ev.MemoryID,
+			MemoryType: ev.MemoryType,
+			Content:    ev.MemoryContent,
+			Refreshed:  ev.MemoryRefreshed,
+		})
 	case StreamError:
 		return json.Marshal(sseErrorData{Code: ev.Code, Message: ev.Message})
 	default:

@@ -60,6 +60,29 @@ const (
 	// request itself was answerable — the generated content just failed a
 	// hard output contract and must not be retried blindly by callers.
 	CodeAgentCitationViolation Code = "agent_citation_violation"
+
+	// M5 confirmation and memory codes.
+	//
+	// CodeAgentNoPendingAction is a 400 rather than a 404: the thread exists
+	// and the route is correct, but this thread has nothing waiting to be
+	// confirmed. A confirm with no pending action is a client sequencing
+	// mistake, and answering it as "not found" would send a caller looking for
+	// a missing resource instead of a missing prerequisite.
+	CodeAgentNoPendingAction Code = "agent_no_pending_action"
+
+	// CodeMemoryWriteNotRequested guards the product rule that a memory is only
+	// written when the user explicitly asked for it. The tool carries a
+	// quoted_user_text argument that must be a substring of this turn's user
+	// message; when it is not, the model invented the condition, and storing it
+	// would pollute every later turn. The check is an input-validation rule
+	// rather than a prompt instruction precisely because a prompt cannot fail.
+	CodeMemoryWriteNotRequested Code = "memory_write_not_requested"
+
+	// CodeReservationUnavailable covers a slot that cannot hold the party:
+	// capacity is exhausted, or a hold expired before it was confirmed. It is a
+	// 409 because the request is well-formed and would have succeeded earlier —
+	// the state it depended on changed, which is exactly what conflict means.
+	CodeReservationUnavailable Code = "reservation_unavailable"
 )
 
 var httpStatusByCode = map[Code]int{
@@ -87,6 +110,10 @@ var httpStatusByCode = map[Code]int{
 	CodeRetrievalQueryTooShort:  http.StatusBadRequest,
 
 	CodeAgentCitationViolation: http.StatusUnprocessableEntity,
+
+	CodeAgentNoPendingAction:    http.StatusBadRequest,
+	CodeMemoryWriteNotRequested: http.StatusBadRequest,
+	CodeReservationUnavailable:  http.StatusConflict,
 }
 
 // Error is the canonical error type used across PlatePilot.
@@ -208,4 +235,8 @@ var (
 	ErrRetrievalQueryTooShort  = New(CodeRetrievalQueryTooShort, "retrieval text is too short to match")
 
 	ErrAgentCitationViolation = New(CodeAgentCitationViolation, "answer cites evidence that is not part of this turn")
+
+	ErrAgentNoPendingAction    = New(CodeAgentNoPendingAction, "thread has no pending action to confirm")
+	ErrMemoryWriteNotRequested = New(CodeMemoryWriteNotRequested, "memory write was not requested by the user")
+	ErrReservationUnavailable  = New(CodeReservationUnavailable, "reservation slot is not available")
 )

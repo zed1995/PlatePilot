@@ -13,10 +13,14 @@ import (
 	adminapp "github.com/zed1995/platepilot/chat-service/internal/admin"
 	"github.com/zed1995/platepilot/chat-service/internal/agent"
 	"github.com/zed1995/platepilot/chat-service/internal/agent/audit"
+	"github.com/zed1995/platepilot/chat-service/internal/agent/slots"
 	"github.com/zed1995/platepilot/chat-service/internal/agent/toolreg"
 	"github.com/zed1995/platepilot/chat-service/internal/agent/tools"
 	"github.com/zed1995/platepilot/chat-service/internal/config"
+	"github.com/zed1995/platepilot/chat-service/internal/hitl"
 	"github.com/zed1995/platepilot/chat-service/internal/httpapi"
+	"github.com/zed1995/platepilot/chat-service/internal/memorywrite"
+	"github.com/zed1995/platepilot/chat-service/internal/reservation"
 	"github.com/zed1995/platepilot/chat-service/internal/retrieval"
 	"github.com/zed1995/platepilot/shared/chat"
 	"github.com/zed1995/platepilot/shared/chat/openai"
@@ -47,18 +51,24 @@ type Deps struct {
 	Conversations store.ConversationRepository
 	Memories      store.MemoryRepository
 	Runs          store.RunRepository
+	Reservations  store.ReservationRepository
 	Admin         store.AdminStore
 }
 
 // App owns the assembled runtime.
 type App struct {
-	cfg    config.Config
-	logger *slog.Logger
-	deps   Deps
-	search *retrieval.Service
-	agent  *agent.Runner
-	http   *server.Hertz
-	pool   *postgres.Client
+	cfg       config.Config
+	logger    *slog.Logger
+	deps      Deps
+	search    *retrieval.Service
+	extractor *slots.Extractor
+	agent     *agent.Runner
+	// registry is the tool registry the runner and the confirmation service
+	// share. It is kept so a test can ask what the model was offered without
+	// reaching through the compiled graph.
+	registry *toolreg.Registry
+	http     *server.Hertz
+	pool     *postgres.Client
 }
 
 // New assembles the application from configuration and adapters.
@@ -84,21 +94,133 @@ func New(cfg config.Config, logger *slog.Logger, deps Deps, version string) (*Ap
 	}
 	app.search = searchService
 
+	// The slot extractor is assembled unconditionally, including in a
+	// deployment with no chat provider. That is not a convenience: understanding
+	// a sentence is a local parse when there is no model to ask, and the whole
+	// conversation path is designed to work from a rule-derived plan rather than
+	// to refuse the turn.
+	extractor := slots.New(slots.Deps{
+		Structured: deps.Structured,
+		Model:      cfg.Chat.Model,
+		Config: slots.Config{
+			MaxClarifications:    cfg.Agent.MaxClarifications,
+			ResolveMinSimilarity: cfg.Agent.ResolveMinSimilarity,
+			ResolveAmbiguityGap:  cfg.Agent.ResolveAmbiguityGap,
+			Timeout:              cfg.Agent.SlotExtractTimeout,
+		},
+	})
+	app.extractor = extractor
+
+	// The memory write policy is assembled outside the chat block because the
+	// memory management routes need it even in a deployment with no model: a
+	// user who cannot chat can still list, edit and delete what they asked to
+	// be remembered.
+	var memoryWrite *memorywrite.Service
+	if deps.Memories != nil {
+		memoryWrite, err = memorywrite.NewService(deps.Memories)
+		if err != nil {
+			return nil, fmt.Errorf("build memory write service: %w", err)
+		}
+	}
+
 	// The agent runner is assembled only when a chat provider was supplied.
 	// Without one the HTTP search/evidence API still runs; the conversational
 	// turn path simply stays unwired, mirroring the embedding degradation.
+	//
+	// The confirmation service is built from the same registry, so it is
+	// declared out here: the conversational surface below has to know whether
+	// the write path exists at all.
+	var confirmation *hitl.Service
+	var summarize ApprovalSummarizer
+
 	if deps.Chat != nil {
 		registry := toolreg.New(cfg.Agent.ToolTimeout)
+		app.registry = registry
 		if err := registry.Register(tools.SearchRestaurantsEntry(searchService)); err != nil {
 			return nil, fmt.Errorf("register search_restaurants tool: %w", err)
 		}
 		if err := registry.Register(tools.RestaurantEvidenceEntry(searchService)); err != nil {
 			return nil, fmt.Errorf("register get_restaurant_evidence tool: %w", err)
 		}
+		// resolve_restaurant goes to the restaurant repository, not to the
+		// retrieval service: turning a name into an id is a lookup, and routing
+		// it through retrieval would let a name lookup acquire the soft
+		// channels' opinions. It is registered only when a restaurant store
+		// exists, because the tool's whole job is to read one.
+		if deps.Restaurants != nil {
+			entry := tools.ResolveRestaurantEntry(deps.Restaurants, tools.ResolveConfig{
+				MinSimilarity: cfg.Agent.ResolveMinSimilarity,
+				AmbiguityGap:  cfg.Agent.ResolveAmbiguityGap,
+			})
+			if err := registry.Register(entry); err != nil {
+				return nil, fmt.Errorf("register resolve_restaurant tool: %w", err)
+			}
+		}
+		// save_memory is registered only when there is a memory store to write
+		// to and the switch is on. Both conditions matter: without the store the
+		// tool could only fail, and the switch exists precisely so an operator
+		// can present a model that has no way to remember anything.
+		if memoryWrite != nil && cfg.Agent.MemoryWriteEnabled {
+			if err := registry.Register(tools.SaveMemoryEntry(memoryWrite)); err != nil {
+				return nil, fmt.Errorf("register save_memory tool: %w", err)
+			}
+			logger.Info("memory write path assembled")
+		} else if cfg.Agent.MemoryWriteEnabled {
+			logger.Warn("AGENT_MEMORY_WRITE_ENABLED is set but no memory store is configured; " +
+				"save_memory is not offered")
+		}
+		// The mock reservation capability, when switched on, contributes the
+		// only two tools that touch inventory. They are registered here rather
+		// than always-registered-and-failing so the switch removes the
+		// capability from the model's view instead of presenting a tool that
+		// can only say no.
+		if cfg.Reservation.Enabled {
+			if deps.Reservations == nil {
+				return nil, fmt.Errorf("RESERVATION_ENABLED is set but no reservation store is configured")
+			}
+			reservations, err := reservation.NewService(reservation.Config{
+				HoldTTL:       cfg.Reservation.HoldTTL,
+				PolicyVersion: cfg.Reservation.PolicyVersion,
+			}, reservation.Deps{
+				Reservations: deps.Reservations,
+				Restaurants:  deps.Restaurants,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("build reservation service: %w", err)
+			}
+			if err := registry.Register(tools.GetAvailabilityEntry(reservations)); err != nil {
+				return nil, fmt.Errorf("register get_availability tool: %w", err)
+			}
+			if err := registry.Register(tools.RequestReservationEntry(reservations)); err != nil {
+				return nil, fmt.Errorf("register request_reservation tool: %w", err)
+			}
+			// The confirmation service needs somewhere to record the pending
+			// request. Without a conversation store there is no thread to park
+			// it on, so the capability degrades to availability-only rather
+			// than offering a booking nobody could approve.
+			if deps.Conversations != nil {
+				confirmation, err = hitl.NewService(hitl.Config{
+					Checkpoints: deps.Conversations,
+					Tools:       registry,
+				})
+				if err != nil {
+					return nil, fmt.Errorf("build confirmation service: %w", err)
+				}
+				summarize = registry.ApprovalSummary
+			} else {
+				logger.Warn("reservation capability enabled without a conversation store; " +
+					"bookings cannot be confirmed on a thread")
+			}
+			logger.Info("mock reservation capability assembled",
+				slog.Duration("hold_ttl", cfg.Reservation.HoldTTL),
+				slog.String("policy_version", cfg.Reservation.PolicyVersion),
+				slog.Bool("confirmable", confirmation != nil))
+		}
 		agentDeps := agent.Deps{
 			Chat:          deps.Chat,
 			ToolCalling:   deps.ToolCalling,
 			Registry:      registry,
+			Extractor:     extractor,
 			Conversations: deps.Conversations,
 			Memories:      deps.Memories,
 		}
@@ -111,8 +233,9 @@ func New(cfg config.Config, logger *slog.Logger, deps Deps, version string) (*Ap
 			logger.Warn("run audit repository not configured; agent turns run without audit trail")
 		}
 		runner, err := agent.NewRunner(agent.Config{
-			MaxToolRounds: cfg.Agent.MaxToolRounds,
-			ModelName:     cfg.Chat.Model,
+			MaxToolRounds:     cfg.Agent.MaxToolRounds,
+			ModelName:         cfg.Chat.Model,
+			MaxClarifications: cfg.Agent.MaxClarifications,
 		}, agentDeps)
 		if err != nil {
 			return nil, fmt.Errorf("build agent runner: %w", err)
@@ -121,6 +244,7 @@ func New(cfg config.Config, logger *slog.Logger, deps Deps, version string) (*Ap
 		logger.Info("agent runner assembled",
 			slog.String("model", cfg.Chat.Model),
 			slog.Int("max_tool_rounds", cfg.Agent.MaxToolRounds),
+			slog.Int("max_clarifications", cfg.Agent.MaxClarifications),
 			slog.Duration("tool_timeout", cfg.Agent.ToolTimeout))
 	}
 
@@ -129,7 +253,14 @@ func New(cfg config.Config, logger *slog.Logger, deps Deps, version string) (*Ap
 	// deployment.
 	var chatService httpapi.ChatService
 	if deps.Conversations != nil {
-		chatService = newChatService(app.agent, deps.Conversations, deps.Memories)
+		chatService = newChatService(chatServiceDeps{
+			Runner:        app.agent,
+			Conversations: deps.Conversations,
+			Memories:      deps.Memories,
+			Confirmation:  confirmation,
+			Summarize:     summarize,
+			MemoryWrite:   memoryWrite,
+		})
 	}
 
 	// The administration application service is assembled only when a store
@@ -151,6 +282,15 @@ func New(cfg config.Config, logger *slog.Logger, deps Deps, version string) (*Ap
 		warnNonLoopbackBind(logger, cfg.HTTP.Addr)
 	}
 
+	// The replay surface needs both stores: the run rows to answer with and the
+	// conversation row to answer "does this thread exist" from. Neither alone is
+	// enough, so it is assembled only when both are present rather than serving
+	// a page that cannot distinguish an empty thread from a missing one.
+	var runReadService httpapi.RunService
+	if deps.Runs != nil && deps.Conversations != nil {
+		runReadService = newRunService(deps.Conversations, deps.Runs)
+	}
+
 	router := httpapi.NewRouter(httpapi.Config{
 		Addr:             cfg.HTTP.Addr,
 		ReadTimeout:      cfg.HTTP.ReadTimeout,
@@ -160,7 +300,9 @@ func New(cfg config.Config, logger *slog.Logger, deps Deps, version string) (*Ap
 		Logger:           logger,
 		Search:           searchService,
 		Evidence:         httpapi.NewEvidenceService(searchService),
+		Interpret:        newSlotInterpreter(extractor),
 		Chat:             chatService,
+		Runs:             runReadService,
 		Admin:            adminService,
 		AdminEnabled:     cfg.Admin.Enabled,
 	})
@@ -228,6 +370,7 @@ func Connect(ctx context.Context, cfg config.Config, logger *slog.Logger, versio
 		deps.Runs = postgres.NewRunRepository(client)
 		deps.Conversations = postgres.NewConversationRepository(client)
 		deps.Memories = postgres.NewMemoryRepository(client)
+		deps.Reservations = postgres.NewReservationRepository(client)
 		logger.Info("postgres read store connected",
 			slog.String("database", client.DatabaseName()))
 	}

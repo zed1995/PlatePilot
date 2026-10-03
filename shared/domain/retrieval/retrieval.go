@@ -7,6 +7,8 @@
 package retrieval
 
 import (
+	"strings"
+
 	"github.com/zed1995/platepilot/shared/domain/search"
 )
 
@@ -120,6 +122,25 @@ func (t *Trace) Warn(message string) {
 	t.Warnings = append(t.Warnings, message)
 }
 
+// SoftCondition is a requirement no column records — "quiet", "good for a
+// date" — carried as the user's own words together with the review topic those
+// words were mapped onto.
+//
+// Both halves travel: the words are what the user can recognise in an
+// explanation, and the topic is what the review corpus is actually indexed by.
+// Keeping only the topic would make the system explain a ranking in a
+// vocabulary the user never used; keeping only the words would leave the recall
+// guessing at a mapping the pipeline already made.
+type SoftCondition struct {
+	// Text is the user's own phrasing, unmodified.
+	Text string `json:"text"`
+	// Topic is a canonical review topic, or empty when the phrasing did not
+	// map onto one. An empty topic is not an error: the condition still
+	// belongs in the query text, it simply cannot be matched against the
+	// corpus's topic tags.
+	Topic string `json:"topic,omitempty"`
+}
+
 // Request is the input to one restaurant search.
 //
 // The channels a request runs are decided by the service configuration and by
@@ -133,6 +154,63 @@ type Request struct {
 	Text   string                  `json:"text,omitempty"`
 	Filter search.RestaurantFilter `json:"filter,omitempty"`
 	TopK   int                     `json:"top_k,omitempty"`
+
+	// SoftConditions are requirements no column records — "quiet", "good for a
+	// date" — expressed as review topics and the user's own words.
+	//
+	// They travel beside the filter rather than inside it, and that separation
+	// is the point: a soft condition must be able to influence recall and
+	// ranking without ever excluding a restaurant, because excluding on a
+	// condition the corpus cannot evaluate would turn "we found no reviews about
+	// this" into "this restaurant does not qualify".
+	SoftConditions []SoftCondition `json:"soft_conditions,omitempty"`
+}
+
+// HasSoftConditions reports whether the request asked for anything the corpus
+// can only support through reviews.
+func (r Request) HasSoftConditions() bool {
+	for _, condition := range r.SoftConditions {
+		if strings.TrimSpace(condition.Text) != "" || condition.Topic != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// SoftQueryText renders the soft conditions as one string for embedding.
+//
+// Order is preserved rather than sorted: the conditions arrive in the order the
+// user said them, and an embedding of "安静 适合约会" is a different string from
+// one of "适合约会 安静" for no benefit. The topic term is appended rather than
+// substituted because it crosses the language gap — the user asks in Chinese,
+// the reviews were written in English, and the topic key is the only token both
+// sides are guaranteed to share.
+func (r Request) SoftQueryText() string { return SoftQueryText(r.SoftConditions) }
+
+// SoftQueryText renders soft conditions as one string for embedding. It is a
+// free function as well as a method because the vector channel holds the
+// condition list on its own, without a Request around it.
+func SoftQueryText(conditions []SoftCondition) string {
+	var parts []string
+	seen := map[string]struct{}{}
+	for _, condition := range conditions {
+		text := strings.TrimSpace(condition.Text)
+		if text != "" {
+			key := strings.ToLower(text)
+			if _, dup := seen[key]; !dup {
+				seen[key] = struct{}{}
+				parts = append(parts, text)
+			}
+		}
+		if condition.Topic != "" {
+			key := "topic:" + condition.Topic
+			if _, dup := seen[key]; !dup {
+				seen[key] = struct{}{}
+				parts = append(parts, condition.Topic)
+			}
+		}
+	}
+	return strings.Join(parts, " ")
 }
 
 // HasQuery reports whether the request carries any free text at all.

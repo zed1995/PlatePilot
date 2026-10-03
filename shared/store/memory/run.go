@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"sync"
 
@@ -58,4 +59,86 @@ func (r *RunRepository) RecordToolCall(_ context.Context, call run.ToolCallRecor
 	}
 	r.toolCalls[call.RunID] = append(r.toolCalls[call.RunID], call)
 	return nil
+}
+
+// GetRun returns one run or a not_found error.
+func (r *RunRepository) GetRun(_ context.Context, runID string) (run.AgentRun, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	agentRun, ok := r.runs[runID]
+	if !ok {
+		return run.AgentRun{}, errs.Newf(errs.CodeNotFound, "run %q not found", runID)
+	}
+	return agentRun, nil
+}
+
+// ListRuns returns a thread's runs, newest first, bounded by limit and the
+// optional before_id cursor.
+//
+// The order is (started_at, run_id) descending. Two runs of the same thread can
+// share a started_at — a retry within the same millisecond — and a tie broken
+// by map iteration would make paging return a different set each call, so the
+// run id is the deterministic tiebreaker.
+func (r *RunRepository) ListRuns(_ context.Context, threadID string, limit int, beforeID string) ([]run.AgentRun, error) {
+	if strings.TrimSpace(threadID) == "" {
+		return nil, errs.New(errs.CodeInvalidArgument, "thread_id is required")
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	all := make([]run.AgentRun, 0, len(r.runs))
+	for _, agentRun := range r.runs {
+		if agentRun.ThreadID == threadID {
+			all = append(all, agentRun)
+		}
+	}
+	sort.Slice(all, func(i, j int) bool { return agentRunNewer(all[i], all[j]) })
+
+	if beforeID != "" {
+		cut := -1
+		for i, agentRun := range all {
+			if agentRun.RunID == beforeID {
+				cut = i
+				break
+			}
+		}
+		if cut < 0 {
+			// An unknown cursor pages from nothing rather than from the head; a
+			// stale id must not resurrect runs the caller already saw.
+			return []run.AgentRun{}, nil
+		}
+		all = all[cut+1:]
+	}
+	if limit > 0 && len(all) > limit {
+		all = all[:limit]
+	}
+	return all, nil
+}
+
+// ListToolCalls returns one run's tool calls in invocation order. An unknown
+// run yields an empty slice, not an error.
+func (r *RunRepository) ListToolCalls(_ context.Context, runID string) ([]run.ToolCallRecord, error) {
+	if strings.TrimSpace(runID) == "" {
+		return nil, errs.New(errs.CodeInvalidArgument, "run_id is required")
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	calls := r.toolCalls[runID]
+	out := make([]run.ToolCallRecord, len(calls))
+	copy(out, calls)
+	sort.SliceStable(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.Before(out[j].CreatedAt)
+		}
+		return out[i].CallID < out[j].CallID
+	})
+	return out, nil
+}
+
+// agentRunNewer reports whether a should sort before b (both newest-first).
+func agentRunNewer(a, b run.AgentRun) bool {
+	if !a.StartedAt.Equal(b.StartedAt) {
+		return a.StartedAt.After(b.StartedAt)
+	}
+	return a.RunID > b.RunID
 }

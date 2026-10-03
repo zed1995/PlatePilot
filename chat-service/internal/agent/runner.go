@@ -15,13 +15,19 @@ import (
 	"github.com/zed1995/platepilot/chat-service/internal/agent/answer"
 	"github.com/zed1995/platepilot/chat-service/internal/agent/audit"
 	"github.com/zed1995/platepilot/chat-service/internal/agent/einomodel"
+	"github.com/zed1995/platepilot/chat-service/internal/agent/slots"
 	"github.com/zed1995/platepilot/chat-service/internal/agent/toolreg"
 )
 
 // Defaults for the reasoning loop knobs.
 const (
 	defaultMaxToolRounds = 5
-	eventBuffer          = 128
+	// defaultMaxClarifications bounds how many times one thread may ask the
+	// user to disambiguate before the turn has to proceed on a stated
+	// assumption. Three is enough for a genuinely confusing name and far short
+	// of a loop: a fourth question would mean the first three changed nothing.
+	defaultMaxClarifications = 3
+	eventBuffer              = 128
 )
 
 // Config holds the runner knobs.
@@ -30,6 +36,8 @@ type Config struct {
 	MaxToolRounds int
 	// ModelName optionally overrides the provider's default model.
 	ModelName string
+	// MaxClarifications bounds consecutive disambiguation rounds per thread.
+	MaxClarifications int
 }
 
 // Deps are the assembled capabilities a runner needs.
@@ -39,6 +47,12 @@ type Deps struct {
 	Registry    *toolreg.Registry
 	// Composer may be nil; it is then built from Chat.
 	Composer *answer.Composer
+	// Extractor interprets the user's message into this turn's plan. When nil,
+	// the turn runs without one and every tool works purely from the arguments
+	// the model produced — which is a supported deployment, not a broken one,
+	// but it does mean a condition the model forgets to pass through is not
+	// recovered.
+	Extractor *slots.Extractor
 	// Auditor records run/tool-call audit rows. When nil, the turn runs
 	// without the audit side path.
 	Auditor *audit.Hooks
@@ -59,6 +73,9 @@ func NewRunner(cfg Config, deps Deps) (*Runner, error) {
 	}
 	if cfg.MaxToolRounds <= 0 {
 		cfg.MaxToolRounds = defaultMaxToolRounds
+	}
+	if cfg.MaxClarifications <= 0 {
+		cfg.MaxClarifications = defaultMaxClarifications
 	}
 	baseModel, err := einomodel.New(einomodel.Deps{
 		Chat:        deps.Chat,
@@ -222,7 +239,13 @@ func runMetaFromContext(ctx context.Context) runMeta {
 // compile wires the Eino state machine:
 //
 //	START -> ingress -> plan -+-> tools -> plan (loop, bounded)
+//	                          +-> clarify -> finalize -> END
 //	                          +-> answer -> finalize -> END
+//
+// A branch leaves plan for three destinations, and the order of the tests is
+// the priority: a turn that has to ask the user something asks before it does
+// anything else, because running more tools against a restaurant the user has
+// not chosen yet spends budget to answer about the wrong place.
 func (r *Runner) compile() error {
 	g := compose.NewGraph[TurnInput, *TurnResult]()
 
@@ -233,6 +256,9 @@ func (r *Runner) compile() error {
 		return err
 	}
 	if err := g.AddLambdaNode(nodeTools, compose.InvokableLambda(r.runTools)); err != nil {
+		return err
+	}
+	if err := g.AddLambdaNode(nodeClarify, compose.InvokableLambda(r.clarifyNode)); err != nil {
 		return err
 	}
 	if err := g.AddLambdaNode(nodeAnswer, compose.InvokableLambda(r.answerNode)); err != nil {
@@ -251,6 +277,13 @@ func (r *Runner) compile() error {
 	if err := g.AddEdge(nodeTools, nodePlan); err != nil {
 		return err
 	}
+	// The clarifying turn is terminal: it emits its question and the checkpoint
+	// that keeps the thread waiting. It deliberately does not pass through
+	// answer, which would either overwrite the question or — worse — compose a
+	// recommendation about a restaurant the user has not chosen.
+	if err := g.AddEdge(nodeClarify, nodeFinalize); err != nil {
+		return err
+	}
 	if err := g.AddEdge(nodeAnswer, nodeFinalize); err != nil {
 		return err
 	}
@@ -260,12 +293,15 @@ func (r *Runner) compile() error {
 
 	branch := compose.NewGraphBranch[*TurnState](
 		func(_ context.Context, st *TurnState) (string, error) {
+			if st.needsClarification() {
+				return nodeClarify, nil
+			}
 			if st.PendingToolCalls {
 				return nodeTools, nil
 			}
 			return nodeAnswer, nil
 		},
-		map[string]bool{nodeTools: true, nodeAnswer: true},
+		map[string]bool{nodeTools: true, nodeClarify: true, nodeAnswer: true},
 	)
 	if err := g.AddBranch(nodePlan, branch); err != nil {
 		return err
@@ -284,6 +320,7 @@ const (
 	nodeIngress  = "ingress"
 	nodePlan     = "plan"
 	nodeTools    = "tools"
+	nodeClarify  = "clarify"
 	nodeAnswer   = "answer"
 	nodeFinalize = "finalize"
 )

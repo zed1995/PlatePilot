@@ -173,7 +173,7 @@ make -C <project> help   # 看某个项目自己的 target
 | 产品定义、验收指标、已知取舍 | `README.md` |
 | 里程碑划分与依赖、Gate 定义 | `docs/platepilot-implementation-plan.md` |
 | 技术方案（含 Provider 抽象） | `docs/platepilot-technical-prd.md` |
-| 当前/下一个里程碑的执行清单 | `docs/platepilot-m{0..4}-task-document.md` |
+| 当前/下一个里程碑的执行清单 | `docs/platepilot-m{0..5}-task-document.md` |
 | 管理后台需求与前后端约定 | `docs/platepilot-admin-prd.md`、`docs/platepilot-admin_plan.md` |
 
 子项目级约定：`shared/AGENTS.md`、`chat-service/AGENTS.md`、

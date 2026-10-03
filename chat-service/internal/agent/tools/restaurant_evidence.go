@@ -11,6 +11,7 @@ import (
 	"github.com/zed1995/platepilot/shared/domain/evidence"
 	domaintool "github.com/zed1995/platepilot/shared/domain/tool"
 
+	"github.com/zed1995/platepilot/chat-service/internal/agent/slots"
 	"github.com/zed1995/platepilot/chat-service/internal/agent/toolreg"
 )
 
@@ -36,7 +37,7 @@ const restaurantEvidenceSchema = `{
     "restaurant_ids": {
       "type": "array",
       "items": {"type": "integer"},
-      "description": "One to five restaurant ids returned by search_restaurants"
+      "description": "One to five restaurant ids from search_restaurants or resolve_restaurant. May be omitted on a follow-up turn, when the thread has already pinned a restaurant."
     },
     "query": {
       "type": "string",
@@ -59,7 +60,7 @@ const restaurantEvidenceSchema = `{
       "description": "Maximum evidence documents to recall, 1..100"
     }
   },
-  "required": ["restaurant_ids", "query"],
+  "required": ["query"],
   "additionalProperties": false
 }`
 
@@ -89,14 +90,26 @@ func RestaurantEvidenceEntry(svc EvidenceReader) toolreg.Entry {
 				return domaintool.ToolResult{}, errs.New(errs.CodeInvalidArgument,
 					"get_restaurant_evidence requires a query")
 			}
-			if len(args.RestaurantIDs) == 0 {
+			// A follow-up turn is about the restaurant the thread pinned, and
+			// the plan is where that decision lives — "第二家" was resolved into
+			// an id before the model ever saw the message. Filling it in is the
+			// same fill-omissions-never-override rule the search tool follows:
+			// ids the model named are used verbatim, and the plan is consulted
+			// only when it named none.
+			restaurantIDs := args.RestaurantIDs
+			if len(restaurantIDs) == 0 {
+				if plan, ok := slots.PlanFromContext(ctx); ok && plan.SelectedRestaurantID != 0 {
+					restaurantIDs = []int64{plan.SelectedRestaurantID}
+				}
+			}
+			if len(restaurantIDs) == 0 {
 				return domaintool.ToolResult{}, errs.New(errs.CodeInvalidArgument,
 					"get_restaurant_evidence requires at least one restaurant id")
 			}
-			if len(args.RestaurantIDs) > maxEvidenceRestaurants {
+			if len(restaurantIDs) > maxEvidenceRestaurants {
 				return domaintool.ToolResult{}, errs.Newf(errs.CodeInvalidArgument,
 					"get_restaurant_evidence accepts at most %d restaurant ids (got %d)",
-					maxEvidenceRestaurants, len(args.RestaurantIDs))
+					maxEvidenceRestaurants, len(restaurantIDs))
 			}
 			docTypes, err := mapDocTypes(args.DocTypes)
 			if err != nil {
@@ -104,7 +117,7 @@ func RestaurantEvidenceEntry(svc EvidenceReader) toolreg.Entry {
 			}
 
 			result, err := svc.Evidence(ctx, retrieval.EvidenceRequest{
-				RestaurantIDs: args.RestaurantIDs,
+				RestaurantIDs: restaurantIDs,
 				Query:         args.Query,
 				Topic:         args.Topic,
 				DocTypes:      docTypes,

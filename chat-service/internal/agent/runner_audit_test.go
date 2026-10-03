@@ -56,6 +56,48 @@ func (r *capturingRunRepo) RecordToolCall(_ context.Context, call run.ToolCallRe
 	return nil
 }
 
+// The read path satisfies the port without being exercised here: a fake that
+// implemented only the writes would stop compiling the moment the interface
+// gained a read method, which is exactly the signal these tests want.
+func (r *capturingRunRepo) GetRun(_ context.Context, runID string) (run.AgentRun, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := len(r.finishes) - 1; i >= 0; i-- {
+		if r.finishes[i].RunID == runID {
+			return r.finishes[i], nil
+		}
+	}
+	return run.AgentRun{}, errs.ErrNotFound
+}
+
+func (r *capturingRunRepo) ListRuns(_ context.Context, threadID string, limit int, _ string) ([]run.AgentRun, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []run.AgentRun
+	for _, record := range r.finishes {
+		if record.ThreadID != threadID {
+			continue
+		}
+		out = append(out, record)
+		if limit > 0 && len(out) == limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (r *capturingRunRepo) ListToolCalls(_ context.Context, runID string) ([]run.ToolCallRecord, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []run.ToolCallRecord
+	for _, call := range r.calls {
+		if call.RunID == runID {
+			out = append(out, call)
+		}
+	}
+	return out, nil
+}
+
 func (r *capturingRunRepo) snapshot() (starts, finishes []run.AgentRun, calls []run.ToolCallRecord) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

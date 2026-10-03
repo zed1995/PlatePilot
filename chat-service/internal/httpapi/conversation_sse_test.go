@@ -38,6 +38,11 @@ type fakeChatService struct {
 	sendErr         error
 	blockOnCancel   bool
 	lastSend        SendMessageInput
+	lastConfirm     ConfirmInput
+	confirmErr      error
+	confirmCalled   int
+	lastUpdate      UpdateMemoryInput
+	updateCalled    int
 	sendStarted     chan struct{}
 	cancelObserved  chan struct{}
 	getThreadCalled int
@@ -142,6 +147,50 @@ func (f *fakeChatService) DeleteMemory(_ context.Context, userID, memoryID strin
 	}
 	f.deleted = append(f.deleted, userID+"/"+memoryID)
 	return nil
+}
+
+// UpdateMemory is scripted: the endpoint's job is to bind a partial body and
+// scope it to the caller, and the edit rules themselves are tested where they
+// live.
+func (f *fakeChatService) UpdateMemory(_ context.Context, in UpdateMemoryInput) (MemoryView, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lastUpdate = in
+	f.updateCalled++
+	if in.MemoryID == "missing" || in.MemoryID == "someone-elses" {
+		return MemoryView{}, errs.Newf(errs.CodeNotFound, "memory %q not found", in.MemoryID)
+	}
+	view := MemoryView{ID: in.MemoryID, Type: "preference", Content: "不吃辣", Confidence: 0.9}
+	if in.Content != nil {
+		view.Content = *in.Content
+	}
+	if in.Type != nil {
+		view.Type = string(*in.Type)
+	}
+	return view, nil
+}
+
+// ConfirmAction is scripted rather than implemented: the decision endpoint's
+// job is to bind and validate a body and pass the decision on, and the decision
+// itself is tested where it lives. The stub records what reached it so a
+// handler test can tell a routable request from one that never arrived.
+func (f *fakeChatService) ConfirmAction(_ context.Context, in ConfirmInput) (ConfirmResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lastConfirm = in
+	f.confirmCalled++
+	if f.confirmErr != nil {
+		return ConfirmResult{}, f.confirmErr
+	}
+	return ConfirmResult{
+		ThreadID:      in.ThreadID,
+		Decision:      in.Decision,
+		PendingAction: "request_reservation",
+		State:         "completed",
+		Output:        json.RawMessage(`{"reservation_id":"res-1","status":"confirmed"}`),
+		Summary:       "确认预约：Joe's Pizza\n时间：2026-10-10 19:00\n人数：2 人",
+		Message:       "预约已确认。",
+	}, nil
 }
 
 // ---------------------------------------------------------------------------

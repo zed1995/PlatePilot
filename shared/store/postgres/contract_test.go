@@ -68,6 +68,7 @@ func newStores(t *testing.T) contract.Stores {
 		Runs:          postgres.NewRunRepository(client),
 		Conversations: postgres.NewConversationRepository(client),
 		Memories:      postgres.NewMemoryRepository(client),
+		Reservations:  postgres.NewReservationRepository(client),
 	}
 }
 

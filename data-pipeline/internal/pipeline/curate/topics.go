@@ -4,18 +4,25 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+
+	"github.com/zed1995/platepilot/shared/domain/review"
 )
 
 // Review topics. These are the canonical buckets the PRD names; a review is
 // tagged with the ones its text actually discusses.
+//
+// The values are aliases of the shared domain constants rather than independent
+// literals: the chat service maps a soft condition onto the same keys, and one
+// definition shared by both is the only way the two cannot drift. The local
+// names are kept so the pipeline code reads unchanged.
 const (
-	TopicFood          = "food"
-	TopicService       = "service"
-	TopicAmbience      = "ambience"
-	TopicValue         = "value"
-	TopicWait          = "wait"
-	TopicKidFriendly   = "kid_friendly"
-	TopicGroupFriendly = "group_friendly"
+	TopicFood          = review.TopicFood
+	TopicService       = review.TopicService
+	TopicAmbience      = review.TopicAmbience
+	TopicValue         = review.TopicValue
+	TopicWait          = review.TopicWait
+	TopicKidFriendly   = review.TopicKidFriendly
+	TopicGroupFriendly = review.TopicGroupFriendly
 )
 
 // TopicKeywords maps a topic to the phrases that indicate it.
@@ -73,16 +80,9 @@ var TopicKeywords = map[string][]string{
 
 // TopicLabels are the human-readable Chinese names used in the generated
 // summary documents. The vocabulary keys stay English because they are what the
-// database and the retrieval filters use.
-var TopicLabels = map[string]string{
-	TopicFood:          "菜品",
-	TopicService:       "服务",
-	TopicAmbience:      "环境氛围",
-	TopicValue:         "性价比",
-	TopicWait:          "等待时间",
-	TopicKidFriendly:   "亲子友好",
-	TopicGroupFriendly: "聚餐友好",
-}
+// store and the retrieval filters use. The map is the shared domain's, so the
+// summariser and the chat service label a topic the same way.
+var TopicLabels = review.TopicLabels
 
 // CanonicalTopics lists every topic in a stable order.
 func CanonicalTopics() []string {
@@ -97,10 +97,7 @@ func CanonicalTopics() []string {
 // TopicLabel returns the display name for a topic, falling back to the key so
 // an unexpected topic still renders as something readable.
 func TopicLabel(topic string) string {
-	if label, ok := TopicLabels[topic]; ok {
-		return label
-	}
-	return topic
+	return review.TopicLabel(topic)
 }
 
 // ClassifyTopics returns the topics a review discusses, sorted.

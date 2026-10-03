@@ -68,19 +68,23 @@ type AssemblyReport struct {
 	Considered int
 	// Kept is how many survived.
 	Kept int
-	// Dropped is Considered minus Kept.
+	// Dropped is Considered minus Kept: the net loss, not the number of
+	// decisions. It can be smaller than the sum of DroppedByReason, because a
+	// document discarded by the budget and later replaced by one of another kind
+	// was discarded once and admitted once.
 	Dropped int
 	// Tokens is the estimated token cost of the kept content.
 	Tokens      int
 	TokenBudget int
-	// DroppedByReason counts each discard by cause, so a caller can see whether
-	// the budget or the diversity cap did the cutting.
+	// DroppedByReason counts each discard by cause — the budget, the diversity
+	// cap, or the support floor — so a caller can see which rule did the
+	// cutting. It counts events, not net losses.
 	DroppedByReason map[string]int
 }
 
 // AssembleEvidence turns a recalled set into a citable bundle.
 //
-// Three passes, in order, because each one removes a different kind of waste:
+// Four passes, in order, because each one removes a different kind of waste:
 //
 //  1. Completeness. A document with no source, no snapshot time, or no content
 //     cannot be cited. It is dropped rather than passed through, because a
@@ -90,6 +94,10 @@ type AssemblyReport struct {
 //     inside a review chunk. Keeping both spends budget restating one sentence
 //     and reads as the corpus agreeing with itself.
 //  3. Budget. What is left is admitted in score order until the budget is full.
+//  4. Support. If that left a single kind of document standing while another was
+//     available, the weakest admitted document trades places with the strongest
+//     document of the missing kind. Relevance decided the order; support decides
+//     that an answer still has something to check itself against.
 //
 // Nothing is truncated. A quote that stops mid-sentence is not a quote, so a
 // document that does not fit is dropped whole. The alternative — cutting it to
@@ -167,10 +175,122 @@ func AssembleEvidence(items []evidence.Evidence, opts AssembleOptions) ([]eviden
 			cheapestTokenCost(candidates))
 	}
 
+	kept, spent = floorDocTypes(kept, candidates, budget, spent, &report)
+
 	report.Kept = len(kept)
 	report.Dropped = report.Considered - report.Kept
 	report.Tokens = spent
 	return kept, report, nil
+}
+
+// floorDocTypes stops the budget from cutting a bundle down to a single kind of
+// document when another kind was available.
+//
+// The budget pass admits in score order, which is the right order for relevance
+// and the wrong one for support: three review summaries from one restaurant are
+// three corroborations of the same sentence, and an answer written from them
+// cannot tell a documented fact from a well-reviewed impression. When the cut
+// leaves one kind standing, the weakest admitted document gives up its place to
+// the strongest document of a different kind — but only when that swap actually
+// buys a new kind, and never below one document, because an empty bundle is the
+// failure this stage exists to prevent.
+//
+// The swap is a whole-document exchange, never a truncation: the discarded
+// document is dropped intact and the admitted one arrives intact. Cutting either
+// to fit would produce a quote that stops mid-sentence, which the caller cannot
+// tell from a short review.
+func floorDocTypes(
+	kept, candidates []evidence.Evidence, budget, spent int, report *AssemblyReport,
+) ([]evidence.Evidence, int) {
+	// One document has nothing to be diverse against, and a bundle that already
+	// spans two kinds is what this function exists to produce.
+	if len(kept) < 2 || evidence.DocTypesFrom(kept) >= evidence.MinAnswerableDocTypes {
+		return kept, spent
+	}
+
+	present := make(map[int64]struct{}, len(kept))
+	for _, item := range kept {
+		present[item.EvidenceID] = struct{}{}
+	}
+	keptKinds := make(map[evidence.DocType]struct{}, len(kept))
+	for _, item := range kept {
+		keptKinds[item.DocType] = struct{}{}
+	}
+
+	// candidates is in score order, so the first document of an absent kind is
+	// the strongest one available. If every kind is already represented, the
+	// corpus simply has only one kind and there is nothing to buy.
+	var extra *evidence.Evidence
+	for i := range candidates {
+		if _, ok := keptKinds[candidates[i].DocType]; ok {
+			continue
+		}
+		if _, admitted := present[candidates[i].EvidenceID]; admitted {
+			continue
+		}
+		extra = &candidates[i]
+		break
+	}
+	if extra == nil {
+		return kept, spent
+	}
+
+	// Evict the weakest admitted document until the newcomer fits. The loop is
+	// bounded by the number of admitted documents, so it terminates: either the
+	// newcomer fits, or the bundle is down to one document and the swap is
+	// abandoned — a single strong citation beats a single weak one.
+	work := append([]evidence.Evidence(nil), kept...)
+	room := budget - spent
+	evicted := 0
+	for len(work) > 1 && room < EstimateTokens(extra.Content) {
+		victim := weakestEvidence(work)
+		room += EstimateTokens(victim.Content)
+		work = dropEvidence(work, victim.EvidenceID)
+		evicted++
+	}
+	if room < EstimateTokens(extra.Content) {
+		return kept, spent
+	}
+
+	report.DroppedByReason["doc_type_floor"] += evicted
+	work = append(work, *extra)
+	sort.SliceStable(work, func(i, j int) bool {
+		if work[i].Score != work[j].Score {
+			return work[i].Score > work[j].Score
+		}
+		return work[i].EvidenceID < work[j].EvidenceID
+	})
+
+	total := 0
+	for _, item := range work {
+		total += EstimateTokens(item.Content)
+	}
+	return work, total
+}
+
+// weakestEvidence is the admitted document that costs the answer least: lowest
+// score, then highest id, so two equal scores evict the same one every run.
+func weakestEvidence(items []evidence.Evidence) evidence.Evidence {
+	weakest := items[0]
+	for _, item := range items[1:] {
+		if item.Score < weakest.Score ||
+			(item.Score == weakest.Score && item.EvidenceID > weakest.EvidenceID) {
+			weakest = item
+		}
+	}
+	return weakest
+}
+
+// dropEvidence removes one document by id, leaving the rest in order.
+func dropEvidence(items []evidence.Evidence, id int64) []evidence.Evidence {
+	out := make([]evidence.Evidence, 0, len(items))
+	for _, item := range items {
+		if item.EvidenceID == id {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
 }
 
 // incomplete names why a document cannot be cited, or "" if it can.

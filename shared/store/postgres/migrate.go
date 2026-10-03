@@ -140,6 +140,8 @@ func (c *Client) Drop(ctx context.Context) error {
 	// edit.
 	_, err := c.pool.Exec(ctx, `
 		DROP TABLE IF EXISTS
+			reservations, reservation_slots,
+			conversation_candidates,
 			conversation_messages, conversation_checkpoints, conversations,
 			user_memories,
 			tool_calls, agent_runs,

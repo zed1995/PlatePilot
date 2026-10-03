@@ -2,6 +2,7 @@
 package search
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -123,6 +124,46 @@ func (f RestaurantFilter) Matches(candidate RestaurantCandidate) bool {
 	// enforced by pushing them into the structured channel's statement, which is
 	// what makes them hard conditions at all.
 	return true
+}
+
+// Describe renders the active hard conditions as one Chinese phrase.
+//
+// It is the single rendering of "what the user asked for" that the trace, the
+// tool card, and the answer prompt all quote. Three callers, one string: the
+// alternative is a user reading a reason that names three of the four
+// conditions the search actually enforced, with nothing to reveal the omission.
+//
+// An empty filter renders as the empty string rather than as a phrase meaning
+// "nothing", because "no conditions" is not a condition and a caller that wants
+// to say so can test IsEmpty itself.
+func (f RestaurantFilter) Describe() string {
+	var parts []string
+	if len(f.Cuisines) > 0 {
+		parts = append(parts, "菜系="+strings.Join(f.Cuisines, "/"))
+	}
+	if len(f.PriceLevels) > 0 {
+		levels := make([]string, 0, len(f.PriceLevels))
+		for _, level := range f.PriceLevels {
+			levels = append(levels, fmt.Sprintf("$%d", level))
+		}
+		parts = append(parts, "价格="+strings.Join(levels, "/"))
+	}
+	if f.MinRating != nil {
+		parts = append(parts, fmt.Sprintf("评分>=%.1f", *f.MinRating))
+	}
+	if f.Neighborhood != "" {
+		parts = append(parts, "地区="+f.Neighborhood)
+	}
+	if f.Borough != "" {
+		parts = append(parts, "行政区="+f.Borough)
+	}
+	if f.OpenNow != nil {
+		parts = append(parts, fmt.Sprintf("营业=%t", *f.OpenNow))
+	}
+	if f.HasDistance() {
+		parts = append(parts, fmt.Sprintf("距离<%dm", *f.MaxDistanceMeters))
+	}
+	return strings.Join(parts, "、")
 }
 
 // anyString reports whether values contains at least one of the wanted entries.
