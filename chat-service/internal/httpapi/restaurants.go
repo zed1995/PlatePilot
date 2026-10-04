@@ -41,14 +41,20 @@ type EvidenceResult struct {
 
 // EvidenceQuery is the transport-level shape of an evidence request.
 type EvidenceQuery struct {
-	// RestaurantIDs is required. The transport repeats the domain's rule rather
-	// than relying on the service alone, because the failure it prevents is a
-	// successful response carrying someone else's reviews.
-	RestaurantIDs []int64            `json:"restaurant_ids"`
-	Query         string             `json:"query,omitempty"`
-	Topic         string             `json:"topic,omitempty"`
-	DocTypes      []evidence.DocType `json:"doc_types,omitempty"`
-	TopK          int                `json:"top_k,omitempty"`
+	// RestaurantIDs is the classic scope. Either RestaurantIDs or EvidenceIDs
+	// is required; see requireScope.
+	RestaurantIDs []int64 `json:"restaurant_ids,omitempty"`
+	// EvidenceIDs recalls named documents directly. A citation event carries
+	// document ids, and the client that received them has no way to learn which
+	// restaurant each belongs to — so asking it to convert them into a
+	// restaurant scope would invite a guess, and a guessed scope is a citation
+	// for the wrong restaurant. Taking the ids themselves is the only lookup
+	// that cannot be wrong.
+	EvidenceIDs []int64            `json:"evidence_ids,omitempty"`
+	Query       string             `json:"query,omitempty"`
+	Topic       string             `json:"topic,omitempty"`
+	DocTypes    []evidence.DocType `json:"doc_types,omitempty"`
+	TopK        int                `json:"top_k,omitempty"`
 	// TokenBudget bounds what assembly keeps. Zero means the service default.
 	TokenBudget int `json:"token_budget,omitempty"`
 }
@@ -62,16 +68,28 @@ type EvidenceQuery struct {
 // the complete request exists keeps one rule in one place.
 func (q EvidenceQuery) Validate() error { return nil }
 
-// requireScope rejects a request that names no restaurant.
+// requireScope rejects a request that names neither a restaurant nor a
+// document.
+//
+// The rule is still the domain's — an unscoped recall would answer with the
+// nearest document in the corpus — and it is repeated here because the failure
+// it prevents is a successful response carrying someone else's reviews. What
+// changed when EvidenceIDs was added is only that a request now has two ways
+// to be scoped, and both count.
 func (q EvidenceQuery) requireScope() error {
 	for _, id := range q.RestaurantIDs {
 		if id > 0 {
 			return nil
 		}
 	}
+	for _, id := range q.EvidenceIDs {
+		if id > 0 {
+			return nil
+		}
+	}
 	return errs.New(errs.CodeRetrievalNoScope,
-		"an evidence request needs at least one restaurant_id: a citation is a "+
-			"claim about a specific restaurant")
+		"an evidence request needs at least one restaurant_id or evidence_id: a "+
+			"citation is a claim about a specific restaurant")
 }
 
 // EvidenceBundle is the assembled answer the transport returns.
@@ -190,8 +208,13 @@ func RestaurantEvidenceHandler(service EvidenceService) app.HandlerFunc {
 		// The path wins on conflict. The body's own id is dropped rather than
 		// rejected: a client that sends both has made the route unambiguous, and
 		// failing over a redundant field teaches the caller nothing.
+		// The path wins on conflict, and it wins over the id list too: a route
+		// that says /restaurants/7/evidence is scoped by the path, so
+		// evidence_ids sent alongside it are dropped rather than quietly
+		// answering about documents chosen by the body.
 		body.RestaurantIDs = append([]int64{restaurantID},
 			withoutID(body.RestaurantIDs, restaurantID)...)
+		body.EvidenceIDs = nil
 		writeEvidence(ctx, c, service, body)
 	}
 }

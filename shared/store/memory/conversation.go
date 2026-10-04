@@ -84,6 +84,59 @@ func (r *ConversationRepository) ListCandidates(_ context.Context, threadID stri
 	return out, nil
 }
 
+// ListConversations returns one user's threads, newest first.
+//
+// Newest-first is ordered by UpdatedAt with ThreadID as the tie-breaker: two
+// threads created in the same goroutine carry identical wall-clock timestamps,
+// and an unstable order would make the same list render differently between
+// two reads — which is what "keep fetch modes identical" is protecting against.
+func (r *ConversationRepository) ListConversations(
+	_ context.Context, userID string, limit int, beforeID string,
+) ([]conversation.Conversation, error) {
+	if strings.TrimSpace(userID) == "" {
+		return nil, errs.New(errs.CodeInvalidArgument, "user_id is required")
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	eligible := make([]conversation.Conversation, 0, len(r.conversations))
+	for _, conv := range r.conversations {
+		if conv.UserID != userID {
+			continue
+		}
+		eligible = append(eligible, conv)
+	}
+	sort.Slice(eligible, func(i, j int) bool {
+		if !eligible[i].UpdatedAt.Equal(eligible[j].UpdatedAt) {
+			return eligible[i].UpdatedAt.After(eligible[j].UpdatedAt)
+		}
+		return eligible[i].ThreadID < eligible[j].ThreadID
+	})
+
+	start := 0
+	if beforeID != "" {
+		found := false
+		for i, conv := range eligible {
+			if conv.ThreadID == beforeID {
+				start = i + 1
+				found = true
+				break
+			}
+		}
+		if !found {
+			// An unknown cursor pages from nothing rather than from the head,
+			// matching ListMessages: a stale id must not resurrect threads the
+			// caller already scrolled past.
+			return []conversation.Conversation{}, nil
+		}
+	}
+	eligible = eligible[start:]
+	if limit > 0 && len(eligible) > limit {
+		eligible = eligible[:limit]
+	}
+	return eligible, nil
+}
+
 // Get returns thread metadata or a not_found error.
 func (r *ConversationRepository) Get(_ context.Context, threadID string) (conversation.Conversation, error) {
 	r.mu.RLock()

@@ -294,6 +294,58 @@ func (r *ConversationRepository) AppendMessage(ctx context.Context, msg conversa
 	return nil
 }
 
+// ListConversations returns one user's threads, newest first.
+//
+// The user id is a predicate in the statement rather than a check afterwards
+// for the same reason the transport requires it: reading every thread and
+// filtering in Go would put another user's conversation title in memory, which
+// is one refactor away from putting it in a response. Ordering is updated_at
+// with thread_id as the tie-breaker, because ties are real (two threads written
+// in one turn) and an unstable order makes the same list render differently on
+// two consecutive reads.
+func (r *ConversationRepository) ListConversations(ctx context.Context, userID string, limit int, beforeID string) ([]conversation.Conversation, error) {
+	if strings.TrimSpace(userID) == "" {
+		return nil, errs.New(errs.CodeInvalidArgument, "user_id is required")
+	}
+	ctx, cancel := r.client.withTimeout(ctx)
+	defer cancel()
+
+	var limitArg any
+	if limit > 0 {
+		limitArg = limit
+	}
+	rows, err := r.client.pool.Query(ctx, `
+		SELECT thread_id, user_id, title, current_state,
+		       created_at, updated_at, last_message_at
+		FROM conversations
+		WHERE user_id = $1
+		  AND ($2 = '' OR updated_at < (
+		      SELECT updated_at FROM conversations WHERE thread_id = $2)
+		      OR (updated_at = (SELECT updated_at FROM conversations WHERE thread_id = $2)
+		          AND thread_id > $2))
+		ORDER BY updated_at DESC, thread_id ASC
+		LIMIT $3`,
+		userID, beforeID, limitArg)
+	if err != nil {
+		return nil, operationError("postgres: list conversations", err)
+	}
+	defer rows.Close()
+
+	out := make([]conversation.Conversation, 0)
+	for rows.Next() {
+		var conv conversation.Conversation
+		if err := rows.Scan(&conv.ThreadID, &conv.UserID, &conv.Title, &conv.CurrentState,
+			&conv.CreatedAt, &conv.UpdatedAt, &conv.LastMessageAt); err != nil {
+			return nil, operationError("postgres: scan conversation", err)
+		}
+		out = append(out, conv)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, operationError("postgres: iterate conversations", err)
+	}
+	return out, nil
+}
+
 // ListMessages returns the newest limit messages before beforeID, in
 // ascending chronological order.
 func (r *ConversationRepository) ListMessages(ctx context.Context, threadID string, limit int, beforeID string) ([]conversation.Message, error) {

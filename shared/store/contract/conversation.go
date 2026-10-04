@@ -129,6 +129,78 @@ func runConversationRepositoryContract(t *testing.T, conversations store.Convers
 		}
 	})
 
+	// The thread list is the only read that is scoped by owner rather than by
+	// thread, so the property worth pinning is the boundary: everything the
+	// caller owns, nothing they do not. Ordering belongs here too, because
+	// "newest first" is the difference between picking up the thread that is
+	// waiting for you and scrolling to find it.
+	t.Run("threads_list_scoped_to_owner", func(t *testing.T) {
+		upsert := func(threadID, userID string, updatedAt time.Time) {
+			if err := conversations.Upsert(ctx, conversation.Conversation{
+				ThreadID:      threadID,
+				UserID:        userID,
+				CurrentState:  conversation.StateIdle,
+				CreatedAt:     now,
+				UpdatedAt:     updatedAt,
+				LastMessageAt: updatedAt,
+			}); err != nil {
+				t.Fatalf("upsert %s: %v", threadID, err)
+			}
+		}
+		upsert("c-list-a1", "user-list", now.Add(3*time.Hour))
+		upsert("c-list-a2", "user-list", now.Add(1*time.Hour))
+		upsert("c-list-a3", "user-list", now.Add(2*time.Hour))
+		upsert("c-list-b1", "user-other", now.Add(9*time.Hour))
+
+		got, err := conversations.ListConversations(ctx, "user-list", 0, "")
+		if err != nil {
+			t.Fatalf("ListConversations: %v", err)
+		}
+		if len(got) != 3 {
+			t.Fatalf("len = %d, want the caller's three threads", len(got))
+		}
+		for _, conv := range got {
+			if conv.UserID != "user-list" {
+				t.Fatalf("another user's thread came back: %+v", conv)
+			}
+		}
+		wantOrder := []string{"c-list-a1", "c-list-a3", "c-list-a2"}
+		for i, threadID := range wantOrder {
+			if got[i].ThreadID != threadID {
+				t.Fatalf("order = %+v, want newest first (%v)", got, wantOrder)
+			}
+		}
+
+		page, err := conversations.ListConversations(ctx, "user-list", 2, "")
+		if err != nil {
+			t.Fatalf("ListConversations paged: %v", err)
+		}
+		if len(page) != 2 || page[0].ThreadID != "c-list-a1" {
+			t.Fatalf("paged = %+v", page)
+		}
+
+		tail, err := conversations.ListConversations(ctx, "user-list", 0, "c-list-a1")
+		if err != nil {
+			t.Fatalf("ListConversations before: %v", err)
+		}
+		if len(tail) != 2 {
+			t.Fatalf("exclusive cursor returned %d rows, want the two below it", len(tail))
+		}
+		for _, conv := range tail {
+			if conv.ThreadID == "c-list-a1" {
+				t.Fatal("the cursor row came back with the page below it")
+			}
+		}
+
+		none, err := conversations.ListConversations(ctx, "user-nobody", 0, "")
+		if err != nil {
+			t.Fatalf("ListConversations empty: %v", err)
+		}
+		if len(none) != 0 {
+			t.Fatalf("a user with no threads owns %d of them", len(none))
+		}
+	})
+
 	t.Run("messages_append_paginate_isolate", func(t *testing.T) {
 		threadID := "c-thread-msgs"
 		if err := conversations.Upsert(ctx, conversation.Conversation{

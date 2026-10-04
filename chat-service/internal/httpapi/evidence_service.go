@@ -25,11 +25,18 @@ func NewEvidenceService(service *retrieval.Service) EvidenceService {
 	return evidenceAdapter{service: service}
 }
 
+// Evidence answers one recall.
+//
+// The whole body is forwarded rather than rebuilt field by field because this
+// adapter is the only place the two shapes meet: a field the service gains is
+// genuinely new here only if it belongs to the HTTP contract, and adding it to
+// EvidenceQuery is how that decision gets made.
 func (a evidenceAdapter) Evidence(
 	ctx context.Context, req EvidenceQuery,
 ) (EvidenceResult, error) {
 	items, trace, err := a.service.AssembleAndReturn(ctx, retrieval.EvidenceRequest{
 		RestaurantIDs: req.RestaurantIDs,
+		EvidenceIDs:   req.EvidenceIDs,
 		Query:         req.Query,
 		Topic:         req.Topic,
 		DocTypes:      req.DocTypes,

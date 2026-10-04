@@ -204,6 +204,35 @@ func (r *KnowledgeRepository) RecallEvidence(
 	return out, nil
 }
 
+// FindEvidenceByIDs returns the active evidence documents named by ids.
+//
+// Order follows the request rather than the stored document order: the caller
+// received these ids in citation order and is putting them back on screen in
+// that order, so re-sorting here would silently renumber the answer's
+// footnotes.
+func (r *KnowledgeRepository) FindEvidenceByIDs(
+	_ context.Context, ids []int64,
+) ([]evidence.Evidence, error) {
+	byID := make(map[int64]evidence.KnowledgeDocument, len(r.docs))
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, doc := range r.docs {
+		if doc.Scope != evidence.ScopeEvidence || !doc.IsActive {
+			continue
+		}
+		byID[doc.DocumentID] = doc
+	}
+	out := make([]evidence.Evidence, 0, len(ids))
+	for _, id := range ids {
+		doc, ok := byID[id]
+		if !ok {
+			continue
+		}
+		out = append(out, doc.ToEvidence(0))
+	}
+	return out, nil
+}
+
 // boroughOf reads the denormalised borough a document was written with.
 func boroughOf(doc evidence.KnowledgeDocument) string {
 	if doc.Metadata == nil {

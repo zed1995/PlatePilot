@@ -90,6 +90,22 @@ func (s *chatService) CreateThread(ctx context.Context, userID, title string) (c
 	return conv, nil
 }
 
+// ListThreads returns one user's threads, newest first.
+//
+// It is a straight projection of the repository read: the list is a mirror of
+// what is stored, and adding anything derived here would give the client a
+// second, quietly different answer to "what is this thread's state?" that GET
+// /v1/conversations/:id does not share.
+func (s *chatService) ListThreads(
+	ctx context.Context, userID string, limit int, beforeID string,
+) (httpapi.ThreadPage, error) {
+	convs, err := s.conversations.ListConversations(ctx, userID, limit, beforeID)
+	if err != nil {
+		return httpapi.ThreadPage{}, err
+	}
+	return httpapi.ThreadPage{Conversations: convs}, nil
+}
+
 func (s *chatService) GetThread(ctx context.Context, threadID string) (httpapi.ThreadDetail, error) {
 	conv, err := s.conversations.Get(ctx, threadID)
 	if err != nil {
@@ -113,6 +129,25 @@ func (s *chatService) ListMessages(
 		return httpapi.MessagePage{}, err
 	}
 	return httpapi.MessagePage{Messages: messages}, nil
+}
+
+// ListCandidates returns the thread's current candidate snapshot.
+//
+// Read-only on purpose. The snapshot is written by a turn that searched, and
+// exposing it does not change what it says or when it is replaced. The
+// thread-existence check comes first so a mistyped thread is not_found rather
+// than a page of nothing, matching the transcript's behaviour.
+func (s *chatService) ListCandidates(
+	ctx context.Context, threadID string,
+) (httpapi.CandidatePage, error) {
+	if _, err := s.conversations.Get(ctx, threadID); err != nil {
+		return httpapi.CandidatePage{}, err
+	}
+	candidates, err := s.conversations.ListCandidates(ctx, threadID)
+	if err != nil {
+		return httpapi.CandidatePage{}, err
+	}
+	return httpapi.CandidatePage{Candidates: candidates}, nil
 }
 
 func (s *chatService) ListMemories(ctx context.Context, userID string) (httpapi.MemoryPage, error) {

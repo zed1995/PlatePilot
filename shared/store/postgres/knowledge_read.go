@@ -74,6 +74,46 @@ func (r *KnowledgeReadRepository) FindEvidenceByRestaurant(
 	return out, nil
 }
 
+// FindEvidenceByIDs returns one named document per id that exists and is
+// citable, in the requested order.
+//
+// The active and scope predicates are inside the statement rather than applied
+// to the result: an id is a pointer into the corpus, and a reader that fetched
+// by id and filtered afterwards would still be holding a retired document's
+// text for the length of the round trip. Ordering follows array_position so a
+// citation set comes back in the order the answer footnoted it — a client
+// numbering footnotes by array order would otherwise renumber them.
+func (r *KnowledgeReadRepository) FindEvidenceByIDs(
+	ctx context.Context, ids []int64,
+) ([]evidence.Evidence, error) {
+	if len(ids) == 0 {
+		return []evidence.Evidence{}, nil
+	}
+
+	ctx, cancel := r.client.withTimeout(ctx)
+	defer cancel()
+
+	statement := `SELECT ` + knowledgeColumns + `
+		FROM knowledge_documents
+		WHERE is_active
+		  AND retrieval_scope = 'evidence'
+		  AND document_id = ANY($1)
+		ORDER BY array_position($1::bigint[], document_id)`
+	rows, err := r.client.pool.Query(ctx, statement, ids)
+	if err != nil {
+		return nil, operationError("postgres: find evidence by ids", err)
+	}
+	documents, err := scanKnowledgeDocuments(rows)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]evidence.Evidence, 0, len(documents))
+	for _, doc := range documents {
+		out = append(out, doc.ToEvidence(0))
+	}
+	return out, nil
+}
+
 // VectorSearch ranks active documents in one scope by cosine distance.
 //
 // The filters in req are pushed into the statement rather than applied to the

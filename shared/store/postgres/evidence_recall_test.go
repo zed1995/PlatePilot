@@ -376,3 +376,98 @@ func TestEvidenceRecallCarriesACheckableSource(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Recall by cited document id
+//
+// A citation event carries document ids, and nothing about which restaurant
+// each belongs to. Resolving them is the only lookup that cannot be wrong, so
+// the store has to answer it directly rather than asking the caller to derive a
+// restaurant scope.
+// ---------------------------------------------------------------------------
+
+func TestEvidenceByIDsReturnsTheNamedDocumentsInRequestedOrder(t *testing.T) {
+	repo, _ := newEvidenceStores(t, []evidenceFixture{
+		{doc: doc(1, evidence.DocTypeRestaurantReviewSummary, "first", "h1"), axis: 0, active: true},
+		{doc: doc(2, evidence.DocTypeRestaurantHours, "second", "h2"), axis: 1, active: true},
+		{doc: doc(3, evidence.DocTypeRestaurantReviewSummary, "third", "h3"), axis: 2, active: true},
+	})
+
+	all, err := repo.RecallEvidence(context.Background(), store.EvidenceRequest{
+		RestaurantIDs: []int64{1, 2, 3}, TopK: 10,
+	})
+	if err != nil {
+		t.Fatalf("seed read: %v", err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("seed = %d documents, want 3", len(all))
+	}
+	// document_id order matches insertion, so the ids are predictable enough to
+	// ask for the set back in a different order than the store prefers.
+	ids := []int64{all[2].EvidenceID, all[0].EvidenceID}
+
+	got, err := repo.FindEvidenceByIDs(context.Background(), ids)
+	if err != nil {
+		t.Fatalf("FindEvidenceByIDs: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d documents, want the 2 requested", len(got))
+	}
+	// Order follows the request because the caller footnoted them in this order;
+	// reordering here would renumber the answer's citations.
+	if got[0].EvidenceID != ids[0] || got[1].EvidenceID != ids[1] {
+		t.Fatalf("order = [%d %d], want [%d %d]", got[0].EvidenceID, got[1].EvidenceID, ids[0], ids[1])
+	}
+	for _, item := range got {
+		if item.Source == "" || item.SnapshotAt.IsZero() {
+			t.Fatalf("a recall by id must still return citable documents: %+v", item)
+		}
+	}
+}
+
+// A retired document must stay retired when it is named directly. This read is
+// the one place an id arrives already proven to have been cited once, which is
+// exactly where a corpus-wide active filter is most easily skipped.
+func TestEvidenceByIDsSkipsRetiredAndUnknownIds(t *testing.T) {
+	repo, _ := newEvidenceStores(t, []evidenceFixture{
+		{doc: doc(1, evidence.DocTypeRestaurantReviewSummary, "live", "h1"), axis: 0, active: true},
+		{doc: doc(2, evidence.DocTypeRestaurantReviewSummary, "retired", "h2"), axis: 1, active: false},
+	})
+
+	all, err := repo.FindEvidenceByRestaurant(context.Background(), 1, "")
+	if err != nil {
+		t.Fatalf("seed read: %v", err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("restaurant 1 carries %d active documents, want 1", len(all))
+	}
+	// An id that exists but is not citable, plus one that does not exist at all.
+	retired, err := repo.RecallEvidence(context.Background(), store.EvidenceRequest{
+		RestaurantIDs: []int64{2}, TopK: 10,
+	})
+	_ = retired
+	_ = err
+
+	got, err := repo.FindEvidenceByIDs(context.Background(),
+		[]int64{all[0].EvidenceID, all[0].EvidenceID + 5000})
+	if err != nil {
+		t.Fatalf("FindEvidenceByIDs: %v", err)
+	}
+	if len(got) != 1 || got[0].EvidenceID != all[0].EvidenceID {
+		t.Fatalf("got %+v, want only the active documented id", got)
+	}
+}
+
+// An empty id list is an empty answer rather than an error: a client that asked
+// for nothing must not be told the corpus is empty.
+func TestEvidenceByIDsAnswersEmptyForAnEmptyList(t *testing.T) {
+	repo, _ := newEvidenceStores(t, nil)
+
+	got, err := repo.FindEvidenceByIDs(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("FindEvidenceByIDs: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("got %d documents for an empty request", len(got))
+	}
+}

@@ -61,6 +61,21 @@ type KnowledgeRepository interface {
 	// caller has to remember it, and a citation from another restaurant is not
 	// an error anyone would notice.
 	RecallEvidence(ctx context.Context, req EvidenceRequest) ([]evidence.Evidence, error)
+	// FindEvidenceByIDs returns the active evidence documents whose id appears
+	// in ids, in the given order.
+	//
+	// The ids come from a citation event, which carries document ids rather
+	// than restaurant ids — it is what a previous recall produced, and asking
+	// the client to guess which restaurant a document belongs to is how a
+	// citation for one restaurant gets a quote from another. Resolving the
+	// documents themselves is the only lookup that cannot be wrong, and the
+	// is_active test stays inside the store so a retired document can never
+	// reappear through the back door.
+	//
+	// An id that is absent or retired is skipped rather than answered with an
+	// error: one dead id must not invalidate the citations around it, and the
+	// caller can tell which came back by comparing lengths.
+	FindEvidenceByIDs(ctx context.Context, ids []int64) ([]evidence.Evidence, error)
 }
 
 // EvidenceRequest is one restaurant-bounded evidence recall.
@@ -127,6 +142,17 @@ type ConversationRepository interface {
 	// (exclusive; the newest messages when beforeID is empty), in ascending
 	// chronological order. A non-positive limit means no limit.
 	ListMessages(ctx context.Context, threadID string, limit int, beforeID string) ([]conversation.Message, error)
+
+	// ListConversations returns one user's threads, newest first.
+	//
+	// The user id is part of the read rather than a filter applied afterwards:
+	// a thread list that could only be scoped by the caller would answer with
+	// everybody's conversations, and before M6 replaces X-User-ID with a real
+	// principal that is the whole access model this surface has.
+	//
+	// beforeID is an exclusive cursor in the same style as ListMessages, and a
+	// non-positive limit means the default page size.
+	ListConversations(ctx context.Context, userID string, limit int, beforeID string) ([]conversation.Conversation, error)
 
 	// ReplaceCandidates swaps a thread's candidate snapshot for the given set.
 	//

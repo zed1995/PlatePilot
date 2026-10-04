@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -46,6 +47,71 @@ type fakeChatService struct {
 	sendStarted     chan struct{}
 	cancelObserved  chan struct{}
 	getThreadCalled int
+
+	threadOrder    []string
+	listThreadCall listThreadCall
+	listThreadErr  error
+}
+
+// listThreadCall records the scoping a list request reached the service with,
+// so a handler test can tell "this user's threads" from "everybody's".
+type listThreadCall struct {
+	userID   string
+	limit    int
+	beforeID string
+	called   int
+}
+
+var errListThreads = errs.New(errs.CodeInvalidArgument, "list threads refuses an empty user id")
+
+func (f *fakeChatService) ListThreads(_ context.Context, userID string, limit int, beforeID string) (ThreadPage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.listThreadCall = listThreadCall{userID: userID, limit: limit, beforeID: beforeID, called: f.listThreadCall.called + 1}
+	if strings.TrimSpace(userID) == "" {
+		return ThreadPage{}, errListThreads
+	}
+	return ThreadPage{Conversations: f.convsFor(userID)}, nil
+}
+
+// convsFor is the scripted read: one user's threads, newest first. It applies
+// the ordering the repository is specified to return, with thread id as the
+// tie-breaker, so a handler test can assert on order instead of on insertion
+// sequence — which is what makes the "newest first" claim mean anything.
+func (f *fakeChatService) convsFor(userID string) []conversation.Conversation {
+	out := make([]conversation.Conversation, 0, len(f.threadOrder))
+	for _, threadID := range f.threadOrder {
+		conv, ok := f.convs[threadID]
+		if !ok || conv.UserID != userID {
+			continue
+		}
+		out = append(out, conv)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].UpdatedAt.Equal(out[j].UpdatedAt) {
+			return out[i].UpdatedAt.After(out[j].UpdatedAt)
+		}
+		return out[i].ThreadID < out[j].ThreadID
+	})
+	return out
+}
+
+func (f *fakeChatService) ListCandidates(_ context.Context, threadID string) (CandidatePage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if threadID == "missing-thread" {
+		return CandidatePage{}, errs.Newf(errs.CodeNotFound, "thread %q not found", threadID)
+	}
+	if threadID == "thread-empty-candidates" {
+		return CandidatePage{Candidates: []conversation.Candidate{}}, nil
+	}
+	if threadID == "thread-nil-candidates" {
+		return CandidatePage{}, nil
+	}
+	return CandidatePage{Candidates: []conversation.Candidate{
+		{ThreadID: threadID, Position: 1, RestaurantID: 11, Name: "A Ramen", Score: 0.91},
+		{ThreadID: threadID, Position: 2, RestaurantID: 22, Name: "B Ramen", Score: 0.83},
+	}}, nil
 }
 
 type listCall struct {

@@ -262,3 +262,87 @@ func TestEvidenceRoutesAreAbsentWithoutTheService(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Recalling by cited document id
+// ---------------------------------------------------------------------------
+
+// A client holding a citation knows its document id and nothing else — not
+// which restaurant owns it — so the id list has to be enough to answer. Without
+// it every footnote would either be dead or would have to guess a restaurant.
+func TestEvidenceEndpointAcceptsAnEvidenceIdScope(t *testing.T) {
+	service := &stubEvidence{out: EvidenceResult{
+		Evidence: []evidence.Evidence{citation(101, 7, "the wait was long")},
+	}}
+	w := postEvidence(t, service, "/v1/restaurants/evidence", `{"evidence_ids":[101]}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %s)", w.Code, w.Body.String())
+	}
+	if len(decodeEvidence(t, w).Evidence) != 1 {
+		t.Fatal("the cited document did not come back")
+	}
+	if len(service.got.EvidenceIDs) != 1 || service.got.EvidenceIDs[0] != 101 {
+		t.Fatalf("service saw %+v", service.got)
+	}
+}
+
+// The two scopes are alternatives, but the explicit one still wins: a body that
+// names restaurants and ids at once has made the recall ambiguous, and the
+// existing rule for this surface is that an explicit path beats anything derived
+// from the body.
+func TestEvidenceEndpointPrefersARestaurantScopeOverIds(t *testing.T) {
+	service := &stubEvidence{}
+	w := postEvidence(t, service, "/v1/restaurants/evidence",
+		`{"restaurant_ids":[7],"evidence_ids":[101]}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %s)", w.Code, w.Body.String())
+	}
+	if len(service.got.RestaurantIDs) != 1 || service.got.RestaurantIDs[0] != 7 {
+		t.Fatalf("restaurant scope = %v", service.got.RestaurantIDs)
+	}
+}
+
+// The path takes precedence over an id list too. A route that says
+// /restaurants/7/evidence is scoped by the path, so ids sent alongside it are
+// dropped rather than answering about documents chosen by the body.
+func TestRestaurantEvidenceRouteDropsAnIdList(t *testing.T) {
+	service := &stubEvidence{}
+	w := postEvidence(t, service, "/v1/restaurants/7/evidence", `{"evidence_ids":[101]}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %s)", w.Code, w.Body.String())
+	}
+	if len(service.got.RestaurantIDs) != 1 || service.got.RestaurantIDs[0] != 7 {
+		t.Fatalf("restaurant scope = %v", service.got.RestaurantIDs)
+	}
+	if len(service.got.EvidenceIDs) != 0 {
+		t.Fatalf("an id list reached the service past the path: %v", service.got.EvidenceIDs)
+	}
+}
+
+// An empty body is still no scope. Widening it to "the whole corpus" would turn
+// every malformed request into a confidently sourced answer about nothing.
+func TestEvidenceEndpointStillRefusesAnUnscopedBody(t *testing.T) {
+	service := &stubEvidence{}
+	w := postEvidence(t, service, "/v1/restaurants/evidence", `{"query":"wait"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body %s)", w.Code, w.Body.String())
+	}
+	if got := decodeError(t, w.Body.Bytes()).Error.Code; got != string(errs.CodeRetrievalNoScope) {
+		t.Fatalf("code = %q", got)
+	}
+	if service.calls != 0 {
+		t.Fatal("an unscoped recall must not reach the service")
+	}
+}
+
+// Zero and negative ids name nothing, so a list of them is no list at all.
+func TestEvidenceEndpointRefusesAnIdListWithNothingPositive(t *testing.T) {
+	service := &stubEvidence{}
+	w := postEvidence(t, service, "/v1/restaurants/evidence", `{"evidence_ids":[0,-1]}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (body %s)", w.Code, w.Body.String())
+	}
+	if service.calls != 0 {
+		t.Fatal("a non-positive id list reached the service")
+	}
+}

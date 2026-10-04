@@ -30,6 +30,12 @@ type EvidenceRequest struct {
 	// TopK bounds the recall depth before assembly. Assembly applies the token
 	// budget; this bounds the work the store does.
 	TopK int
+	// EvidenceIDs recalls documents by id instead of by restaurant. It exists
+	// for one caller: a client holding the evidence ids a previous answer cited.
+	// Those are document ids, and the client has no way to learn which
+	// restaurant each belongs to, so requiring one here would leave it guessing
+	// — and a guess is a citation for the wrong restaurant.
+	EvidenceIDs []int64
 }
 
 // EvidenceResult is a recalled evidence set with its derivation.
@@ -48,8 +54,72 @@ const maxEvidenceDepth = 100
 // defaultEvidenceDepth is the depth used when the caller names none.
 const defaultEvidenceDepth = 20
 
-// Evidence recalls citable evidence for a set of restaurants.
+// EvidenceByIDs recalls the documents a set of ids names.
 //
+// This is the read a client performs when it already holds a citation and wants
+// the text behind it. It is not a shortcut around the recall pipeline: the
+// retrieved rows still pass through resolveCitations and dedupeBySource, so a
+// document with no source still becomes visibly "unknown" and two ids pointing
+// at the same paragraph still collapse to one. What it skips is the ranking —
+// there is no question to rank against — and nothing else.
+//
+// The trace reports what happened the same way the restaurant recall does,
+// because "I asked for three citations and got two back" must still be
+// distinguishable from "one of them is retired".
+func (s *Service) EvidenceByIDs(ctx context.Context, ids []int64) (EvidenceResult, error) {
+	requested := distinctIDs(ids)
+	if len(requested) == 0 {
+		return EvidenceResult{}, errs.New(errs.CodeRetrievalNoScope,
+			"evidence ids must include at least one positive document id")
+	}
+	if s.knowledge == nil {
+		return EvidenceResult{}, errs.New(errs.CodeProviderUnavailable,
+			"evidence recall needs a knowledge repository")
+	}
+
+	trace := &retrieval.EvidenceTrace{
+		ScopeSize: len(requested),
+		TopK:      len(requested),
+	}
+	items, err := s.knowledge.FindEvidenceByIDs(ctx, requested)
+	if err != nil {
+		return EvidenceResult{}, err
+	}
+	trace.Recalled = len(items)
+	if missing := len(requested) - len(items); missing > 0 {
+		// A retired or unknown id is not an error: one dead footnote must not
+		// invalidate the ones beside it, and the client can tell which came
+		// back by comparing lengths. It is a warning because silently
+		// returning fewer documents than asked for reads as a corpus gap.
+		trace.Warn(strconv.Itoa(missing) + " of " + strconv.Itoa(len(requested)) +
+			" requested evidence documents are not citable (retired or unknown id)")
+	}
+
+	items = resolveCitations(items, trace)
+	items = dedupeBySource(items)
+	return EvidenceResult{Evidence: inRequestedOrder(items, requested), Trace: trace}, nil
+}
+
+// inRequestedOrder puts recalled documents back in the order they were asked
+// for.
+//
+// dedupeBySource sorts by score, and the id-directed read has no score behind
+// it — the store returns every named document flat, so that sort is free to
+// shuffle documents that tie, which is all of them here. Restoring the request
+// order afterwards is what makes "the nth footnote is the nth id" true; a client
+// that numbered citations by array order would otherwise renumber them.
+func inRequestedOrder(items []evidence.Evidence, requested []int64) []evidence.Evidence {
+	rank := make(map[int64]int, len(requested))
+	for i, id := range requested {
+		rank[id] = i
+	}
+	sorted := append([]evidence.Evidence(nil), items...)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		return rank[sorted[i].EvidenceID] < rank[sorted[j].EvidenceID]
+	})
+	return sorted
+}
+
 // The restaurant set is a precondition rather than a filter, and that is the
 // whole design. A citation is a claim that a specific restaurant said a
 // specific thing; an evidence recall that could widen its own scope would
@@ -60,6 +130,19 @@ const defaultEvidenceDepth = 20
 // "what is this place like" is a real question, and the honest answer to it is
 // everything the place has on record.
 func (s *Service) Evidence(ctx context.Context, req EvidenceRequest) (EvidenceResult, error) {
+	// Id-directed recall and restaurant-scoped recall are different questions
+	// with different preconditions, so the branch is taken here rather than
+	// inside one statement: folding "these documents" into "these restaurants"
+	// would mean guessing each document's restaurant, and a wrong guess is a
+	// citation for the wrong restaurant.
+	//
+	// Restaurants win when both are named because the transport's own rule is
+	// that an explicit path or body scope beats anything derived, and because
+	// an out-of-date evidence id inside a fresh restaurant recall must not
+	// silently narrow it.
+	if len(distinctIDs(req.EvidenceIDs)) > 0 && len(distinctIDs(req.RestaurantIDs)) == 0 {
+		return s.EvidenceByIDs(ctx, req.EvidenceIDs)
+	}
 	restaurantIDs := distinctIDs(req.RestaurantIDs)
 	if len(restaurantIDs) == 0 {
 		return EvidenceResult{}, errs.New(errs.CodeRetrievalNoScope,

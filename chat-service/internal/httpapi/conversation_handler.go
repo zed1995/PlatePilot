@@ -38,8 +38,18 @@ const (
 // scripted double without a runner, a model, or a database.
 type ChatService interface {
 	CreateThread(ctx context.Context, userID, title string) (conversation.Conversation, error)
+	// ListThreads returns one user's threads, newest first. It is scoped by
+	// user rather than by thread because a list that a client could ask for
+	// anyone's threads would be a read of everyone's conversations: the header
+	// is the only ownership this surface has until M6 ships a principal.
+	ListThreads(ctx context.Context, userID string, limit int, beforeID string) (ThreadPage, error)
 	GetThread(ctx context.Context, threadID string) (ThreadDetail, error)
 	ListMessages(ctx context.Context, threadID string, limit int, beforeID string) (MessagePage, error)
+	// ListCandidates returns the thread's current candidate snapshot. It exists
+	// beside ListMessages rather than inside GetThread because the snapshot is
+	// the answer to a different question — "what is 第二家?" — and a thread that
+	// never searched has an empty one, not a missing one.
+	ListCandidates(ctx context.Context, threadID string) (CandidatePage, error)
 	// SendMessage runs one turn. emit is invoked serially, in event order, on
 	// the calling goroutine; a non-nil emit error means the client is gone and
 	// the service must abandon the turn.
@@ -71,6 +81,16 @@ type SendMessageInput struct {
 type ThreadDetail struct {
 	Conversation conversation.Conversation
 	Checkpoint   *conversation.Checkpoint
+}
+
+// ThreadPage is one page of thread metadata, newest first.
+type ThreadPage struct {
+	Conversations []conversation.Conversation
+}
+
+// CandidatePage is a thread's current candidate snapshot in position order.
+type CandidatePage struct {
+	Candidates []conversation.Candidate
 }
 
 // MessagePage is one chronological page of a thread's transcript.
@@ -161,6 +181,26 @@ type threadResponse struct {
 	Checkpoint    *checkpointView `json:"checkpoint,omitempty"`
 }
 
+type threadListResponse struct {
+	Conversations []threadResponse `json:"conversations"`
+}
+
+// candidateView is one candidate a follow-up can point at by position.
+//
+// Position is carried rather than implied by array index because the UI renders
+// it as an ordinal — "第二家" — and an index-derived ordinal would silently
+// renumber every bubble the moment one duplicate was dropped.
+type candidateView struct {
+	Position     int     `json:"position"`
+	RestaurantID int64   `json:"restaurant_id"`
+	Name         string  `json:"name,omitempty"`
+	Score        float64 `json:"score,omitempty"`
+}
+
+type candidateListResponse struct {
+	Candidates []candidateView `json:"candidates"`
+}
+
 type messageView struct {
 	MessageID   string    `json:"message_id"`
 	Role        string    `json:"role"`
@@ -203,6 +243,19 @@ func toThreadResponse(detail ThreadDetail) threadResponse {
 	return resp
 }
 
+func toCandidateListResponse(page CandidatePage) candidateListResponse {
+	views := make([]candidateView, 0, len(page.Candidates))
+	for _, candidate := range page.Candidates {
+		views = append(views, candidateView{
+			Position:     candidate.Position,
+			RestaurantID: candidate.RestaurantID,
+			Name:         candidate.Name,
+			Score:        candidate.Score,
+		})
+	}
+	return candidateListResponse{Candidates: views}
+}
+
 func toMessageListResponse(page MessagePage) messageListResponse {
 	views := make([]messageView, 0, len(page.Messages))
 	for _, msg := range page.Messages {
@@ -225,10 +278,16 @@ func toMessageListResponse(page MessagePage) messageListResponse {
 // registerChatRoutes mounts the whole conversational surface under /v1.
 func registerChatRoutes(h *server.Hertz, svc ChatService) {
 	v1 := h.Group("/v1")
+	// The list route is registered before the parameterised reads so Hertz's
+	// table reads in the order a caller meets it: collection first, then one
+	// member. A GET on "/conversations" hitting the :id route would otherwise
+	// be indistinguishable from a thread whose id is the empty string.
+	v1.GET("/conversations", ListThreadsHandler(svc))
 	v1.POST("/conversations", CreateThreadHandler(svc))
 	v1.GET("/conversations/:id", GetThreadHandler(svc))
 	v1.GET("/conversations/:id/messages", ListMessagesHandler(svc))
 	v1.POST("/conversations/:id/messages", SendMessageHandler(svc))
+	v1.GET("/conversations/:id/candidates", ListCandidatesHandler(svc))
 	// The decision endpoint sits beside the message endpoint rather than inside
 	// it: a confirmation is answered by its own route, and a thread that has
 	// nothing pending is told so instead of having its text re-read as a yes.
@@ -236,6 +295,47 @@ func registerChatRoutes(h *server.Hertz, svc ChatService) {
 	v1.GET("/memories", ListMemoriesHandler(svc))
 	v1.PATCH("/memories/:memory_id", UpdateMemoryHandler(svc))
 	v1.DELETE("/memories/:memory_id", DeleteMemoryHandler(svc))
+}
+
+// ListThreadsHandler answers GET /v1/conversations.
+//
+// The identity header is required, and its absence is refused rather than
+// widened: a list everybody could read would have to guess whose threads to
+// return, and guessing silently returns somebody else's conversations. This is
+// the same rule the memory endpoints already follow.
+func ListThreadsHandler(svc ChatService) app.HandlerFunc {
+	return func(ctx context.Context, c *app.RequestContext) {
+		userID := userIDFromContext(ctx)
+		if userID == "" {
+			WriteAndAbort(ctx, c, errs.New(errs.CodeInvalidArgument,
+				HeaderUserID+" header is required to list conversations"))
+			return
+		}
+		limit, err := queryIntValue(c, "limit")
+		if err != nil {
+			WriteAndAbort(ctx, c, err)
+			return
+		}
+		if limit == 0 {
+			limit = defaultHistoryPageSize
+		}
+		if limit > maxHistoryPageSize {
+			limit = maxHistoryPageSize
+		}
+		page, err := svc.ListThreads(ctx, userID, limit, queryValue(c, "before_id"))
+		if err != nil {
+			httperr.Write(ctx, c, err)
+			return
+		}
+		views := make([]threadResponse, 0, len(page.Conversations))
+		for _, conv := range page.Conversations {
+			views = append(views, toThreadResponse(ThreadDetail{Conversation: conv}))
+		}
+		if views == nil {
+			views = []threadResponse{}
+		}
+		c.JSON(200, threadListResponse{Conversations: views})
+	}
 }
 
 // CreateThreadHandler answers POST /v1/conversations.
@@ -294,6 +394,29 @@ func ListMessagesHandler(svc ChatService) app.HandlerFunc {
 		resp := toMessageListResponse(page)
 		if resp.Messages == nil {
 			resp.Messages = []messageView{}
+		}
+		c.JSON(200, resp)
+	}
+}
+
+// ListCandidatesHandler answers GET /v1/conversations/:id/candidates.
+//
+// An unknown thread is not_found rather than an empty list, for the same reason
+// the transcript behaves that way: a typo must not look like a thread whose
+// candidates simply did not load.
+func ListCandidatesHandler(svc ChatService) app.HandlerFunc {
+	return func(ctx context.Context, c *app.RequestContext) {
+		page, err := svc.ListCandidates(ctx, c.Param("id"))
+		if err != nil {
+			httperr.Write(ctx, c, err)
+			return
+		}
+		resp := toCandidateListResponse(page)
+		if resp.Candidates == nil {
+			// A thread that never searched has zero candidates, which is a real
+			// answer and not an error: it is what makes the fallback — "there is
+			// no 第二家 to point at" — possible to state honestly.
+			resp.Candidates = []candidateView{}
 		}
 		c.JSON(200, resp)
 	}

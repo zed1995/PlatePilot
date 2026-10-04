@@ -22,6 +22,13 @@ type stubKnowledge struct {
 	recallCall int
 	recalled   []evidence.Evidence
 	recallErr  error
+	// byIDs answers FindEvidenceByIDs; nil means the read is not set up and
+	// must refuse rather than answer nothing, which in a test would be
+	// indistinguishable from a corpus with no documents.
+	byIDs   []evidence.Evidence
+	ids     []int64
+	idsErr  error
+	lastIDs []int64
 	// onRecall observes the request the store received.
 	onRecall func(store.EvidenceRequest)
 }
@@ -40,6 +47,26 @@ func (s *stubKnowledge) RecallEvidence(
 		s.onRecall(req)
 	}
 	return s.recalled, s.recallErr
+}
+
+// FindEvidenceByIDs answers the id-directed read from byIDs, or skips the ids
+// the test marked absent so the "one dead footnote" path is reachable.
+func (s *stubKnowledge) FindEvidenceByIDs(_ context.Context, ids []int64) ([]evidence.Evidence, error) {
+	s.lastIDs = ids
+	if s.byIDs == nil {
+		return nil, errs.New(errs.CodeRetrievalNoScope, "not used")
+	}
+	index := make(map[int64]evidence.Evidence, len(s.byIDs))
+	for _, item := range s.byIDs {
+		index[item.EvidenceID] = item
+	}
+	out := make([]evidence.Evidence, 0, len(ids))
+	for _, id := range ids {
+		if item, ok := index[id]; ok {
+			out = append(out, item)
+		}
+	}
+	return out, s.idsErr
 }
 
 func (s *stubKnowledge) VectorSearch(_ context.Context, req store.VectorSearchRequest) ([]store.ScoredDocument, error) {
