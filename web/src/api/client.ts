@@ -36,7 +36,10 @@ export class ApiError extends Error {
   }
 }
 
-interface ErrorEnvelope {
+// ErrorEnvelope is the error body both modules decode. It is exported so the
+// conversational surface can reuse one error shape instead of inventing a
+// second notion of what a failed request looks like.
+export interface ErrorEnvelope {
   error?: {
     code?: string
     message?: string

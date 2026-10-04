@@ -8,6 +8,7 @@ import { DocumentDetailPage } from './pages/DocumentDetail'
 import { Ingestion } from './pages/Ingestion'
 import { IngestionDetailPage } from './pages/IngestionDetail'
 import { RetrievalDebug } from './pages/RetrievalDebug'
+import AgentConsole from './pages/AgentConsole'
 import { EmptyState } from './components/empty-state'
 
 export default function App() {
@@ -23,6 +24,8 @@ export default function App() {
         <Route path="/ingestion" element={<Ingestion />} />
         <Route path="/ingestion/:id" element={<IngestionDetailPage />} />
         <Route path="/retrieval-debug" element={<RetrievalDebug />} />
+        {/* The one page that is not read-only; see web/AGENTS.md. */}
+        <Route path="/agent" element={<AgentConsole />} />
         <Route
           path="*"
           element={<EmptyState title="404" description="page not found" />}

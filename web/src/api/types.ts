@@ -333,7 +333,11 @@ export interface Evidence {
 }
 
 export interface EvidenceQuery {
-  restaurant_ids: number[]
+  // Either restaurant_ids or evidence_ids is required by the service; the other
+  // is not sent rather than sent empty, so the "no scope" refusal stays
+  // meaningful.
+  restaurant_ids?: number[]
+  evidence_ids?: number[]
   query?: string
   topic?: string
   doc_types?: DocType[]
@@ -357,7 +361,164 @@ export interface EvidenceTrace {
   warnings?: string[]
 }
 
+// --- Evidence ---------------------------------------------------------------
+
+// ... existing evidence types above ...
+
 export interface EvidenceBundle {
   evidence: Evidence[]
   trace?: EvidenceTrace
+}
+
+// --- Chat / Agent console ---------------------------------------------------
+//
+// Everything below mirrors the /v1 conversational surface. The field names are
+// the JSON tags chat-service emits and nothing else; see
+// docs/platepilot-web-agent-console-task-document.md §2.1.
+
+// ThreadState is the persisted business state of a thread. A waiting state is
+// the most important thing a list row can say, which is why the console
+// renders it in a distinct colour.
+export type ThreadState =
+  | 'idle'
+  | 'awaiting_clarification'
+  | 'awaiting_confirmation'
+  | 'completed'
+  | 'failed'
+
+export interface CheckpointView {
+  version: number
+  state: ThreadState
+  pending_action?: string
+  missing_slots?: string[]
+  evidence_ids?: number[]
+  selected_restaurant_id?: number
+  created_at: string
+}
+
+export interface Thread {
+  thread_id: string
+  user_id?: string
+  title?: string
+  current_state: ThreadState
+  created_at: string
+  updated_at: string
+  last_message_at?: string
+  checkpoint?: CheckpointView
+}
+
+export interface ThreadListResponse {
+  conversations: Thread[]
+}
+
+export interface MessageView {
+  message_id: string
+  role: 'user' | 'assistant' | 'tool' | 'system'
+  content: string
+  evidence_ids?: number[]
+  seq: number
+  created_at: string
+}
+
+export interface MessageListResponse {
+  messages: MessageView[]
+}
+
+// CandidateView is one row of a thread's candidate snapshot. Position is the
+// ordinal a follow-up says — "第二家" — so it is carried rather than derived
+// from the array index.
+export interface CandidateView {
+  position: number
+  restaurant_id: number
+  name?: string
+  score?: number
+}
+
+export interface CandidateListResponse {
+  candidates: CandidateView[]
+}
+
+export interface MemoryView {
+  id: string
+  memory_type: string
+  content: string
+  source?: string
+  confidence: number
+  created_at: string
+  updated_at: string
+}
+
+export interface MemoryListResponse {
+  memories: MemoryView[]
+}
+
+export interface RunView {
+  run_id: string
+  thread_id: string
+  trace_id?: string
+  status: string
+  model_provider?: string
+  model_name?: string
+  started_at: string
+  finished_at?: string
+  latency_ms?: number
+  token_input?: number
+  token_output?: number
+  tool_call_count?: number
+  error_code?: string
+}
+
+export interface ToolCallView {
+  call_id: string
+  tool_name: string
+  status: string
+  latency_ms?: number
+  // Only the replay endpoint carries a result summary — the live stream reports
+  // that a tool ran, not what it returned.
+  result_summary?: string
+  arguments?: unknown
+  created_at: string
+}
+
+export interface RunListResponse {
+  runs: RunView[]
+}
+
+// RunDetail flattens the run's own fields next to its tool chain, so it also
+// answers as a RunView.
+export interface RunDetail extends RunView {
+  tool_calls: ToolCallView[]
+}
+
+export interface ConfirmResponse {
+  thread_id: string
+  decision: 'confirm' | 'cancel'
+  pending_action?: string
+  state: string
+  result?: unknown
+  summary?: string
+  replayed?: boolean
+  message: string
+}
+
+export interface InterpretSoftCondition {
+  text: string
+  topic: string
+}
+
+// InterpretResult is the plan projection. HardFilters and SoftConditions are
+// separate fields because keeping them apart is the whole point of the layer
+// that produced them.
+export interface InterpretResult {
+  intent: string
+  query?: string
+  hard_filters: RestaurantFilter
+  soft_conditions: InterpretSoftCondition[]
+  named_restaurants: string[]
+  selected_restaurant_id?: number
+  missing_slots: string[]
+  need_clarification: boolean
+  source: 'model' | 'rules' | string
+  extract_latency_ms?: number
+  warnings?: string[]
 }
