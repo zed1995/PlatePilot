@@ -10,6 +10,7 @@ import (
 	"github.com/cloudwego/hertz/pkg/common/ut"
 
 	domainadmin "github.com/zed1995/platepilot/shared/domain/admin"
+	"github.com/zed1995/platepilot/shared/domain/reservation"
 )
 
 // fakeAdmin is a test AdminService.
@@ -25,6 +26,10 @@ type fakeAdmin struct {
 	batchPage   domainadmin.BatchPage
 	batchDetail domainadmin.BatchDetail
 	boundaries  []domainadmin.Boundary
+
+	inventoryView *domainadmin.InventoryView
+	resetResult   *domainadmin.InventoryResetResult
+	inventoryErr  error
 
 	restQ     domainadmin.RestaurantQuery
 	reviewQ   domainadmin.ReviewQuery
@@ -106,6 +111,37 @@ func (f *fakeAdmin) Boundaries(context.Context) ([]domainadmin.Boundary, error) 
 	return f.boundaries, nil
 }
 
+func (f *fakeAdmin) Inventory(
+	_ context.Context, restaurantID int64, date string,
+) (domainadmin.InventoryView, error) {
+	f.detailIDs = append(f.detailIDs, restaurantID)
+	if f.inventoryErr != nil {
+		return domainadmin.InventoryView{}, f.inventoryErr
+	}
+	view := domainadmin.InventoryView{
+		RestaurantID: restaurantID,
+		Date:         date,
+		Slots:        []reservation.Slot{},
+		Reservations: []reservation.Reservation{},
+	}
+	if f.inventoryView != nil {
+		view = *f.inventoryView
+	}
+	return view, nil
+}
+
+func (f *fakeAdmin) ResetInventory(
+	_ context.Context, restaurantID int64, date string,
+) (domainadmin.InventoryResetResult, error) {
+	if f.inventoryErr != nil {
+		return domainadmin.InventoryResetResult{}, f.inventoryErr
+	}
+	if f.resetResult != nil {
+		return *f.resetResult, nil
+	}
+	return domainadmin.InventoryResetResult{RestaurantID: restaurantID, Date: date}, nil
+}
+
 // adminHandlersEngine mounts every admin handler without the guard, so the
 // handler logic can be exercised by the in-process test client.
 func adminHandlersEngine(f *fakeAdmin) *server.Hertz {
@@ -121,6 +157,8 @@ func adminHandlersEngine(f *fakeAdmin) *server.Hertz {
 	h.GET("/batches", BatchesAdminHandler(f))
 	h.GET("/batches/:id", BatchDetailAdminHandler(f))
 	h.GET("/boundaries", BoundariesHandler(f))
+	h.GET("/restaurants/:id/inventory", InventoryHandler(f))
+	h.POST("/restaurants/:id/inventory/reset", ResetInventoryHandler(f))
 	return h
 }
 
@@ -358,5 +396,76 @@ func TestAdminRoutesAreGuardedWhenEnabled(t *testing.T) {
 	}
 	if decodeError(t, w.Body.Bytes()).Error.Code != "unauthorized" {
 		t.Errorf("want unauthorized error code")
+	}
+}
+
+func TestAdminInventoryHandlerForwardsScope(t *testing.T) {
+	fake := &fakeAdmin{
+		inventoryView: &domainadmin.InventoryView{
+			RestaurantID: 42,
+			Date:         "2026-10-04",
+			Slots:        []reservation.Slot{{SlotID: "s1"}},
+			Reservations: []reservation.Reservation{},
+		},
+	}
+	w := ut.PerformRequest(
+		adminHandlersEngine(fake).Engine,
+		http.MethodGet,
+		"/restaurants/42/inventory?date=2026-10-04", nil)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d (body %s)", w.Code, w.Body.String())
+	}
+	var out domainadmin.InventoryView
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.RestaurantID != 42 || out.Date != "2026-10-04" || len(out.Slots) != 1 {
+		t.Errorf("inventory view got %+v", out)
+	}
+}
+
+func TestAdminResetInventoryHandlerReturnsResult(t *testing.T) {
+	fake := &fakeAdmin{
+		resetResult: &domainadmin.InventoryResetResult{
+			RestaurantID:        42,
+			SlotsReset:          3,
+			ReservationsRemoved: 5,
+		},
+	}
+	w := ut.PerformRequest(
+		adminHandlersEngine(fake).Engine,
+		http.MethodPost,
+		"/restaurants/42/inventory/reset", nil)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d (body %s)", w.Code, w.Body.String())
+	}
+	var out domainadmin.InventoryResetResult
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.SlotsReset != 3 || out.ReservationsRemoved != 5 {
+		t.Errorf("reset result got %+v", out)
+	}
+}
+
+func TestAdminResetInventoryIsGuardedLikeEveryRead(t *testing.T) {
+	h := NewRouter(Config{
+		Addr:         ":0",
+		Version:      "test",
+		Logger:       quietLogger(),
+		Admin:        &fakeAdmin{},
+		AdminEnabled: true,
+	})
+
+	// The reset is a write, so it would be the natural route to leave
+	// under-guarded; the loopback guard applies to it exactly as to reads.
+	w := ut.PerformRequest(
+		h.Engine,
+		http.MethodPost,
+		"/admin/v1/restaurants/42/inventory/reset", nil)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 for a non-loopback peer", w.Code)
 	}
 }

@@ -221,11 +221,21 @@ type runMeta struct {
 	traceID   string
 	threadID  string
 	startedAt time.Time
+	// spanSeq numbers this run's node spans. It travels in the context rather
+	// than living in a map on the runner because its lifetime has to be the
+	// run's and nothing else's: the run row is finished inside the finalize
+	// node, so anything cleaned up when the run finished would be gone before
+	// finalize's own span was written, and that span would be numbered 1 and
+	// sort ahead of the ingress it came after.
+	spanSeq *int64
 }
 
 type runMetaKey struct{}
 
 func withRunMeta(ctx context.Context, meta runMeta) context.Context {
+	if meta.spanSeq == nil {
+		meta.spanSeq = new(int64)
+	}
 	return context.WithValue(ctx, runMetaKey{}, meta)
 }
 
@@ -249,22 +259,32 @@ func runMetaFromContext(ctx context.Context) runMeta {
 func (r *Runner) compile() error {
 	g := compose.NewGraph[TurnInput, *TurnResult]()
 
-	if err := g.AddLambdaNode(nodeIngress, compose.InvokableLambda(r.ingress)); err != nil {
+	// Every node is wrapped, not instrumented individually. Six nodes that
+	// each opened and closed their own span would drift — one would forget the
+	// error branch, another would measure the wrong clock — and the trace is
+	// only readable while all six agree on what a span means.
+	if err := g.AddLambdaNode(nodeIngress,
+		compose.InvokableLambda(traced(r, nodeIngress, r.ingress, ingressDetail))); err != nil {
 		return err
 	}
-	if err := g.AddLambdaNode(nodePlan, compose.InvokableLambda(r.plan)); err != nil {
+	if err := g.AddLambdaNode(nodePlan,
+		compose.InvokableLambda(traced(r, nodePlan, r.plan, planDetail))); err != nil {
 		return err
 	}
-	if err := g.AddLambdaNode(nodeTools, compose.InvokableLambda(r.runTools)); err != nil {
+	if err := g.AddLambdaNode(nodeTools,
+		compose.InvokableLambda(traced(r, nodeTools, r.runTools, toolsDetail))); err != nil {
 		return err
 	}
-	if err := g.AddLambdaNode(nodeClarify, compose.InvokableLambda(r.clarifyNode)); err != nil {
+	if err := g.AddLambdaNode(nodeClarify,
+		compose.InvokableLambda(traced(r, nodeClarify, r.clarifyNode, clarifyDetail))); err != nil {
 		return err
 	}
-	if err := g.AddLambdaNode(nodeAnswer, compose.InvokableLambda(r.answerNode)); err != nil {
+	if err := g.AddLambdaNode(nodeAnswer,
+		compose.InvokableLambda(traced(r, nodeAnswer, r.answerNode, answerDetail))); err != nil {
 		return err
 	}
-	if err := g.AddLambdaNode(nodeFinalize, compose.InvokableLambda(r.finalize)); err != nil {
+	if err := g.AddLambdaNode(nodeFinalize,
+		compose.InvokableLambda(traced(r, nodeFinalize, r.finalize, finalizeDetail))); err != nil {
 		return err
 	}
 

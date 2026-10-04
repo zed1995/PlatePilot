@@ -1,0 +1,174 @@
+# M6-03 agent fixtures.
+#
+# What this file is, and what it is not.
+#
+# Each case describes one turn in terms of what the *runtime* must do: which
+# tools may run, which must not, whether a write has to stop at the approval
+# gate, and how the thread has to end. Those expectations are about the system,
+# not about a model, and they would hold unchanged against a real chat model.
+#
+# The `script` block is the offline stand-in for that model: a sequence of
+# calls and sentences the fake provider returns. It exists so the suite runs
+# without a network and without a GPU, and so a failure is a statement about
+# the runtime rather than about a model that happened to answer differently
+# today. When a real model is wired in, the script is dropped and the
+# expectations below are asserted unchanged — which is the only reason they
+# were written as expectations rather than as assertions about the fake.
+#
+# Never take an expectation from a run's own output. A ground truth captured
+# from the system under test measures self-consistency, and self-consistency
+# is always 1.0.
+corpus:
+  generated_at: "2026-10-04"
+  provider: "scripted-offline"
+  restaurant_fixtures: 3
+  note: >
+    Restaurant ids 7 / 11 / 12 are seeded into the in-memory restaurant
+    repository. Id 7 is also the only id the reservation fixture can name, so
+    every booking case books Joe's Pizza.
+
+cases:
+  # ---------------------------------------------------------------------
+  # Routing. The question is not "did the model pick well" but "does a turn
+  # that needs no tool reach none, and does a turn that needs one reach it".
+  # ---------------------------------------------------------------------
+  - id: route_chitchat_runs_no_tool
+    user_input: "你好"
+    script:
+      - say: "你好，我是 PlatePilot，可以帮你找纽约的餐厅。"
+    expect:
+      tools_invoked: []
+      tools_forbidden: [search_restaurants, resolve_restaurant, get_restaurant_evidence,
+                        get_availability, request_reservation, save_memory]
+      confirmation_required: false
+      final_state: "idle"
+      answer_contains: ["PlatePilot"]
+
+  - id: route_search_then_answer
+    user_input: "曼哈顿有什么意大利餐厅？"
+    script:
+      - call: search_restaurants
+        args: {"query": "italian", "borough": "manhattan"}
+      - say: "为你找到 Joe's Pizza，是一家曼哈顿的意大利餐厅。"
+    expect:
+      tools_invoked: [search_restaurants]
+      tools_forbidden: [request_reservation, get_availability, save_memory]
+      confirmation_required: false
+      final_state: "idle"
+      answer_contains: ["Joe's Pizza"]
+
+  - id: route_two_searches_in_one_turn
+    user_input: "先看看曼哈顿的意大利菜，再看看布鲁克林的牛排馆。"
+    script:
+      - call: search_restaurants
+        args: {"query": "italian", "borough": "manhattan"}
+      - call: search_restaurants
+        args: {"query": "steakhouse", "borough": "brooklyn"}
+      - say: "两边的选择都列在上面了。"
+    expect:
+      tools_invoked: [search_restaurants]
+      tools_forbidden: [request_reservation, save_memory]
+      confirmation_required: false
+
+  - id: route_named_restaurant_skips_search
+    user_input: "Joe's Pizza 在哪儿？"
+    script:
+      - call: resolve_restaurant
+        args: {"name": "Joe's Pizza"}
+      - say: "Joe's Pizza 在曼哈顿 7 Carmine St。"
+    expect:
+      tools_invoked: [resolve_restaurant]
+      tools_forbidden: [request_reservation, get_availability]
+      confirmation_required: false
+
+  - id: route_memory_write_only
+    user_input: "记住我不吃辣"
+    script:
+      - call: save_memory
+        args: {"content": "不吃辣", "memory_type": "constraint", "quoted_user_text": "记住我不吃辣"}
+      - say: "好的，已经记住你不吃辣。"
+    expect:
+      tools_invoked: [save_memory]
+      tools_forbidden: [search_restaurants, request_reservation, get_availability]
+      confirmation_required: false
+      answer_contains: ["不吃辣"]
+
+  - id: route_availability_is_not_gated
+    user_input: "10 月 10 号晚上 7 点 Joe's Pizza 有位置吗？"
+    script:
+      - call: get_availability
+        args: {"restaurant_id": 7, "date": "2026-10-10", "party_size": 2}
+      - say: "10 月 10 日 19:00 有位置。"
+    expect:
+      tools_invoked: [get_availability]
+      tools_forbidden: [request_reservation, save_memory]
+      confirmation_required: false
+      final_state: "idle"
+
+  # ---------------------------------------------------------------------
+  # Confirmation safety. A write the user has not approved must not run,
+  # whether or not the model asked for it.
+  # ---------------------------------------------------------------------
+  - id: confirm_reservation_is_parked_without_writing
+    user_input: "帮我订 10 月 10 号晚上 7 点两个人的位子"
+    script:
+      - call: get_availability
+        args: {"restaurant_id": 7, "date": "2026-10-10", "party_size": 2}
+      - call: request_reservation
+        args: {"restaurant_id": 7, "slot_id": "r7-2026-10-10-1900", "party_size": 2}
+    expect:
+      # request_reservation is absent from tools_invoked on purpose: the whole
+      # claim is that it did not run, and a set that listed it would be a set
+      # that recorded the model's request as work performed.
+      tools_invoked: [get_availability]
+      tools_forbidden: [request_reservation, save_memory]
+      confirmation_required: true
+      confirmation_count: 1
+      final_state: "awaiting_confirmation"
+      booking_writes: 0
+
+  - id: confirm_undescribable_write_is_not_parked
+    user_input: "订凌晨三点的位子"
+    script:
+      - call: request_reservation
+        args: {"restaurant_id": 7, "slot_id": "r7-2026-10-10-0300", "party_size": 2}
+      - say: "抱歉，那个时间订不了，请换一个时段。"
+    expect:
+      tools_invoked: []
+      tools_forbidden: [request_reservation]
+      confirmation_required: false
+      booking_writes: 0
+
+  # ---------------------------------------------------------------------
+  # Duplicate reservations. The gate's other half: an approval must spend
+  # exactly one table, however many times it arrives.
+  # ---------------------------------------------------------------------
+  - id: duplicate_confirmed_twice_books_once
+    user_input: "帮我订 10 月 10 号晚上 7 点两个人的位子"
+    script:
+      - call: get_availability
+        args: {"restaurant_id": 7, "date": "2026-10-10", "party_size": 2}
+      - call: request_reservation
+        args: {"restaurant_id": 7, "slot_id": "r7-2026-10-10-1900", "party_size": 2}
+    decide: [confirm, confirm]
+    expect:
+      tools_invoked: [get_availability]
+      tools_forbidden: [request_reservation]
+      confirmation_required: true
+      confirmation_count: 1
+      booking_writes: 1
+
+  - id: duplicate_cancel_writes_nothing
+    user_input: "帮我订 10 月 10 号晚上 7 点两个人的位子"
+    script:
+      - call: get_availability
+        args: {"restaurant_id": 7, "date": "2026-10-10", "party_size": 2}
+      - call: request_reservation
+        args: {"restaurant_id": 7, "slot_id": "r7-2026-10-10-1900", "party_size": 2}
+    decide: [cancel]
+    expect:
+      tools_invoked: [get_availability]
+      tools_forbidden: [request_reservation]
+      confirmation_required: true
+      confirmation_count: 1
+      booking_writes: 0

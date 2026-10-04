@@ -2,6 +2,7 @@ package agent_test
 
 import (
 	"context"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -23,6 +24,7 @@ type capturingRunRepo struct {
 	starts   []run.AgentRun
 	finishes []run.AgentRun
 	calls    []run.ToolCallRecord
+	nodes    []run.RunNode
 	failAll  bool
 }
 
@@ -59,11 +61,32 @@ func (r *capturingRunRepo) RecordToolCall(_ context.Context, call run.ToolCallRe
 // The read path satisfies the port without being exercised here: a fake that
 // implemented only the writes would stop compiling the moment the interface
 // gained a read method, which is exactly the signal these tests want.
+func (r *capturingRunRepo) RecordNode(_ context.Context, node run.RunNode) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.nodes = append(r.nodes, node)
+	if r.failAll {
+		return errs.ErrInternal
+	}
+	return nil
+}
+
 func (r *capturingRunRepo) GetRun(_ context.Context, runID string) (run.AgentRun, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for i := len(r.finishes) - 1; i >= 0; i-- {
 		if r.finishes[i].RunID == runID {
+			return r.finishes[i], nil
+		}
+	}
+	return run.AgentRun{}, errs.ErrNotFound
+}
+
+func (r *capturingRunRepo) GetRunByTrace(_ context.Context, traceID string) (run.AgentRun, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := len(r.finishes) - 1; i >= 0; i-- {
+		if r.finishes[i].TraceID == traceID {
 			return r.finishes[i], nil
 		}
 	}
@@ -96,6 +119,25 @@ func (r *capturingRunRepo) ListToolCalls(_ context.Context, runID string) ([]run
 		}
 	}
 	return out, nil
+}
+
+func (r *capturingRunRepo) ListNodes(_ context.Context, runID string) ([]run.RunNode, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []run.RunNode
+	for _, node := range r.nodes {
+		if node.RunID == runID {
+			out = append(out, node)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Seq < out[j].Seq })
+	return out, nil
+}
+
+func (r *capturingRunRepo) snapshotNodes() []run.RunNode {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]run.RunNode(nil), r.nodes...)
 }
 
 func (r *capturingRunRepo) snapshot() (starts, finishes []run.AgentRun, calls []run.ToolCallRecord) {
@@ -298,6 +340,107 @@ func TestRunnerWithoutAuditorStillRuns(t *testing.T) {
 	}))
 	if result == nil {
 		t.Fatal("nil auditor must be a safe no-op")
+	}
+}
+
+func TestRunnerRecordsANodeSpanPerGraphNode(t *testing.T) {
+	reg := toolreg.New(time.Second)
+	if err := reg.Register(echoEntry()); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	provider := &scriptedProvider{
+		supportTools: true,
+		toolResps: []domainchat.ToolCallResponse{
+			toolCallResponse("call-1", "echo_ping", `{"word":"hi"}`),
+			assistantText("审计完成"),
+		},
+	}
+	repo := &capturingRunRepo{}
+	runner := newAuditedRunner(t, provider, reg, repo)
+
+	result, events := drainPair(runner.Run(context.Background(), agent.TurnInput{
+		ThreadID: "th-spans", TraceID: "trace-spans", UserInput: "ping 一下",
+	}))
+	drain(events)
+	if result == nil {
+		t.Fatal("expected successful turn")
+	}
+
+	nodes := repo.snapshotNodes()
+	if len(nodes) == 0 {
+		t.Fatal("a turn with an auditor must record node spans")
+	}
+	// The trace is only a trace while every span names the run it belongs to.
+	for i, node := range nodes {
+		if node.RunID != result.RunID {
+			t.Fatalf("span %d run id = %q, want %q", i, node.RunID, result.RunID)
+		}
+		if node.TraceID != "trace-spans" {
+			t.Fatalf("span %d trace id = %q", i, node.TraceID)
+		}
+		if node.Seq != i+1 {
+			t.Fatalf("span %d seq = %d, want %d: spans must be numbered in execution order",
+				i, node.Seq, i+1)
+		}
+		if node.LatencyMS < 0 {
+			t.Fatalf("span %d latency = %d", i, node.LatencyMS)
+		}
+		if node.Status != run.NodeOK {
+			t.Fatalf("span %d (%s) status = %q: %s", i, node.Node, node.Status, node.ErrorCode)
+		}
+	}
+	// A turn that ran a tool visits plan twice, once per round, and the trace
+	// has to show both: "the model was called twice" is exactly the fact a
+	// latency report hides.
+	var names []string
+	for _, node := range nodes {
+		names = append(names, node.Node)
+	}
+	want := []string{"ingress", "plan", "tools", "plan", "answer", "finalize"}
+	if len(names) != len(want) {
+		t.Fatalf("span names = %v, want %v", names, want)
+	}
+	for i := range want {
+		if names[i] != want[i] {
+			t.Fatalf("span %d = %q, want %q (full: %v)", i, names[i], want[i], names)
+		}
+	}
+}
+
+func TestRunnerRecordsTheSpanOfTheNodeThatFailed(t *testing.T) {
+	// No queued responses: plan's model call fails. The turn never reaches
+	// finalize, and the failing span is the reason a span exists at all —
+	// "the turn failed" has to say which node it failed in.
+	provider := &scriptedProvider{supportTools: true}
+	repo := &capturingRunRepo{}
+	runner := newAuditedRunner(t, provider, toolreg.New(0), repo)
+
+	result, eventsCh := runner.Run(context.Background(), agent.TurnInput{
+		ThreadID: "th-span-fail", UserInput: "注定失败",
+	})
+	drain(eventsCh)
+	if result != nil {
+		t.Fatal("expected nil result")
+	}
+
+	nodes := repo.snapshotNodes()
+	if len(nodes) == 0 {
+		t.Fatal("a failed turn must still record the spans it completed")
+	}
+	last := nodes[len(nodes)-1]
+	if last.Node != "plan" {
+		t.Fatalf("last span = %q, want plan (spans: %v)", last.Node, nodes)
+	}
+	if last.Status != run.NodeError {
+		t.Fatalf("failing span status = %q, want error", last.Status)
+	}
+	if last.ErrorCode == "" {
+		t.Fatal("failing span must carry the error code")
+	}
+	// Ingress ran before the failure and succeeded; the trace ends mid-turn,
+	// which is what distinguishes "failed in plan" from "failed to start".
+	if nodes[0].Node != "ingress" || nodes[0].Status != run.NodeOK {
+		t.Fatalf("first span = %q/%q, want ingress/ok", nodes[0].Node, nodes[0].Status)
 	}
 }
 

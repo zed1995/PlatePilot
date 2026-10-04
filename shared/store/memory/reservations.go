@@ -60,9 +60,14 @@ func (r *ReservationRepository) ListSlots(_ context.Context, restaurantID int64,
 	defer r.mu.Unlock()
 	out := make([]reservation.Slot, 0)
 	for _, slot := range r.slots {
-		if slot.RestaurantID == restaurantID && slot.SlotDate == date {
-			out = append(out, slot)
+		if slot.RestaurantID != restaurantID {
+			continue
 		}
+		// An empty date spans every date, matching the postgres adapter.
+		if date != "" && slot.SlotDate != date {
+			continue
+		}
+		out = append(out, slot)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].SlotTime != out[j].SlotTime {
@@ -176,6 +181,89 @@ func (r *ReservationRepository) GetByIdempotencyKey(_ context.Context, key strin
 			"reservation %q not found", reservationID)
 	}
 	return res, nil
+}
+
+// ListReservations returns the reservations against one restaurant's
+// inventory, newest first. An empty date spans every date; otherwise a
+// reservation counts only when its slot falls on that date. A reservation
+// whose slot no longer exists has no date to match and is skipped: the view
+// describes capacity the store can still reason about.
+func (r *ReservationRepository) ListReservations(
+	_ context.Context, restaurantID int64, date string,
+) ([]reservation.Reservation, error) {
+	if restaurantID <= 0 {
+		return nil, errs.New(errs.CodeInvalidArgument, "restaurant_id must be positive")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]reservation.Reservation, 0)
+	for _, res := range r.reservations {
+		if res.RestaurantID != restaurantID {
+			continue
+		}
+		slot, ok := r.slots[res.SlotID]
+		if !ok {
+			continue
+		}
+		if date != "" && slot.SlotDate != date {
+			continue
+		}
+		out = append(out, res)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.After(out[j].CreatedAt)
+		}
+		return out[i].ReservationID < out[j].ReservationID
+	})
+	return out, nil
+}
+
+// ResetInventory zeroes the booked counts of the restaurant's slots and drops
+// the reservations that spent them, idempotency keys included, so the same
+// confirmation can be replayed from a clean slate. Slots themselves survive:
+// the template that materialised them will not be re-created, and a reset that
+// deleted slots would turn the next availability read into a silent re-seed.
+func (r *ReservationRepository) ResetInventory(
+	_ context.Context, restaurantID int64, date string,
+) (slotsReset int, removed int, err error) {
+	if restaurantID <= 0 {
+		return 0, 0, errs.New(errs.CodeInvalidArgument, "restaurant_id must be positive")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	inScope := func(slotID string) bool {
+		slot, ok := r.slots[slotID]
+		if !ok || slot.RestaurantID != restaurantID {
+			return false
+		}
+		return date == "" || slot.SlotDate == date
+	}
+
+	for id, slot := range r.slots {
+		if slot.RestaurantID != restaurantID {
+			continue
+		}
+		if date != "" && slot.SlotDate != date {
+			continue
+		}
+		if slot.Booked == 0 {
+			continue
+		}
+		slot.Booked = 0
+		r.slots[id] = slot
+		slotsReset++
+	}
+	for id, res := range r.reservations {
+		if !inScope(res.SlotID) {
+			continue
+		}
+		delete(r.byKey, res.IdempotencyKey)
+		delete(r.reservations, id)
+		removed++
+	}
+	return slotsReset, removed, nil
 }
 
 // ReleaseExpiredHolds expires held reservations whose TTL passed.

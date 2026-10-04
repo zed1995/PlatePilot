@@ -8,6 +8,10 @@ package admin
 
 import (
 	"context"
+	"time"
+
+	"github.com/zed1995/platepilot/shared/domain/errs"
+	"github.com/zed1995/platepilot/shared/domain/reservation"
 	"github.com/zed1995/platepilot/shared/store"
 
 	domainadmin "github.com/zed1995/platepilot/shared/domain/admin"
@@ -29,12 +33,25 @@ type Config struct {
 	// They are reported on the dashboard but do not come from stored data.
 	EmbeddingModel      string
 	EmbeddingDimensions int
+
+	// Reservations backs the mock inventory view and reset. It is optional:
+	// when nil the inventory endpoints answer with a clear error instead of
+	// pretending the feature exists.
+	Reservations store.ReservationRepository
 }
 
-// Service is the read-only administration application service.
+// Service is the administration application service. Everything except the
+// mock inventory is read-only; the inventory reset exists because the
+// reservation feature is a demo whose whole point is being replayable, and
+// its reset route stays behind the same loopback guard as the rest of the
+// console. AdminStore itself remains strictly read-only — the reset lives on
+// the reservation repository, which is demo state, not pipeline data.
 type Service struct {
 	store store.AdminStore
-	cfg   Config
+	// reservations is optional: nil when the deployment runs without the
+	// reservation feature, and the inventory endpoints report it as such.
+	reservations store.ReservationRepository
+	cfg          Config
 }
 
 // NewService builds an application service on the store.
@@ -48,7 +65,7 @@ func NewService(store store.AdminStore, cfg Config) *Service {
 	if cfg.MaxRejections <= 0 {
 		cfg.MaxRejections = defaultMaxRejections
 	}
-	return &Service{store: store, cfg: cfg}
+	return &Service{store: store, reservations: cfg.Reservations, cfg: cfg}
 }
 
 // Overview returns the dashboard payload with the environment description
@@ -219,6 +236,85 @@ func (s *Service) BatchDetail(
 // Boundaries returns the administrative areas without geometry.
 func (s *Service) Boundaries(ctx context.Context) ([]domainadmin.Boundary, error) {
 	return s.store.Boundaries(ctx)
+}
+
+// Inventory renders one restaurant's bookable mock inventory: its slots for
+// the scope and the reservations currently spending those seats. An empty
+// date spans every date the store holds.
+func (s *Service) Inventory(
+	ctx context.Context, restaurantID int64, date string,
+) (domainadmin.InventoryView, error) {
+	view := domainadmin.InventoryView{
+		RestaurantID: restaurantID,
+		Date:         date,
+		Slots:        []reservation.Slot{},
+		Reservations: []reservation.Reservation{},
+	}
+	if s.reservations == nil {
+		return view, errs.New(errs.CodeProviderUnavailable,
+			"the reservation feature is not assembled in this deployment")
+	}
+	if err := validateInventoryDate(date); err != nil {
+		return view, err
+	}
+	slots, err := s.reservations.ListSlots(ctx, restaurantID, date)
+	if err != nil {
+		return view, err
+	}
+	bookings, err := s.reservations.ListReservations(ctx, restaurantID, date)
+	if err != nil {
+		return view, err
+	}
+	if slots == nil {
+		slots = []reservation.Slot{}
+	}
+	if bookings == nil {
+		bookings = []reservation.Reservation{}
+	}
+	view.Slots = slots
+	view.Reservations = bookings
+	return view, nil
+}
+
+// ResetInventory clears the mock inventory so a demo can be replayed from the
+// top: booked counts return to zero and the reservations that spent them are
+// deleted. It is the console's one deliberate write, scoped to demo state.
+func (s *Service) ResetInventory(
+	ctx context.Context, restaurantID int64, date string,
+) (domainadmin.InventoryResetResult, error) {
+	result := domainadmin.InventoryResetResult{RestaurantID: restaurantID, Date: date}
+	if s.reservations == nil {
+		return result, errs.New(errs.CodeProviderUnavailable,
+			"the reservation feature is not assembled in this deployment")
+	}
+	if err := validateInventoryDate(date); err != nil {
+		return result, err
+	}
+	slotsReset, removed, err := s.reservations.ResetInventory(ctx, restaurantID, date)
+	if err != nil {
+		return result, err
+	}
+	result.SlotsReset = slotsReset
+	result.ReservationsRemoved = removed
+	return result, nil
+}
+
+// validateInventoryDate accepts either no scope at all or one ISO date. The
+// store would silently return nothing for a malformed date, and a reset with
+// a typo'd date reporting "0 slots reset" would read as success.
+func validateInventoryDate(date string) error {
+	if date == "" {
+		return nil
+	}
+	if len(date) != 10 || date[4] != '-' || date[7] != '-' {
+		return errs.Newf(errs.CodeInvalidArgument,
+			"date must be an ISO date (YYYY-MM-DD) or empty, got %q", date)
+	}
+	if _, err := time.Parse("2006-01-02", date); err != nil {
+		return errs.Newf(errs.CodeInvalidArgument,
+			"date must be an ISO date (YYYY-MM-DD) or empty, got %q", date)
+	}
+	return nil
 }
 
 // pageSize resolves the requested limit against the configured defaults. A

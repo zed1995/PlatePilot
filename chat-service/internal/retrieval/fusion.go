@@ -262,17 +262,28 @@ const PriorReason = "评分先验（按评论样本量收缩）"
 
 // explain turns the contributing terms into the candidate's user-facing reasons.
 //
-// Only terms that actually contributed are named. Listing the channels that
-// found nothing would produce a paragraph saying nothing, which is worth less
-// than no reasons at all.
+// A channel that did not recall the candidate is left out: it has nothing to
+// say, and naming it would produce a paragraph explaining an absence.
+//
+// A channel that did recall it is named even when its contribution is zero.
+// Min-max normalization maps the weakest hit in a channel to exactly 0, so the
+// last of two keyword hits contributes nothing -- but the candidate is in the
+// results because that channel recalled it, and dropping the term leaves a
+// returned restaurant with no stated reason at all. The recall is the fact; the
+// zero is an artifact of the scale the recall was measured on.
 func explain(channels []retrieval.ChannelScore) []string {
 	reasons := make([]string, 0, len(channels))
 	for _, channel := range channels {
-		if channel.Reason == "" || channel.Contrib <= 0 {
+		if channel.Reason == "" {
 			continue
 		}
-		reasons = append(reasons, fmt.Sprintf("%s（权重 %.2f，贡献 %.3f）",
-			channel.Reason, channel.Weight, channel.Contrib))
+		if channel.Contrib > 0 {
+			reasons = append(reasons, fmt.Sprintf("%s（权重 %.2f，贡献 %.3f）",
+				channel.Reason, channel.Weight, channel.Contrib))
+			continue
+		}
+		reasons = append(reasons, fmt.Sprintf("%s（权重 %.2f，归一化后贡献为 0："+
+			"该通道内最弱命中，仍被该通道召回）", channel.Reason, channel.Weight))
 	}
 	return reasons
 }

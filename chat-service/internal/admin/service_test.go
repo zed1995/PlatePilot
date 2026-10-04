@@ -7,6 +7,8 @@ import (
 
 	"github.com/zed1995/platepilot/chat-service/internal/admin"
 	domainadmin "github.com/zed1995/platepilot/shared/domain/admin"
+	"github.com/zed1995/platepilot/shared/domain/reservation"
+	"github.com/zed1995/platepilot/shared/store/memory"
 )
 
 // fakeStore is an in-memory AdminStore for the application layer tests.
@@ -364,4 +366,72 @@ func mustDecodeTimed(t *testing.T, cursor string) (time.Time, int64) {
 	}
 	q := store.reviewQueries[0]
 	return q.AfterReviewedAt, q.AfterID
+}
+
+func TestInventoryWithoutReservationsIsUnassembled(t *testing.T) {
+	svc := newService(&fakeStore{})
+
+	_, err := svc.Inventory(context.Background(), 42, "")
+	if err == nil {
+		t.Fatal("Inventory without the reservation feature must fail")
+	}
+	_, err = svc.ResetInventory(context.Background(), 42, "")
+	if err == nil {
+		t.Fatal("ResetInventory without the reservation feature must fail")
+	}
+}
+
+func TestInventoryReadsSlotsAndBookings(t *testing.T) {
+	mem := memory.NewReservationRepository()
+	if err := mem.EnsureSlots(context.Background(), []reservation.Slot{
+		{SlotID: "s1", RestaurantID: 42, SlotDate: "2026-10-04", SlotTime: "19:00", Capacity: 4, Booked: 2},
+	}); err != nil {
+		t.Fatalf("EnsureSlots: %v", err)
+	}
+	if err := mem.SaveReservation(context.Background(), reservation.Reservation{
+		ReservationID: "r1", RestaurantID: 42, SlotID: "s1", PartySize: 2,
+		Status: reservation.StatusConfirmed, IdempotencyKey: "key-r1",
+	}); err != nil {
+		t.Fatalf("SaveReservation: %v", err)
+	}
+	svc := admin.NewService(&fakeStore{}, admin.Config{Reservations: mem})
+
+	view, err := svc.Inventory(context.Background(), 42, "2026-10-04")
+	if err != nil {
+		t.Fatalf("Inventory: %v", err)
+	}
+	if len(view.Slots) != 1 || view.Slots[0].Booked != 2 {
+		t.Errorf("slots got %+v", view.Slots)
+	}
+	if len(view.Reservations) != 1 || view.Reservations[0].ReservationID != "r1" {
+		t.Errorf("reservations got %+v", view.Reservations)
+	}
+
+	// The reset hands back every booked seat and clears the reservations.
+	result, err := svc.ResetInventory(context.Background(), 42, "2026-10-04")
+	if err != nil {
+		t.Fatalf("ResetInventory: %v", err)
+	}
+	if result.SlotsReset != 1 || result.ReservationsRemoved != 1 {
+		t.Errorf("reset got %+v", result)
+	}
+	view, err = svc.Inventory(context.Background(), 42, "2026-10-04")
+	if err != nil {
+		t.Fatalf("Inventory after reset: %v", err)
+	}
+	if view.Slots[0].Booked != 0 || len(view.Reservations) != 0 {
+		t.Errorf("inventory after reset got %+v / %+v", view.Slots, view.Reservations)
+	}
+}
+
+func TestInventoryRejectsMalformedDate(t *testing.T) {
+	mem := memory.NewReservationRepository()
+	svc := admin.NewService(&fakeStore{}, admin.Config{Reservations: mem})
+
+	if _, err := svc.Inventory(context.Background(), 42, "10/04/2026"); err == nil {
+		t.Error("Inventory must reject a non-ISO date")
+	}
+	if _, err := svc.ResetInventory(context.Background(), 42, "2026-13-40"); err == nil {
+		t.Error("ResetInventory must reject an impossible date")
+	}
 }

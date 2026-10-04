@@ -274,6 +274,7 @@ func New(cfg config.Config, logger *slog.Logger, deps Deps, version string) (*Ap
 			MaxRejections:       cfg.Admin.MaxRejections,
 			EmbeddingModel:      cfg.Embedding.Model,
 			EmbeddingDimensions: cfg.Embedding.Dimensions,
+			Reservations:        deps.Reservations,
 		})
 		logger.Info("admin console assembled",
 			slog.Bool("enabled", cfg.Admin.Enabled))

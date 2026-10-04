@@ -48,6 +48,16 @@ type AdminService interface {
 		ctx context.Context, batchID int64,
 	) (domainadmin.BatchDetail, error)
 	Boundaries(ctx context.Context) ([]domainadmin.Boundary, error)
+
+	// Inventory and ResetInventory serve the mock reservation inventory. The
+	// reset is the console's one deliberate write; both are no-ops against a
+	// deployment without the reservation feature.
+	Inventory(
+		ctx context.Context, restaurantID int64, date string,
+	) (domainadmin.InventoryView, error)
+	ResetInventory(
+		ctx context.Context, restaurantID int64, date string,
+	) (domainadmin.InventoryResetResult, error)
 }
 
 // registerAdminRoutes mounts the whole administration surface behind the
@@ -69,6 +79,8 @@ func registerAdminRoutes(
 	g.GET("/batches", BatchesAdminHandler(admin))
 	g.GET("/batches/:id", BatchDetailAdminHandler(admin))
 	g.GET("/boundaries", BoundariesHandler(admin))
+	g.GET("/restaurants/:id/inventory", InventoryHandler(admin))
+	g.POST("/restaurants/:id/inventory/reset", ResetInventoryHandler(admin))
 
 	if search != nil {
 		g.POST("/debug/search", SearchHandler(search))
@@ -401,5 +413,42 @@ func BoundariesHandler(svc AdminService) app.HandlerFunc {
 			boundaries = []domainadmin.Boundary{}
 		}
 		c.JSON(200, boundaries)
+	}
+}
+
+// InventoryHandler answers GET /admin/v1/restaurants/:id/inventory?date=.
+// The date query parameter is optional: absent it spans every date.
+func InventoryHandler(svc AdminService) app.HandlerFunc {
+	return func(ctx context.Context, c *app.RequestContext) {
+		restaurantID, err := pathID(c, "id")
+		if err != nil {
+			WriteAndAbort(ctx, c, err)
+			return
+		}
+		view, err := svc.Inventory(ctx, restaurantID, queryValue(c, "date"))
+		if err != nil {
+			httperr.Write(ctx, c, err)
+			return
+		}
+		c.JSON(200, view)
+	}
+}
+
+// ResetInventoryHandler answers POST /admin/v1/restaurants/:id/inventory/reset?date=.
+// It is the console's one write: the mock inventory returns to its pristine
+// state so a demo can be replayed. Same route guard as every read here.
+func ResetInventoryHandler(svc AdminService) app.HandlerFunc {
+	return func(ctx context.Context, c *app.RequestContext) {
+		restaurantID, err := pathID(c, "id")
+		if err != nil {
+			WriteAndAbort(ctx, c, err)
+			return
+		}
+		result, err := svc.ResetInventory(ctx, restaurantID, queryValue(c, "date"))
+		if err != nil {
+			httperr.Write(ctx, c, err)
+			return
+		}
+		c.JSON(200, result)
 	}
 }

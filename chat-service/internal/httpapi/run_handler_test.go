@@ -19,11 +19,13 @@ import (
 type stubRunService struct {
 	runs       []RunView
 	toolCalls  []ToolCallView
+	nodes      []RunNodeView
 	err        error
 	lastLimit  int
 	lastBefore string
 	lastThread string
 	lastRun    string
+	lastTrace  string
 }
 
 func (s *stubRunService) ListRuns(
@@ -41,11 +43,34 @@ func (s *stubRunService) GetRun(_ context.Context, runID string) (RunDetail, err
 	if s.err != nil {
 		return RunDetail{}, s.err
 	}
-	detail := RunDetail{Run: RunView{RunID: runID}, ToolCalls: s.toolCalls}
+	detail := RunDetail{Run: RunView{RunID: runID}, ToolCalls: s.toolCalls, Nodes: s.nodes}
 	if len(s.runs) > 0 {
 		detail.Run = s.runs[0]
 	}
 	return detail, nil
+}
+
+func (s *stubRunService) ListNodes(_ context.Context, runID string) ([]RunNodeView, error) {
+	s.lastRun = runID
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.nodes, nil
+}
+
+// GetTrace answers with the run whose trace id matches, so a test can assert
+// the route resolves the identifier a client actually holds.
+func (s *stubRunService) GetTrace(_ context.Context, traceID string) (RunDetail, error) {
+	s.lastTrace = traceID
+	if s.err != nil {
+		return RunDetail{}, s.err
+	}
+	for _, row := range s.runs {
+		if row.TraceID == traceID {
+			return RunDetail{Run: row, ToolCalls: s.toolCalls, Nodes: s.nodes}, nil
+		}
+	}
+	return RunDetail{}, errs.New(errs.CodeNotFound, "run for trace not found")
 }
 
 func runRouter(svc RunService) *server.Hertz {
@@ -103,6 +128,151 @@ func TestGetRunReturnsTheToolChainInOrder(t *testing.T) {
 	}
 	if svc.lastRun != "run-1" {
 		t.Fatalf("service saw run id %q", svc.lastRun)
+	}
+}
+
+// The node timeline rides along on the run detail: a replay that named the
+// tools but not the steps would still leave "the turn was slow" unanswerable,
+// because the slow steps are the ones that called a model and left no tool row.
+func TestGetRunReturnsTheNodeTimelineInOrder(t *testing.T) {
+	svc := &stubRunService{
+		runs: []RunView{{RunID: "run-1", Status: "succeeded", StartedAt: startedAt()}},
+		nodes: []RunNodeView{
+			{NodeID: "n1", Node: "ingress", Seq: 1, Status: "ok", LatencyMS: 3},
+			{NodeID: "n2", Node: "plan", Seq: 2, Status: "ok", LatencyMS: 900,
+				Detail: json.RawMessage(`{"round":1}`)},
+			{NodeID: "n3", Node: "answer", Seq: 3, Status: "error", LatencyMS: 40,
+				ErrorCode: "provider_timeout"},
+		},
+	}
+	h := runRouter(svc)
+
+	w := ut.PerformRequest(h.Engine, http.MethodGet, "/v1/runs/run-1", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %s)", w.Code, w.Body.String())
+	}
+	var body struct {
+		Nodes []RunNodeView `json:"nodes"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode body %q: %v", w.Body.String(), err)
+	}
+	if len(body.Nodes) != 3 {
+		t.Fatalf("nodes = %d, want 3", len(body.Nodes))
+	}
+	if body.Nodes[0].Node != "ingress" || body.Nodes[2].Node != "answer" {
+		t.Fatalf("nodes must keep execution order, got %+v", body.Nodes)
+	}
+	// The failing span is the reason the timeline exists: named and timed, so
+	// "the turn failed" says where.
+	if body.Nodes[2].Status != "error" || body.Nodes[2].ErrorCode != "provider_timeout" {
+		t.Fatalf("failing span lost its diagnostic fields: %+v", body.Nodes[2])
+	}
+	if string(body.Nodes[1].Detail) == "" {
+		t.Fatalf("detail must survive the read: %+v", body.Nodes[1])
+	}
+}
+
+// The timeline has its own route because it is read on a different cadence
+// from the replay: fetched repeatedly while a turn is diagnosed, without
+// re-sending the run row and every tool call each time.
+func TestListRunNodesReturnsOnlyTheTimeline(t *testing.T) {
+	svc := &stubRunService{
+		nodes: []RunNodeView{
+			{NodeID: "n1", Node: "ingress", Seq: 1, Status: "ok"},
+			{NodeID: "n2", Node: "finalize", Seq: 2, Status: "ok", LatencyMS: 2},
+		},
+	}
+	h := runRouter(svc)
+
+	w := ut.PerformRequest(h.Engine, http.MethodGet, "/v1/runs/run-7/nodes", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %s)", w.Code, w.Body.String())
+	}
+	var body struct {
+		RunID string        `json:"run_id"`
+		Nodes []RunNodeView `json:"nodes"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode body %q: %v", w.Body.String(), err)
+	}
+	if body.RunID != "run-7" {
+		t.Fatalf("run id = %q, want run-7", body.RunID)
+	}
+	if len(body.Nodes) != 2 || body.Nodes[1].Node != "finalize" {
+		t.Fatalf("nodes = %+v", body.Nodes)
+	}
+	if svc.lastRun != "run-7" {
+		t.Fatalf("service saw run id %q", svc.lastRun)
+	}
+}
+
+// A run with no spans returns an empty array, not null.
+func TestListRunNodesWithoutSpansReturnsAnEmptyArray(t *testing.T) {
+	h := runRouter(&stubRunService{})
+	w := ut.PerformRequest(h.Engine, http.MethodGet, "/v1/runs/run-1/nodes", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(body["nodes"]); got != "[]" {
+		t.Fatalf("nodes = %s, want []", got)
+	}
+}
+
+// A trace id is the identifier a client holds: it is echoed in the response and
+// in every event, while the run id is internal. The trace route is what makes
+// "any failure can be located from its trace id" true for that client.
+func TestGetTraceResolvesTheRunAndItsTimeline(t *testing.T) {
+	svc := &stubRunService{
+		runs: []RunView{{
+			RunID: "run-1", TraceID: "trace-abc", Status: "failed",
+			StartedAt: startedAt(), ErrorCode: "provider_timeout",
+		}},
+		nodes: []RunNodeView{
+			{NodeID: "n1", Node: "ingress", Seq: 1, Status: "ok"},
+			{NodeID: "n2", Node: "plan", Seq: 2, Status: "error", ErrorCode: "provider_timeout"},
+		},
+	}
+	h := runRouter(svc)
+
+	w := ut.PerformRequest(h.Engine, http.MethodGet, "/v1/traces/trace-abc", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %s)", w.Code, w.Body.String())
+	}
+	var body struct {
+		RunID     string        `json:"run_id"`
+		TraceID   string        `json:"trace_id"`
+		ErrorCode string        `json:"error_code"`
+		Nodes     []RunNodeView `json:"nodes"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode body %q: %v", w.Body.String(), err)
+	}
+	if body.RunID != "run-1" || body.TraceID != "trace-abc" {
+		t.Fatalf("trace must resolve to the run: %+v", body)
+	}
+	if body.ErrorCode != "provider_timeout" {
+		t.Fatalf("error code = %q", body.ErrorCode)
+	}
+	if len(body.Nodes) != 2 || body.Nodes[1].Node != "plan" {
+		t.Fatalf("trace must carry the timeline, got %+v", body.Nodes)
+	}
+	if svc.lastTrace != "trace-abc" {
+		t.Fatalf("service saw trace id %q", svc.lastTrace)
+	}
+}
+
+// An unknown trace is a 404: a client debugging a failed request has to be able
+// to tell "no such trace" from "a trace that recorded nothing".
+func TestGetTraceReportsAnUnknownTrace(t *testing.T) {
+	h := runRouter(&stubRunService{})
+	w := ut.PerformRequest(h.Engine, http.MethodGet, "/v1/traces/trace-nope", nil)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", w.Code)
 	}
 }
 

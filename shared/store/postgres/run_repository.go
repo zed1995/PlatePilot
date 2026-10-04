@@ -129,6 +129,89 @@ func (r *RunRepository) RecordToolCall(ctx context.Context, call run.ToolCallRec
 	return nil
 }
 
+// RecordNode appends one graph-node span to its run.
+//
+// A span cannot exist without its run, and the foreign key is allowed to say
+// so rather than being pre-checked: the same not_found code the in-memory
+// implementation returns is mapped from the driver's violation, so both
+// adapters satisfy one contract.
+func (r *RunRepository) RecordNode(ctx context.Context, node run.RunNode) error {
+	if strings.TrimSpace(node.RunID) == "" {
+		return errs.New(errs.CodeInvalidArgument, "run_id is required")
+	}
+	if strings.TrimSpace(node.NodeID) == "" {
+		return errs.New(errs.CodeInvalidArgument, "node_id is required")
+	}
+	ctx, cancel := r.client.withTimeout(ctx)
+	defer cancel()
+
+	detail := node.Detail
+	if len(detail) == 0 {
+		detail = []byte(`{}`)
+	}
+	_, err := r.client.pool.Exec(ctx, `
+		INSERT INTO run_nodes (
+			node_id, run_id, trace_id, node, seq, status,
+			started_at, latency_ms, detail, error_code
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		node.NodeID, node.RunID, node.TraceID, node.Node, node.Seq,
+		string(node.Status), node.StartedAt, node.LatencyMS, detail, node.ErrorCode)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23503" {
+			return errs.Newf(errs.CodeNotFound, "run %q not found", node.RunID)
+		}
+		return operationError("postgres: record run node", err)
+	}
+	return nil
+}
+
+// nodeColumns is the projection every read of run_nodes shares.
+const nodeColumns = `
+	node_id, run_id, trace_id, node, seq, status,
+	started_at, latency_ms, detail, error_code`
+
+// ListNodes returns one run's node spans in execution order. An unknown run
+// yields an empty slice, not an error.
+func (r *RunRepository) ListNodes(ctx context.Context, runID string) ([]run.RunNode, error) {
+	if strings.TrimSpace(runID) == "" {
+		return nil, errs.New(errs.CodeInvalidArgument, "run_id is required")
+	}
+	ctx, cancel := r.client.withTimeout(ctx)
+	defer cancel()
+
+	rows, err := r.client.pool.Query(ctx, `
+		SELECT `+nodeColumns+`
+		FROM run_nodes
+		WHERE run_id = $1
+		ORDER BY seq ASC`, runID)
+	if err != nil {
+		return nil, operationError("postgres: list run nodes", err)
+	}
+	defer rows.Close()
+
+	out := make([]run.RunNode, 0)
+	for rows.Next() {
+		var (
+			node        run.RunNode
+			detailBytes []byte
+		)
+		if err := rows.Scan(&node.NodeID, &node.RunID, &node.TraceID, &node.Node,
+			&node.Seq, &node.Status, &node.StartedAt, &node.LatencyMS,
+			&detailBytes, &node.ErrorCode); err != nil {
+			return nil, operationError("postgres: scan run node", err)
+		}
+		if len(detailBytes) > 0 {
+			node.Detail = json.RawMessage(detailBytes)
+		}
+		out = append(out, node)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, operationError("postgres: iterate run nodes", err)
+	}
+	return out, nil
+}
+
 // runColumns is the projection every read of agent_runs shares.
 const runColumns = `
 	run_id, trace_id, thread_id, status, model_provider, model_name,
@@ -162,6 +245,29 @@ func (r *RunRepository) GetRun(ctx context.Context, runID string) (run.AgentRun,
 			return run.AgentRun{}, errs.Newf(errs.CodeNotFound, "run %q not found", runID)
 		}
 		return run.AgentRun{}, operationError("postgres: get run", err)
+	}
+	return agentRun, nil
+}
+
+// GetRunByTrace returns one run by trace id.
+//
+// trace_id carries a unique constraint, so this is a single-row read rather
+// than a search: a trace names exactly one run, and anything else would mean
+// the identifier a client is given to report a problem with is ambiguous.
+func (r *RunRepository) GetRunByTrace(ctx context.Context, traceID string) (run.AgentRun, error) {
+	if strings.TrimSpace(traceID) == "" {
+		return run.AgentRun{}, errs.New(errs.CodeInvalidArgument, "trace_id is required")
+	}
+	ctx, cancel := r.client.withTimeout(ctx)
+	defer cancel()
+
+	agentRun, err := scanRun(r.client.pool.QueryRow(ctx,
+		`SELECT `+runColumns+` FROM agent_runs WHERE trace_id = $1`, traceID).Scan)
+	if err != nil {
+		if pgErrNoRows(err) {
+			return run.AgentRun{}, errs.Newf(errs.CodeNotFound, "run for trace %q not found", traceID)
+		}
+		return run.AgentRun{}, operationError("postgres: get run by trace", err)
 	}
 	return agentRun, nil
 }

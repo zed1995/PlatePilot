@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -129,6 +130,33 @@ func (c *Client) applyMigration(ctx context.Context, m Migration) error {
 	return nil
 }
 
+// managedTables is every table the migrations create.
+//
+// The list is explicit rather than "everything in the schema", because Drop is
+// destructive and a database shared with anything else must not be collateral.
+// The cost of that safety is that a migration adding a table has to add it
+// here, which is exactly the edit that gets forgotten — so
+// TestDropRemovesEveryMigratedTable asserts the two stay in step.
+var managedTables = []string{
+	"reservations", "reservation_slots",
+	"conversation_candidates",
+	"conversation_messages", "conversation_checkpoints", "conversations",
+	"user_memories",
+	"run_nodes", "tool_calls", "agent_runs",
+	"ingestion_rejections", "ingestion_batches",
+	"knowledge_documents", "review_summaries", "reviews",
+	"restaurants", "boundaries", "schema_migrations",
+}
+
+// ManagedTables returns the tables Drop removes. It is exported so the schema
+// can be checked against the drop list in a test; nothing in the serving path
+// needs it.
+func ManagedTables() []string {
+	out := make([]string, len(managedTables))
+	copy(out, managedTables)
+	return out
+}
+
 // Drop removes every PlatePilot table. It exists for the contract suite, which
 // needs a clean database per subtest, and for local rebuilds. It is not part of
 // the migrate command.
@@ -138,17 +166,8 @@ func (c *Client) Drop(ctx context.Context) error {
 	// CASCADE is required because of the foreign keys between the content and
 	// audit tables; RESTRICT would need an ordering that changes every schema
 	// edit.
-	_, err := c.pool.Exec(ctx, `
-		DROP TABLE IF EXISTS
-			reservations, reservation_slots,
-			conversation_candidates,
-			conversation_messages, conversation_checkpoints, conversations,
-			user_memories,
-			tool_calls, agent_runs,
-			ingestion_rejections, ingestion_batches,
-			knowledge_documents, review_summaries, reviews,
-			restaurants, boundaries, schema_migrations
-		CASCADE`)
+	_, err := c.pool.Exec(ctx,
+		"DROP TABLE IF EXISTS "+strings.Join(managedTables, ", ")+" CASCADE")
 	if err != nil {
 		return operationError("postgres: drop tables", err)
 	}

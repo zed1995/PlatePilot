@@ -188,9 +188,25 @@ type RunRepository interface {
 	Start(ctx context.Context, agentRun run.AgentRun) error
 	Finish(ctx context.Context, agentRun run.AgentRun) error
 	RecordToolCall(ctx context.Context, call run.ToolCallRecord) error
+	// RecordNode appends one graph-node span to a run.
+	//
+	// It is a separate method from RecordToolCall because the two answer
+	// different questions: a tool call records one invocation of one tool,
+	// while a span records one step of the turn including the steps that call
+	// no tool at all — the model planning round and the answer composition,
+	// which are where most of a turn's latency and most of its failures live.
+	RecordNode(ctx context.Context, node run.RunNode) error
 
 	// GetRun returns one run by id, or errs.ErrNotFound.
 	GetRun(ctx context.Context, runID string) (run.AgentRun, error)
+	// GetRunByTrace returns one run by its trace id, or errs.ErrNotFound.
+	//
+	// This is the lookup the trace exists to support. A trace id is what a
+	// client has: it is minted per request and echoed in the response, in the
+	// log line, and in every SSE event, while a run id is known only to the
+	// service that minted it. Without this read, "any failure can be located
+	// from its trace id" is true only for someone who already knows the run.
+	GetRunByTrace(ctx context.Context, traceID string) (run.AgentRun, error)
 	// ListRuns returns up to limit runs for a thread, newest first. beforeID is
 	// an exclusive cursor in the same style as the message paging API: when
 	// non-empty, only runs started strictly before that run are returned.
@@ -200,6 +216,9 @@ type RunRepository interface {
 	// no tools and a run id that does not exist are both "no rows", and the
 	// caller that needs to tell them apart reads the run first.
 	ListToolCalls(ctx context.Context, runID string) ([]run.ToolCallRecord, error)
+	// ListNodes returns one run's node spans in execution order. As with
+	// ListToolCalls, an unknown run is not an error and yields an empty slice.
+	ListNodes(ctx context.Context, runID string) ([]run.RunNode, error)
 }
 
 // ReservationRepository persists mock reservation slots, holds, and bookings.
@@ -234,4 +253,15 @@ type ReservationRepository interface {
 	// ReleaseExpiredHolds expires held reservations whose TTL passed and
 	// returns the seats to their slots. It returns how many it expired.
 	ReleaseExpiredHolds(ctx context.Context, now time.Time) (int, error)
+	// ListReservations returns the reservations booked against one
+	// restaurant's inventory, newest first. An empty date spans every date;
+	// otherwise only reservations whose slot falls on that date are returned.
+	// It backs the mock inventory's admin view and is read-only.
+	ListReservations(ctx context.Context, restaurantID int64, date string) ([]reservation.Reservation, error)
+	// ResetInventory restores the mock inventory to its pristine state: every
+	// matching slot's booked count returns to zero and the reservations that
+	// spent those seats are deleted along with their idempotency keys, so a
+	// demo can be replayed from the top. It returns how many slots it reset
+	// and how many reservations it removed. An empty date means every date.
+	ResetInventory(ctx context.Context, restaurantID int64, date string) (slotsReset int, removed int, err error)
 }

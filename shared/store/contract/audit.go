@@ -192,6 +192,22 @@ func runRunRepositoryContract(t *testing.T, runs store.RunRepository) {
 			t.Fatalf("GetRun missing: want ErrNotFound, got %v", err)
 		}
 
+		// A trace id is what a client actually has, so it has to resolve to
+		// the same run the run id does.
+		byTrace, err := runs.GetRunByTrace(ctx, "trace-read-1")
+		if err != nil {
+			t.Fatalf("GetRunByTrace: %v", err)
+		}
+		if byTrace.RunID != "run-read-1" || byTrace.ThreadID != threadID {
+			t.Fatalf("GetRunByTrace = %+v, want run-read-1 on %q", byTrace, threadID)
+		}
+		if _, err := runs.GetRunByTrace(ctx, "trace-nope"); !errors.Is(err, errs.ErrNotFound) {
+			t.Fatalf("GetRunByTrace missing: want ErrNotFound, got %v", err)
+		}
+		if _, err := runs.GetRunByTrace(ctx, "  "); errs.CodeOf(err) != errs.CodeInvalidArgument {
+			t.Fatalf("GetRunByTrace without trace_id: want invalid_argument, got %v", err)
+		}
+
 		// Newest first, bounded by limit.
 		page, err := runs.ListRuns(ctx, threadID, 2, "")
 		if err != nil {
@@ -270,6 +286,110 @@ func runRunRepositoryContract(t *testing.T, runs store.RunRepository) {
 		}
 		if len(unknownCalls) != 0 {
 			t.Fatalf("unknown run returned tool calls: %+v", unknownCalls)
+		}
+	})
+
+	t.Run("node_spans_order_and_round_trip", func(t *testing.T) {
+		if err := runs.Start(ctx, run.AgentRun{
+			TraceID: "trace-nodes", ThreadID: "thread-nodes", RunID: "run-nodes",
+			Status: run.StatusRunning, StartedAt: startedAt,
+		}); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		// Written out of order on purpose. Sorted by seq on the way out, they
+		// come back in execution order; a store that returned them in
+		// insertion order would look correct here and be wrong for any run
+		// whose writes were interleaved.
+		for _, node := range []run.RunNode{
+			{
+				NodeID: "node-2", RunID: "run-nodes", TraceID: "trace-nodes",
+				Node: "plan", Seq: 2, Status: run.NodeOK,
+				StartedAt: startedAt.Add(20 * time.Millisecond), LatencyMS: 30,
+				Detail: json.RawMessage(`{"round":1,"pending_tool_calls":true}`),
+			},
+			{
+				NodeID: "node-1", RunID: "run-nodes", TraceID: "trace-nodes",
+				Node: "ingress", Seq: 1, Status: run.NodeOK,
+				StartedAt: startedAt.Add(5 * time.Millisecond), LatencyMS: 15,
+				Detail: json.RawMessage(`{"intent":"restaurant_qa"}`),
+			},
+			{
+				NodeID: "node-3", RunID: "run-nodes", TraceID: "trace-nodes",
+				Node: "answer", Seq: 3, Status: run.NodeError,
+				StartedAt: startedAt.Add(50 * time.Millisecond), LatencyMS: 400,
+				ErrorCode: "provider_timeout",
+			},
+		} {
+			if err := runs.RecordNode(ctx, node); err != nil {
+				t.Fatalf("RecordNode(%s): %v", node.NodeID, err)
+			}
+		}
+
+		got, err := runs.ListNodes(ctx, "run-nodes")
+		if err != nil {
+			t.Fatalf("ListNodes: %v", err)
+		}
+		if len(got) != 3 {
+			t.Fatalf("ListNodes returned %d spans, want 3", len(got))
+		}
+		wantOrder := []string{"ingress", "plan", "answer"}
+		for i, node := range got {
+			if node.Node != wantOrder[i] {
+				t.Fatalf("span %d = %q, want %q (order %v)", i, node.Node, wantOrder[i], got)
+			}
+			if node.Seq != i+1 {
+				t.Fatalf("span %d seq = %d, want %d", i, node.Seq, i+1)
+			}
+		}
+		if got[0].TraceID != "trace-nodes" || got[0].LatencyMS != 15 ||
+			got[0].Status != run.NodeOK {
+			t.Fatalf("span round trip lost fields: %+v", got[0])
+		}
+		// Compared as parsed JSON: a jsonb column does not preserve the exact
+		// spelling of the stored document.
+		var detail map[string]any
+		if err := json.Unmarshal(got[0].Detail, &detail); err != nil {
+			t.Fatalf("detail is not valid JSON (%s): %v", got[0].Detail, err)
+		}
+		if detail["intent"] != "restaurant_qa" {
+			t.Fatalf("detail round trip = %s, want intent=restaurant_qa", got[0].Detail)
+		}
+		// The failing span is the reason the table exists: named, timed, and
+		// carrying the code, so "the turn failed" says where.
+		if got[2].Status != run.NodeError || got[2].ErrorCode != "provider_timeout" ||
+			got[2].LatencyMS != 400 {
+			t.Fatalf("error span lost its diagnostic fields: %+v", got[2])
+		}
+
+		// A run with no spans, and an unknown run, are both "no rows".
+		none, err := runs.ListNodes(ctx, "run-read-0")
+		if err != nil {
+			t.Fatalf("ListNodes (no spans): %v", err)
+		}
+		if len(none) != 0 {
+			t.Fatalf("run with no spans returned %d rows", len(none))
+		}
+		unknown, err := runs.ListNodes(ctx, "run-nope")
+		if err != nil {
+			t.Fatalf("ListNodes (unknown run): %v", err)
+		}
+		if len(unknown) != 0 {
+			t.Fatalf("unknown run returned spans: %+v", unknown)
+		}
+
+		// A span without a run violates the run foreign key.
+		if err := runs.RecordNode(ctx, run.RunNode{
+			NodeID: "node-orphan", RunID: "run-missing", Node: "plan", Seq: 1,
+			Status: run.NodeOK, StartedAt: startedAt,
+		}); !errors.Is(err, errs.ErrNotFound) {
+			t.Fatalf("RecordNode for missing run: want ErrNotFound, got %v", err)
+		}
+		// An empty run id is a request defect, not a missing row.
+		if err := runs.RecordNode(ctx, run.RunNode{
+			NodeID: "node-empty", RunID: "  ", Node: "plan", Seq: 1,
+			Status: run.NodeOK, StartedAt: startedAt,
+		}); errs.CodeOf(err) != errs.CodeInvalidArgument {
+			t.Fatalf("RecordNode without run_id: want invalid_argument, got %v", err)
 		}
 	})
 }

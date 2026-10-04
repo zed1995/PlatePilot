@@ -522,3 +522,50 @@ export interface InterpretResult {
   extract_latency_ms?: number
   warnings?: string[]
 }
+
+// --- Mock inventory ---------------------------------------------------------
+
+// ReservationSlot mirrors the backend reservation.Slot. Status derives from
+// the booked count: remaining = capacity - booked.
+export interface ReservationSlot {
+  slot_id: string
+  restaurant_id: number
+  slot_date: string
+  slot_time: string
+  capacity: number
+  booked: number
+  policy_version: string
+  created_at: string
+}
+
+// ReservationRecord mirrors the backend reservation.Reservation.
+export interface ReservationRecord {
+  reservation_id: string
+  thread_id: string
+  user_id: string
+  restaurant_id: number
+  slot_id: string
+  party_size: number
+  status: 'held' | 'confirmed' | 'cancelled' | 'expired' | string
+  hold_expires_at?: string
+  idempotency_key: string
+  created_at: string
+  updated_at: string
+}
+
+// InventoryView is one restaurant's bookable mock inventory as the admin
+// surface serves it. Both collections are arrays, never null.
+export interface InventoryView {
+  restaurant_id: number
+  date?: string
+  slots: ReservationSlot[]
+  reservations: ReservationRecord[]
+}
+
+// InventoryResetResult reports what one reset did.
+export interface InventoryResetResult {
+  restaurant_id: number
+  date?: string
+  slots_reset: number
+  reservations_removed: number
+}

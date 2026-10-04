@@ -44,20 +44,65 @@ func (s *runService) ListRuns(
 	return httpapi.RunPage{Runs: views}, nil
 }
 
+// GetTrace resolves a trace id to its run and returns the same detail the run
+// id would.
+//
+// It is the lookup the audit exists to support: a trace id is what a client
+// holds, and a run id is what the service minted and never told anyone.
+func (s *runService) GetTrace(ctx context.Context, traceID string) (httpapi.RunDetail, error) {
+	row, err := s.runs.GetRunByTrace(ctx, traceID)
+	if err != nil {
+		return httpapi.RunDetail{}, err
+	}
+	return s.detail(ctx, row)
+}
+
 func (s *runService) GetRun(ctx context.Context, runID string) (httpapi.RunDetail, error) {
 	row, err := s.runs.GetRun(ctx, runID)
 	if err != nil {
 		return httpapi.RunDetail{}, err
 	}
+	return s.detail(ctx, row)
+}
+
+func (s *runService) detail(ctx context.Context, row run.AgentRun) (httpapi.RunDetail, error) {
+	runID := row.RunID
 	calls, err := s.runs.ListToolCalls(ctx, runID)
 	if err != nil {
 		return httpapi.RunDetail{}, err
 	}
-	views := make([]httpapi.ToolCallView, 0, len(calls))
+	toolViews := make([]httpapi.ToolCallView, 0, len(calls))
 	for _, call := range calls {
-		views = append(views, toToolCallView(call))
+		toolViews = append(toolViews, toToolCallView(call))
 	}
-	return httpapi.RunDetail{Run: toRunView(row), ToolCalls: views}, nil
+	nodes, err := s.listNodes(ctx, runID)
+	if err != nil {
+		return httpapi.RunDetail{}, err
+	}
+	return httpapi.RunDetail{Run: toRunView(row), ToolCalls: toolViews, Nodes: nodes}, nil
+}
+
+// ListNodes returns one run's node spans in execution order.
+//
+// Unlike GetRun it does not read the run row first, which is the difference
+// between the two routes rather than an oversight: the timeline is the surface
+// read while a run is still being diagnosed, and the store's contract is that
+// an unknown run yields no rows, so a run that has not finished writing has a
+// partial timeline instead of a 404.
+func (s *runService) ListNodes(ctx context.Context, runID string) ([]httpapi.RunNodeView, error) {
+	return s.listNodes(ctx, runID)
+}
+
+func (s *runService) listNodes(ctx context.Context, runID string) ([]httpapi.RunNodeView, error) {
+	rows, err := s.runs.ListNodes(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	views := make([]httpapi.RunNodeView, 0, len(rows))
+	for _, row := range rows {
+		views = append(views, toRunNodeView(row))
+	}
+	return views, nil
 }
 
 func toRunView(row run.AgentRun) httpapi.RunView {
@@ -76,6 +121,31 @@ func toRunView(row run.AgentRun) httpapi.RunView {
 		ToolCallCount: row.ToolCallCount,
 		ErrorCode:     row.ErrorCode,
 	}
+}
+
+// toRunNodeView copies one span.
+//
+// StartedAt is a pointer because a span is written once and never updated, and
+// a zero time sent as a real timestamp would put the node at the epoch on any
+// client that renders it — a trace that claims the turn began in 1970 is worse
+// than one that says it does not know.
+func toRunNodeView(row run.RunNode) httpapi.RunNodeView {
+	view := httpapi.RunNodeView{
+		NodeID:    row.NodeID,
+		RunID:     row.RunID,
+		TraceID:   row.TraceID,
+		Node:      row.Node,
+		Seq:       row.Seq,
+		Status:    string(row.Status),
+		LatencyMS: row.LatencyMS,
+		Detail:    row.Detail,
+		ErrorCode: row.ErrorCode,
+	}
+	if !row.StartedAt.IsZero() {
+		started := row.StartedAt.UTC()
+		view.StartedAt = &started
+	}
+	return view
 }
 
 // toToolCallView copies the stored arguments verbatim.

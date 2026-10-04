@@ -38,6 +38,13 @@ const reservationColumns = `
 	reservation_id, thread_id, user_id, restaurant_id, slot_id, party_size,
 	status, hold_expires_at, idempotency_key, created_at, updated_at`
 
+// prefixedReservationColumns is the same projection against an aliased table,
+// for queries that join reservations with its slots.
+const prefixedReservationColumns = `
+	r.reservation_id, r.thread_id, r.user_id, r.restaurant_id, r.slot_id,
+	r.party_size, r.status, r.hold_expires_at, r.idempotency_key,
+	r.created_at, r.updated_at`
+
 // EnsureSlots inserts the slots that do not exist yet, in one statement.
 func (r *ReservationRepository) EnsureSlots(ctx context.Context, slots []reservation.Slot) error {
 	if len(slots) == 0 {
@@ -102,12 +109,22 @@ func (r *ReservationRepository) ListSlots(ctx context.Context, restaurantID int6
 	ctx, cancel := r.client.withTimeout(ctx)
 	defer cancel()
 
+	// An empty date spans every date; a present one filters to that day. The
+	// scope is assembled rather than parameterized because '' is not a valid
+	// date literal, and "all dates" and "one date" are different predicates.
+	scope := `WHERE restaurant_id = $1`
+	args := []any{restaurantID}
+	if date != "" {
+		scope += ` AND slot_date = $2::date`
+		args = append(args, date)
+	}
+
 	rows, err := r.client.pool.Query(ctx, `
 		SELECT `+slotColumns+`
 		FROM reservation_slots
-		WHERE restaurant_id = $1 AND slot_date = $2::date
+		`+scope+`
 		ORDER BY slot_time ASC, slot_id ASC`,
-		restaurantID, date)
+		args...)
 	if err != nil {
 		return nil, operationError("postgres: list reservation slots", err)
 	}
@@ -333,6 +350,105 @@ func (r *ReservationRepository) ReleaseExpiredHolds(ctx context.Context, now tim
 		return 0, operationError("postgres: commit release expired holds", err)
 	}
 	return len(releases), nil
+}
+
+// ListReservations returns the reservations against one restaurant's
+// inventory, newest first. An empty date spans every date. The join through
+// reservation_slots is what scopes a reservation by the calendar date of the
+// seat it spent — the reservations table itself has no date column.
+func (r *ReservationRepository) ListReservations(
+	ctx context.Context, restaurantID int64, date string,
+) ([]reservation.Reservation, error) {
+	if restaurantID <= 0 {
+		return nil, errs.New(errs.CodeInvalidArgument, "restaurant_id must be positive")
+	}
+	ctx, cancel := r.client.withTimeout(ctx)
+	defer cancel()
+
+	scope := `WHERE r.restaurant_id = $1`
+	args := []any{restaurantID}
+	if date != "" {
+		scope += ` AND s.slot_date = $2::date`
+		args = append(args, date)
+	}
+
+	rows, err := r.client.pool.Query(ctx, `
+		SELECT `+prefixedReservationColumns+`
+		FROM reservations r
+		JOIN reservation_slots s ON s.slot_id = r.slot_id
+		`+scope+`
+		ORDER BY r.created_at DESC, r.reservation_id ASC`, args...)
+	if err != nil {
+		return nil, operationError("postgres: list reservations", err)
+	}
+	defer rows.Close()
+
+	out := make([]reservation.Reservation, 0)
+	for rows.Next() {
+		res, err := scanReservation(rows.Scan)
+		if err != nil {
+			return nil, operationError("postgres: scan reservation", err)
+		}
+		out = append(out, res)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, operationError("postgres: iterate reservations", err)
+	}
+	return out, nil
+}
+
+// ResetInventory restores the mock inventory in one transaction: the matching
+// slots return to pristine capacity and the reservations that spent those
+// seats are deleted, which also frees their idempotency keys (the unique
+// index lives on the row, so deleting the row deletes the key).
+func (r *ReservationRepository) ResetInventory(
+	ctx context.Context, restaurantID int64, date string,
+) (slotsReset int, removed int, err error) {
+	if restaurantID <= 0 {
+		return 0, 0, errs.New(errs.CodeInvalidArgument, "restaurant_id must be positive")
+	}
+	ctx, cancel := r.client.withTimeout(ctx)
+	defer cancel()
+
+	tx, err := r.client.pool.Begin(ctx)
+	if err != nil {
+		return 0, 0, operationError("postgres: begin reset inventory", err)
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+
+	scope := `WHERE restaurant_id = $1`
+	args := []any{restaurantID}
+	if date != "" {
+		scope += ` AND slot_date = $2::date`
+		args = append(args, date)
+	}
+
+	onlyUnspent := ` AND booked > 0`
+	tag, err := tx.Exec(ctx, `UPDATE reservation_slots SET booked = 0 `+scope+onlyUnspent, args...)
+	if err != nil {
+		return 0, 0, operationError("postgres: reset reservation slots", err)
+	}
+	slotsReset = int(tag.RowsAffected())
+
+	delScope := `AND s.restaurant_id = $1`
+	delArgs := []any{restaurantID}
+	if date != "" {
+		delScope += ` AND s.slot_date = $2::date`
+		delArgs = append(delArgs, date)
+	}
+	tag, err = tx.Exec(ctx, `
+		DELETE FROM reservations r
+		USING reservation_slots s
+		WHERE s.slot_id = r.slot_id `+delScope, delArgs...)
+	if err != nil {
+		return 0, 0, operationError("postgres: delete reset reservations", err)
+	}
+	removed = int(tag.RowsAffected())
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, 0, operationError("postgres: commit reset inventory", err)
+	}
+	return slotsReset, removed, nil
 }
 
 // scanSlot reads one reservation_slots row.

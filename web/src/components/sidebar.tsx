@@ -1,12 +1,13 @@
 import { NavLink } from 'react-router-dom'
-import { LayoutGrid, Store, FileText, UploadCloud, FlaskConical, MessagesSquare } from 'lucide-react'
+import { LayoutGrid, Store, FileText, UploadCloud, FlaskConical, MessagesSquare, CalendarClock } from 'lucide-react'
 import { Brand } from './brand'
 import { cn } from '../lib/utils'
 
-// Two groups, because the app now has two postures. The first five pages read
-// the database through /admin/v1 and change nothing; the Agent Console talks to
-// /v1 as a user and sends messages. Listing them as one flat set would quietly
-// retire the "read-only console" claim that web/AGENTS.md is built on.
+// Two groups, because the app now has two postures. The ops pages read the
+// database through /admin/v1 and change nothing; the verification pages act:
+// the Agent Console talks to /v1 as a user, and the inventory page's reset
+// returns the mock demo state to pristine. Listing them as one flat set would
+// quietly retire the "read-only console" claim that web/AGENTS.md is built on.
 const groups = [
   {
     label: '运维台',
@@ -20,7 +21,10 @@ const groups = [
   },
   {
     label: '验证台',
-    items: [{ to: '/agent', label: 'Agent Console', icon: MessagesSquare }],
+    items: [
+      { to: '/inventory', label: 'Mock 库存', icon: CalendarClock },
+      { to: '/agent', label: 'Agent Console', icon: MessagesSquare },
+    ],
   },
 ]
 

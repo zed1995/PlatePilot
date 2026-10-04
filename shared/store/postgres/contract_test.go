@@ -152,6 +152,78 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	}
 }
 
+// Drop names its tables explicitly, which is the safe choice for a destructive
+// operation and the fragile one for a schema that grows: a migration adding a
+// table leaves Drop silently incomplete, and the contract suite then starts its
+// next subtest on the previous one's rows. This pins the two lists together.
+func TestDropRemovesEveryMigratedTable(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	client, err := postgres.Connect(ctx, postgres.Config{DSN: dsn(t), ConnectTimeout: 10 * time.Second})
+	if err != nil {
+		t.Skipf("PostgreSQL is not reachable: %v", err)
+	}
+	defer client.Close(ctx)
+
+	if err := client.Drop(ctx); err != nil {
+		t.Fatalf("Drop: %v", err)
+	}
+	if _, err := client.Migrate(ctx); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	// Owned-by-an-extension tables are excluded: PostGIS installs
+	// spatial_ref_sys, which the schema did not create and must not drop.
+	rows, err := client.Pool().Query(ctx, `
+		SELECT c.relname
+		FROM pg_class c
+		JOIN pg_namespace n ON n.oid = c.relnamespace
+		WHERE n.nspname = current_schema()
+		  AND c.relkind IN ('r', 'p')
+		  AND NOT EXISTS (
+		      SELECT 1 FROM pg_depend d
+		      WHERE d.classid = 'pg_class'::regclass
+		        AND d.objid = c.oid
+		        AND d.deptype = 'e')`)
+	if err != nil {
+		t.Fatalf("list tables: %v", err)
+	}
+	defer rows.Close()
+
+	inDatabase := make(map[string]bool)
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan table name: %v", err)
+		}
+		inDatabase[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate tables: %v", err)
+	}
+
+	declared := make(map[string]bool, len(postgres.ManagedTables()))
+	for _, name := range postgres.ManagedTables() {
+		declared[name] = true
+	}
+	for name := range inDatabase {
+		if !declared[name] {
+			t.Errorf("table %q exists after Migrate but Drop does not remove it: "+
+				"add it to managedTables in migrate.go", name)
+		}
+	}
+	for name := range declared {
+		if !inDatabase[name] {
+			t.Errorf("Drop removes table %q but no migration creates it", name)
+		}
+	}
+	// A schema with no tables at all would make both loops above vacuously
+	// pass, so the count is asserted directly.
+	if len(inDatabase) == 0 {
+		t.Fatal("Migrate created no tables; the schema check above asserted nothing")
+	}
+}
+
 // The partial HNSW indexes are the load-bearing part of the schema, so their
 // existence is asserted rather than assumed.
 func TestVectorIndexStrategyIsPresent(t *testing.T) {

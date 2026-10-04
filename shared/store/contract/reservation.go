@@ -260,4 +260,158 @@ func runReservationRepositoryContract(t *testing.T, reservations store.Reservati
 			t.Fatalf("second sweep expired %d, want 0", again)
 		}
 	})
+
+	// The mock inventory's admin surface: a view that says where the demo's
+	// seats went, and a reset that gives them back. A reset that left the
+	// idempotency keys behind would replay yesterday's bookings as if they
+	// were fresh writes, which is the one way a reset could lie.
+	t.Run("list_and_reset_inventory", func(t *testing.T) {
+		const restaurantID = 9005
+		const demoDate = "2026-10-10"
+		const otherDate = "2026-10-11"
+
+		seed(restaurantID, demoDate, "r9005-1900", "19:00", 6)
+		seed(restaurantID, demoDate, "r9005-1930", "19:30", 6)
+		// A neighbouring day exists so a scoped reset cannot quietly become a
+		// global one.
+		seed(restaurantID, otherDate, "r9005-1900-next", "19:00", 6)
+
+		// One confirmed booking on the demo date, one hold on the other date.
+		if _, err := reservations.HoldSlot(ctx, "r9005-1900", 4); err != nil {
+			t.Fatalf("HoldSlot (demo date): %v", err)
+		}
+		confirmed := reservation.Reservation{
+			ReservationID:  "res-9005-a",
+			RestaurantID:   restaurantID,
+			SlotID:         "r9005-1900",
+			PartySize:      4,
+			Status:         reservation.StatusConfirmed,
+			IdempotencyKey: "key-9005-a",
+			CreatedAt:      now,
+		}
+		if err := reservations.SaveReservation(ctx, confirmed); err != nil {
+			t.Fatalf("SaveReservation (demo date): %v", err)
+		}
+		if _, err := reservations.HoldSlot(ctx, "r9005-1900-next", 2); err != nil {
+			t.Fatalf("HoldSlot (other date): %v", err)
+		}
+		held := reservation.Reservation{
+			ReservationID:  "res-9005-b",
+			RestaurantID:   restaurantID,
+			SlotID:         "r9005-1900-next",
+			PartySize:      2,
+			Status:         reservation.StatusHeld,
+			IdempotencyKey: "key-9005-b",
+			CreatedAt:      now,
+		}
+		if err := reservations.SaveReservation(ctx, held); err != nil {
+			t.Fatalf("SaveReservation (other date): %v", err)
+		}
+
+		// The view is scoped the same way the reset is: a date must not leak
+		// the other day's rows, and an empty date spans all of them.
+		dayRows, err := reservations.ListReservations(ctx, restaurantID, demoDate)
+		if err != nil {
+			t.Fatalf("ListReservations (scoped): %v", err)
+		}
+		if len(dayRows) != 1 || dayRows[0].ReservationID != "res-9005-a" {
+			t.Fatalf("scoped listing = %+v, want only res-9005-a", dayRows)
+		}
+		allRows, err := reservations.ListReservations(ctx, restaurantID, "")
+		if err != nil {
+			t.Fatalf("ListReservations (all dates): %v", err)
+		}
+		if len(allRows) != 2 {
+			t.Fatalf("unscoped listing = %+v, want both reservations", allRows)
+		}
+
+		// ListSlots must treat an empty date the same way: every date comes
+		// back. This is the branch the inventory view's default scope walks,
+		// and a '' date literal is a Postgres runtime error, not a filter.
+		allSlots, err := reservations.ListSlots(ctx, restaurantID, "")
+		if err != nil {
+			t.Fatalf("ListSlots (all dates): %v", err)
+		}
+		if len(allSlots) != 3 {
+			t.Fatalf("unscoped slot listing = %+v, want all 3 slots", allSlots)
+		}
+		daySlots, err := reservations.ListSlots(ctx, restaurantID, demoDate)
+		if err != nil {
+			t.Fatalf("ListSlots (scoped): %v", err)
+		}
+		if len(daySlots) != 2 {
+			t.Fatalf("scoped slot listing = %+v, want the demo date's 2 slots", daySlots)
+		}
+		if _, err := reservations.ListReservations(ctx, 0, demoDate); errs.CodeOf(err) != errs.CodeInvalidArgument {
+			t.Fatalf("ListReservations without restaurant: want invalid_argument, got %v", err)
+		}
+
+		// The scoped reset frees exactly the demo date and nothing else.
+		// slotsReset counts only slots that actually carried bookings: the
+		// never-booked 19:30 slot coming back clean is not news.
+		slotsReset, removed, err := reservations.ResetInventory(ctx, restaurantID, demoDate)
+		if err != nil {
+			t.Fatalf("ResetInventory: %v", err)
+		}
+		if slotsReset != 1 {
+			t.Fatalf("reset %d slots, want 1", slotsReset)
+		}
+		if removed != 1 {
+			t.Fatalf("removed %d reservations, want 1", removed)
+		}
+
+		freed, err := reservations.GetSlot(ctx, "r9005-1900")
+		if err != nil {
+			t.Fatalf("GetSlot after reset: %v", err)
+		}
+		if freed.Booked != 0 || freed.Capacity != 6 {
+			t.Fatalf("slot after reset = %+v, want 0/6", freed)
+		}
+		if _, err := reservations.GetReservation(ctx, "res-9005-a"); !errors.Is(err, errs.ErrNotFound) {
+			t.Fatalf("reset reservation survived: %v", err)
+		}
+		untouched, err := reservations.GetReservation(ctx, "res-9005-b")
+		if err != nil {
+			t.Fatalf("GetReservation (other date): %v", err)
+		}
+		if untouched.Status != reservation.StatusHeld {
+			t.Fatalf("other date's hold = %q, want held", untouched.Status)
+		}
+		next, err := reservations.GetSlot(ctx, "r9005-1900-next")
+		if err != nil {
+			t.Fatalf("GetSlot (other date): %v", err)
+		}
+		if next.Booked != 2 {
+			t.Fatalf("other date's slot booked = %d, want 2", next.Booked)
+		}
+
+		// The spent idempotency key must be free again: saving a new
+		// reservation under the old key is what a replayed demo does first.
+		replayed := confirmed
+		replayed.ReservationID = "res-9005-c"
+		replayed.Status = reservation.StatusHeld
+		replayed.IdempotencyKey = "key-9005-a"
+		if err := reservations.SaveReservation(ctx, replayed); err != nil {
+			t.Fatalf("SaveReservation with a reset key: %v", err)
+		}
+
+		// The unscoped reset sweeps the rest, including the untouched day.
+		slotsReset, removed, err = reservations.ResetInventory(ctx, restaurantID, "")
+		if err != nil {
+			t.Fatalf("ResetInventory (all dates): %v", err)
+		}
+		if removed != 2 {
+			t.Fatalf("unscoped reset removed %d reservations, want 2", removed)
+		}
+		if slotsReset != 1 {
+			// Only the next date's slot still carries seats: the demo date's
+			// slots were already clean, and the replayed row was saved without
+			// holding capacity again.
+			t.Fatalf("unscoped reset cleared %d slots, want 1", slotsReset)
+		}
+		// An invalid restaurant is rejected rather than treated as "nothing".
+		if _, _, err := reservations.ResetInventory(ctx, 0, ""); errs.CodeOf(err) != errs.CodeInvalidArgument {
+			t.Fatalf("ResetInventory without restaurant: want invalid_argument, got %v", err)
+		}
+	})
 }

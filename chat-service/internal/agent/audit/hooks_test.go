@@ -21,10 +21,12 @@ type fakeRunRepo struct {
 	starts   []run.AgentRun
 	finishes []run.AgentRun
 	calls    []run.ToolCallRecord
+	nodes    []run.RunNode
 
 	startErr  error
 	finishErr error
 	callErr   error
+	nodeErr   error
 }
 
 func (f *fakeRunRepo) Start(_ context.Context, agentRun run.AgentRun) error {
@@ -48,6 +50,13 @@ func (f *fakeRunRepo) RecordToolCall(_ context.Context, call run.ToolCallRecord)
 	return f.callErr
 }
 
+func (f *fakeRunRepo) RecordNode(_ context.Context, node run.RunNode) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.nodes = append(f.nodes, node)
+	return f.nodeErr
+}
+
 // The read path is not what these tests exercise, but the port requires it:
 // a fake that only implements the writes would let a change to the read
 // contract slip through as long as nothing called it.
@@ -62,6 +71,17 @@ func (f *fakeRunRepo) GetRun(_ context.Context, runID string) (run.AgentRun, err
 	for i := len(f.starts) - 1; i >= 0; i-- {
 		if f.starts[i].RunID == runID {
 			return f.starts[i], nil
+		}
+	}
+	return run.AgentRun{}, errs.ErrNotFound
+}
+
+func (f *fakeRunRepo) GetRunByTrace(_ context.Context, traceID string) (run.AgentRun, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := len(f.finishes) - 1; i >= 0; i-- {
+		if f.finishes[i].TraceID == traceID {
+			return f.finishes[i], nil
 		}
 	}
 	return run.AgentRun{}, errs.ErrNotFound
@@ -90,6 +110,18 @@ func (f *fakeRunRepo) ListToolCalls(_ context.Context, runID string) ([]run.Tool
 	for _, call := range f.calls {
 		if call.RunID == runID {
 			out = append(out, call)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeRunRepo) ListNodes(_ context.Context, runID string) ([]run.RunNode, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []run.RunNode
+	for _, node := range f.nodes {
+		if node.RunID == runID {
+			out = append(out, node)
 		}
 	}
 	return out, nil
@@ -291,11 +323,56 @@ func TestRepoErrorsNeverEscape(t *testing.T) {
 	}
 }
 
+func TestNodeSpanWritesNeverEscapeAndStayOrdered(t *testing.T) {
+	boom := errs.New(errs.CodeInternal, "store down")
+	repo := &fakeRunRepo{nodeErr: boom}
+	hooks := New(repo, silentLogger(), Options{})
+	ctx := context.Background()
+
+	// Sequence numbers come from the caller and are written as given. They are
+	// not counted here because the last span of a run is written after the run
+	// row is finished, and a counter cleared at that point would number it 1.
+	hooks.Node(ctx, NodeEvent{RunID: "run-n", Node: "ingress", Seq: 1, LatencyMS: 3})
+	hooks.Node(ctx, NodeEvent{RunID: "run-n", Node: "answer", Seq: 2,
+		Status: run.NodeError, LatencyMS: 40, ErrorCode: "provider_timeout"})
+
+	if len(repo.nodes) != 2 {
+		t.Fatalf("node spans = %d, want 2 (a failing store must still be attempted)", len(repo.nodes))
+	}
+	if repo.nodes[0].Seq != 1 || repo.nodes[1].Seq != 2 {
+		t.Fatalf("sequence numbers must survive: %+v", repo.nodes)
+	}
+	if repo.nodes[1].Status != run.NodeError || repo.nodes[1].ErrorCode != "provider_timeout" {
+		t.Fatalf("failing span lost its diagnostic fields: %+v", repo.nodes[1])
+	}
+	// started_at is derived from the latency so a span read back says when the
+	// node ran, not when the write happened.
+	if repo.nodes[0].StartedAt.IsZero() {
+		t.Fatal("span must carry a start time")
+	}
+	if repo.nodes[0].NodeID == "" || repo.nodes[0].NodeID == repo.nodes[1].NodeID {
+		t.Fatalf("spans must be individually identified: %q, %q",
+			repo.nodes[0].NodeID, repo.nodes[1].NodeID)
+	}
+
+	// A span with no position cannot be placed in a timeline, and one with no
+	// run or node has nothing to describe. Both are dropped rather than
+	// written with invented values.
+	before := len(repo.nodes)
+	hooks.Node(ctx, NodeEvent{RunID: "run-n", Node: "plan", Seq: 0})
+	hooks.Node(ctx, NodeEvent{RunID: "run-n", Node: "", Seq: 3})
+	hooks.Node(ctx, NodeEvent{RunID: "", Node: "plan", Seq: 3})
+	if len(repo.nodes) != before {
+		t.Fatalf("unidentifiable spans must be dropped, got %+v", repo.nodes[before:])
+	}
+}
+
 func TestNilHooksAndNilRepoSafe(t *testing.T) {
 	var nilHooks *Hooks
 	ctx := context.Background()
 	nilHooks.RunStart(ctx, Meta{})
 	nilHooks.ToolCall(ctx, ToolEvent{})
+	nilHooks.Node(ctx, NodeEvent{RunID: "r", Node: "plan", Seq: 1})
 	nilHooks.RunFinish(ctx, run.AgentRun{})
 	nilHooks.Fail(ctx, Meta{}, errs.ErrInternal)
 

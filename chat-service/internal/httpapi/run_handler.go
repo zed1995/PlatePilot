@@ -31,8 +31,25 @@ type RunService interface {
 	// ListRuns returns one thread's runs, newest first. beforeID is an
 	// exclusive cursor, in the same style as the message paging API.
 	ListRuns(ctx context.Context, threadID string, limit int, beforeID string) (RunPage, error)
-	// GetRun returns one run with its tool calls in invocation order.
+	// GetRun returns one run with its tool calls and node spans, each in
+	// execution order.
 	GetRun(ctx context.Context, runID string) (RunDetail, error)
+	// ListNodes returns one run's node spans in execution order, without the
+	// run or its tool calls.
+	//
+	// It exists beside GetRun because the trace is read on a different cadence
+	// from the replay: a timeline is fetched repeatedly while a turn is being
+	// diagnosed, and a payload that re-sent the run and every tool call each
+	// time would re-send the part that did not change.
+	ListNodes(ctx context.Context, runID string) ([]RunNodeView, error)
+	// GetTrace returns the run a trace id names, with its tool calls and node
+	// spans.
+	//
+	// A trace id is the identifier a client actually holds — it is echoed in
+	// the response and in every SSE event — while a run id is internal. This
+	// is the read that turns "the request with this trace id failed" into the
+	// run, the step, and the error code.
+	GetTrace(ctx context.Context, traceID string) (RunDetail, error)
 }
 
 // RunView is one agent run on the wire.
@@ -72,15 +89,34 @@ type ToolCallView struct {
 	CreatedAt     time.Time       `json:"created_at"`
 }
 
+// RunNodeView is one graph-node span on the wire.
+//
+// Seq is sent as well as the timestamp because a turn's nodes are fast: two of
+// them routinely start in the same millisecond, and an order reconstructed from
+// started_at is an order that differs between two runs of the same code.
+type RunNodeView struct {
+	NodeID    string          `json:"node_id"`
+	RunID     string          `json:"run_id,omitempty"`
+	TraceID   string          `json:"trace_id,omitempty"`
+	Node      string          `json:"node"`
+	Seq       int             `json:"seq"`
+	Status    string          `json:"status"`
+	StartedAt *time.Time      `json:"started_at,omitempty"`
+	LatencyMS int64           `json:"latency_ms,omitempty"`
+	Detail    json.RawMessage `json:"detail,omitempty"`
+	ErrorCode string          `json:"error_code,omitempty"`
+}
+
 // RunPage is one page of a thread's runs.
 type RunPage struct {
 	Runs []RunView
 }
 
-// RunDetail is one run together with its tool chain.
+// RunDetail is one run together with its tool chain and its node timeline.
 type RunDetail struct {
 	Run       RunView
 	ToolCalls []ToolCallView
+	Nodes     []RunNodeView
 }
 
 type runListResponse struct {
@@ -92,6 +128,12 @@ type runListResponse struct {
 type runDetailResponse struct {
 	RunView
 	ToolCalls []ToolCallView `json:"tool_calls"`
+	Nodes     []RunNodeView  `json:"nodes"`
+}
+
+type runNodesResponse struct {
+	RunID string        `json:"run_id"`
+	Nodes []RunNodeView `json:"nodes"`
 }
 
 // registerRunRoutes mounts the replay surface.
@@ -103,6 +145,10 @@ func registerRunRoutes(h *server.Hertz, svc RunService) {
 	v1 := h.Group("/v1")
 	v1.GET("/conversations/:id/runs", ListRunsHandler(svc))
 	v1.GET("/runs/:run_id", GetRunHandler(svc))
+	v1.GET("/runs/:run_id/nodes", ListRunNodesHandler(svc))
+	// The trace route answers the question a client can ask: it has the trace
+	// id it was given, not the run id it was never told.
+	v1.GET("/traces/:trace_id", GetTraceHandler(svc))
 }
 
 // ListRunsHandler answers GET /v1/conversations/:id/runs.
@@ -140,10 +186,62 @@ func GetRunHandler(svc RunService) app.HandlerFunc {
 			httperr.Write(ctx, c, err)
 			return
 		}
-		resp := runDetailResponse{RunView: detail.Run, ToolCalls: detail.ToolCalls}
+		resp := runDetailResponse{
+			RunView:   detail.Run,
+			ToolCalls: detail.ToolCalls,
+			Nodes:     detail.Nodes,
+		}
 		if resp.ToolCalls == nil {
 			resp.ToolCalls = []ToolCallView{}
 		}
+		if resp.Nodes == nil {
+			resp.Nodes = []RunNodeView{}
+		}
 		c.JSON(200, resp)
+	}
+}
+
+// GetTraceHandler answers GET /v1/traces/:trace_id: the run a trace id names,
+// with its tool chain and its node timeline.
+//
+// It returns the same shape as the run detail because it is the same object
+// reached by another identifier; a client that fetched a trace should not have
+// to handle a second envelope.
+func GetTraceHandler(svc RunService) app.HandlerFunc {
+	return func(ctx context.Context, c *app.RequestContext) {
+		detail, err := svc.GetTrace(ctx, c.Param("trace_id"))
+		if err != nil {
+			httperr.Write(ctx, c, err)
+			return
+		}
+		resp := runDetailResponse{
+			RunView:   detail.Run,
+			ToolCalls: detail.ToolCalls,
+			Nodes:     detail.Nodes,
+		}
+		if resp.ToolCalls == nil {
+			resp.ToolCalls = []ToolCallView{}
+		}
+		if resp.Nodes == nil {
+			resp.Nodes = []RunNodeView{}
+		}
+		c.JSON(200, resp)
+	}
+}
+
+// ListRunNodesHandler answers GET /v1/runs/:run_id/nodes: the node timeline of
+// one run, without the run row or its tool calls.
+func ListRunNodesHandler(svc RunService) app.HandlerFunc {
+	return func(ctx context.Context, c *app.RequestContext) {
+		runID := c.Param("run_id")
+		nodes, err := svc.ListNodes(ctx, runID)
+		if err != nil {
+			httperr.Write(ctx, c, err)
+			return
+		}
+		if nodes == nil {
+			nodes = []RunNodeView{}
+		}
+		c.JSON(200, runNodesResponse{RunID: runID, Nodes: nodes})
 	}
 }

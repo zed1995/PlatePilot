@@ -12,9 +12,9 @@ multi-module repository, not one module with several `main` packages. There is n
 | Directory | Project | Kind | Responsibility |
 |---|---|---|---|
 | `data-pipeline/` | 数据生产 | Go module, CLI | Batch CLI: import raw Google Local data into PostgreSQL, build knowledge documents, generate embeddings (M1–M2) |
-| `chat-service/` | 聊天服务 | Go module, service | HTTP/SSE API: agent runtime, tools, two-stage retrieval, answers and citations (M3–M5) |
+| `chat-service/` | 聊天服务 | Go module, service | HTTP/SSE API: conversational agent runtime (planning, tools, RAG answers, HITL confirmation, memory), two-stage retrieval, run trace, eval harnesses (M3–M6) |
 | `shared/` | 共享库 | Go module, library | Domain DTOs, provider/repository ports, adapters, logging, config primitives |
-| `web/` | 前端 | npm project | Admin console (Vite + React) |
+| `web/` | 前端 | npm project | Admin console + agent verification console (Vite + React) |
 
 The two services depend on `shared` through a `replace` directive pointing at
 `../shared`, so each one builds, tests, and deploys on its own:
@@ -32,6 +32,32 @@ service: `deploy/` (local PostgreSQL), `docs/`, `data/`, and `.env.example`.
 
 ## Status
 
+Milestone **M6（可观测、评测与验证台）** — complete. Every agent turn records
+its graph-node spans (planning, tools, clarify, answer, finalize) with per-node
+latency, queryable through `GET /v1/runs/:run_id/nodes` and
+`GET /v1/traces/:trace_id`. The RAG fixture suite grew from 25 to 86 cases with
+coverage ratchets per query family, and a fully offline agent fixture suite
+scores tool selection, confirmation-gate safety, duplicate-booking safety and
+end-to-end success (`make eval-agent`). Fixed requests replay identically and
+two model configurations diff case by case. `make perf` measures live search
+latency (p50 129 ms / p95 158 ms, of which the embedding round trip is ~53%)
+and the agent runtime's own overhead (p50 0.33 ms per turn, offline). The web
+console ships the agent verification surface (`/agent`) with trace and
+candidate panels, and the mock inventory is viewable and resettable
+(`/inventory`, `GET/POST /admin/v1/restaurants/:id/inventory[/reset]`).
+
+Milestone **M5（对话 Agent 与预约）** — complete. `POST /v1/conversations/:id/messages`
+streams a full agent turn over SSE: slot interpretation, tool use over six
+deterministic tools, evidence-grounded answers with citations, and — for the
+reservation flow — a hard confirmation gate before any write, with
+idempotency keys so a repeated confirmation is the same booking rather than a
+second one. Long-term preferences live under `/v1/memories` with
+view/update/delete. Every turn persists a run row with tool-call records.
+
+Milestone **M4（模型接入）** — complete. An OpenAI-compatible chat client
+satisfies all three model ports (planning, answering, interpretation); the
+agent degrades to rules when the model is absent instead of failing the turn.
+
 Milestone **M3（两级检索）** — complete. `chat-service` answers
 `POST /v1/restaurants/search` with three fused channels: hard filters run in the
 database, names and addresses match through the `pg_trgm` indexes, and an online
@@ -41,9 +67,11 @@ filter can express. It also answers `POST /v1/restaurants/{id}/evidence` and
 named set of restaurants — the scope is a precondition, never a filter applied
 after the fact.
 
-Measured on the 3,000-restaurant corpus: hard-filter accuracy 1.000, recall@5
-0.792, citation precision 1.000, zero cross-restaurant leaks. `make eval-retrieval`
-re-runs those numbers against a live database.
+Measured on the 3,000-restaurant corpus over the 86-case fixture suite: hard
+filter accuracy 1.000, recall@5 0.843, citation precision 1.000, semantic
+answer relevance 0.960, zero cross-restaurant leaks. `make eval-retrieval`
+re-runs those numbers against a live database (and fails when the vector
+channel silently degrades, via `PLATEPILOT_REQUIRE_VECTOR=1`).
 
 Milestone **M2 (Embedding 与知识文档)** — complete. `build-documents` and `embed`
 produce 11,775 active knowledge documents over 3,000 restaurants.
@@ -503,14 +531,18 @@ Behaviour worth knowing:
 
 ```bash
 make pg-up && make migrate
-make eval-retrieval
+make eval-retrieval      # in chat-service; needs `ollama serve` for the vector channel
 ```
 
-The fixture suite scores recall@5, citation precision, hard-filter accuracy and
-cross-restaurant leaks against 25 cases sampled from the live corpus, and prints
-the metric table with its gates. Without `PLATEPILOT_REQUIRE_DB=1` it skips
-loudly rather than passing quietly — a green run that asserted nothing is worse
-than a red one.
+The fixture suite scores recall@5, citation precision, hard-filter accuracy,
+semantic answer relevance and cross-restaurant leaks over 86 cases covering
+every query family (hard filters, soft conditions, evidence topics, prompt
+injection, scope discipline), and prints the metric table with its gates.
+Coverage ratchets fail the run if a family loses cases. Without
+`PLATEPILOT_REQUIRE_DB=1` it skips loudly rather than passing quietly — a green
+run that asserted nothing is worse than a red one, and
+`PLATEPILOT_REQUIRE_VECTOR=1` turns a silent embedding-provider outage into a
+failure instead of a keyword-only pass.
 
 Ranking knobs live in the environment so they can be tuned against an evaluation
 set without a recompile:
@@ -520,9 +552,69 @@ RETRIEVAL_TOP_K=5                  # page size
 RETRIEVAL_OVERSAMPLE=2             # how much deeper each channel reads
 RETRIEVAL_WEIGHT_STRUCTURED=1.0    # satisfied hard conditions
 RETRIEVAL_WEIGHT_KEYWORD=0.5       # name / address match
-RETRIEVAL_WEIGHT_VECTOR=1.0        # reserved for M3-03
+RETRIEVAL_WEIGHT_VECTOR=1.0        # semantic channel
 RETRIEVAL_WEIGHT_QUALITY=0.2       # rating prior, shrunk by sample size
 ```
+
+### Running the agent evaluation and performance harness
+
+```bash
+make -C chat-service eval-agent   # offline: no database, no providers
+make -C chat-service perf         # live: needs pg-up + ollama serve
+```
+
+`eval-agent` scores the agent fixture suite over four gates — tool-selection
+accuracy, confirmation-gate safety, duplicate-booking safety, end-to-end
+success — all required at 1.0, and replays every fixed request twice to assert
+bit-identical behaviour, then diffs two model configurations case by case. The
+fixtures are plain YAML (scripted provider calls, runtime-property assertions),
+so adding a case is a data edit. `perf` prints search p50/p95 with the
+embedding share called out, plus the agent runtime's own per-turn overhead.
+
+## Conversational agent (M4–M5)
+
+The search and evidence endpoints are raw building blocks. The conversational
+surface composes them into an agent: one endpoint drives a whole turn.
+
+```bash
+POST /v1/conversations                     # open a thread
+POST /v1/conversations/:id/messages        # one agent turn, streamed over SSE
+POST /v1/conversations/:id/confirm         # answer a pending confirmation
+GET  /v1/conversations/:id/candidates      # the turn's search candidates
+GET  /v1/conversations/:id/runs            # per-turn run records
+GET  /v1/runs/:run_id/nodes                # graph-node spans with latency
+GET  /v1/traces/:trace_id                  # trace-id lookup for support
+GET  /v1/memories                          # long-term preferences
+PATCH/DELETE /v1/memories/:memory_id
+```
+
+The turn is a compiled graph (Eino): ingress → interpretation → planning →
+tool round → answer → finalize, each node emitting a trace span. Tools are
+six deterministic store-backed operations (search, resolve, evidence,
+availability, reserve, memory) — the model plans and phrases; the database
+computes.
+
+Behaviour worth knowing:
+
+- **The confirmation gate is not a prompt.** A reservation write happens only
+  through `POST /v1/conversations/:id/confirm` after the assistant has shown a
+  final summary; a model that talks its way past the gate still produces no
+  write, because the write path is not reachable from the tool round.
+- **Idempotency.** The idempotency key is derived from the thread, the action
+  and the request id the user approved — a retried confirmation yields the same
+  booking, not a second one.
+- **Soft degradation.** A missing chat provider fails startup (the model is
+  primary from M4); a missing embedding provider degrades retrieval to the
+  structured and keyword channels and says so in the trace.
+- **Mock inventory.** Reservation slots are demo state. The console can view
+  and reset it (`GET/POST /admin/v1/restaurants/:id/inventory[/reset]?date=`)
+  so a demo can be replayed from the top; the reset is the one write behind
+  the admin loopback guard.
+
+The web console (`web/`, `npm run dev`) exposes this as two surfaces: the
+ops pages read the database through `/admin/v1`, and the verification pages —
+`/agent` for scripted conversation runs with trace and candidate panels,
+`/inventory` for the mock inventory — are the ones that act.
 
 ## Layout
 
@@ -531,8 +623,15 @@ chat-service/
   main.go                 # HTTP service entrypoint
   internal/app/           # dependency assembly (the only place wiring concrete implementations)
   internal/config/        # chat-service configuration
-  internal/admin/         # admin console: read-only application layer
-  internal/retrieval/     # read path: channel orchestration, fusion, rerank
+  internal/admin/         # admin console application layer (read-only + mock inventory reset)
+  internal/retrieval/     # read path: channel orchestration, fusion, rerank, eval + perf harnesses
+  internal/agent/         # conversational agent runtime: compiled graph, tools, eval + replay harnesses
+  internal/agent/tools/   # the six deterministic store-backed tools
+  internal/agent/audit/   # run / tool-call / node trace hooks
+  internal/agent/einomodel/ # Eino graph model bindings
+  internal/hitl/          # human-in-the-loop confirmation gate
+  internal/memorywrite/   # long-term preference extraction and storage
+  internal/reservation/   # reservation application service (holds, idempotency)
   internal/httpapi/       # Hertz routes, handlers, middleware
   internal/httperr/       # canonical HTTP error envelope
 data-pipeline/

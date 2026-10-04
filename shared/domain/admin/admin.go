@@ -2,9 +2,10 @@
 // console: dashboard counters, paged table listings, full detail projections,
 // and the environment description.
 //
-// The package depends only on the standard library so the view shapes can be
-// reasoned about and tested without a running service. Every collection is
-// rendered as an array in the wire form, never as a null value.
+// The package depends only on the standard library and its sibling domain
+// packages, so the view shapes can be reasoned about and tested without a
+// running service. Every collection is rendered as an array in the wire form,
+// never as a null value.
 package admin
 
 import (

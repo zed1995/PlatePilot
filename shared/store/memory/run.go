@@ -15,6 +15,7 @@ type RunRepository struct {
 	mu        sync.RWMutex
 	runs      map[string]run.AgentRun
 	toolCalls map[string][]run.ToolCallRecord
+	nodes     map[string][]run.RunNode
 }
 
 // NewRunRepository returns an empty in-memory run repository.
@@ -22,6 +23,7 @@ func NewRunRepository() *RunRepository {
 	return &RunRepository{
 		runs:      make(map[string]run.AgentRun),
 		toolCalls: make(map[string][]run.ToolCallRecord),
+		nodes:     make(map[string][]run.RunNode),
 	}
 }
 
@@ -61,6 +63,23 @@ func (r *RunRepository) RecordToolCall(_ context.Context, call run.ToolCallRecor
 	return nil
 }
 
+// RecordNode appends one graph-node span to its run.
+func (r *RunRepository) RecordNode(_ context.Context, node run.RunNode) error {
+	if strings.TrimSpace(node.RunID) == "" {
+		return errs.New(errs.CodeInvalidArgument, "run_id is required")
+	}
+	if strings.TrimSpace(node.NodeID) == "" {
+		return errs.New(errs.CodeInvalidArgument, "node_id is required")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.runs[node.RunID]; !ok {
+		return errs.Newf(errs.CodeNotFound, "run %q not found", node.RunID)
+	}
+	r.nodes[node.RunID] = append(r.nodes[node.RunID], node)
+	return nil
+}
+
 // GetRun returns one run or a not_found error.
 func (r *RunRepository) GetRun(_ context.Context, runID string) (run.AgentRun, error) {
 	r.mu.RLock()
@@ -70,6 +89,21 @@ func (r *RunRepository) GetRun(_ context.Context, runID string) (run.AgentRun, e
 		return run.AgentRun{}, errs.Newf(errs.CodeNotFound, "run %q not found", runID)
 	}
 	return agentRun, nil
+}
+
+// GetRunByTrace returns one run by trace id or a not_found error.
+func (r *RunRepository) GetRunByTrace(_ context.Context, traceID string) (run.AgentRun, error) {
+	if strings.TrimSpace(traceID) == "" {
+		return run.AgentRun{}, errs.New(errs.CodeInvalidArgument, "trace_id is required")
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, agentRun := range r.runs {
+		if agentRun.TraceID == traceID {
+			return agentRun, nil
+		}
+	}
+	return run.AgentRun{}, errs.Newf(errs.CodeNotFound, "run for trace %q not found", traceID)
 }
 
 // ListRuns returns a thread's runs, newest first, bounded by limit and the
@@ -132,6 +166,24 @@ func (r *RunRepository) ListToolCalls(_ context.Context, runID string) ([]run.To
 		}
 		return out[i].CallID < out[j].CallID
 	})
+	return out, nil
+}
+
+// ListNodes returns one run's node spans in execution order. An unknown run
+// yields an empty slice, not an error.
+func (r *RunRepository) ListNodes(_ context.Context, runID string) ([]run.RunNode, error) {
+	if strings.TrimSpace(runID) == "" {
+		return nil, errs.New(errs.CodeInvalidArgument, "run_id is required")
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	nodes := r.nodes[runID]
+	out := make([]run.RunNode, len(nodes))
+	copy(out, nodes)
+	// Ordered by seq rather than by arrival: the span carries its position
+	// because two nodes of a fast run start in the same millisecond, and an
+	// order derived from insertion happens to be right only until it is not.
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Seq < out[j].Seq })
 	return out, nil
 }
 

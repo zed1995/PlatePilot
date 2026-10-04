@@ -16,7 +16,7 @@ LDFLAGS := -X main.version=$(VERSION)
 # root's as a fallback, so the two services can share one set of secrets.
 ENV_FILE := $(shell [ -f .env ] && echo .env || echo ../.env)
 
-.PHONY: help build run run-admin check-config test test-race vet cover lint tidy clean eval-retrieval
+.PHONY: help build run run-admin check-config test test-race vet cover lint tidy clean eval-retrieval eval-agent perf
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
@@ -37,8 +37,33 @@ check-config: ## Print the resolved configuration and exit
 # database is actually there: a green suite that quietly asserted nothing is
 # worse than a red one. REQUIRE_DB turns the skip into a failure instead of a
 # pass, which is what makes this usable as a gate rather than as a smoke test.
-eval-retrieval: ## Score the retrieval fixtures and print the gate metrics (needs `make -C .. pg-up`)
-	PLATEPILOT_REQUIRE_DB=1 go test ./internal/retrieval/ -run TestRetrievalFixtures -count=1 -v
+#
+# REQUIRE_VECTOR does the same for the embedding provider, and it is set here
+# rather than left to the caller because this target exists to produce a score.
+# Without it, an Ollama that is simply not running turns the run into a skip
+# that still prints "ok" — and the recall it printed before the guard existed
+# was 0.467 against a gate of 0.6, which read as a ranking regression when the
+# only thing that had regressed was that the machine had been rebooted.
+eval-retrieval: ## Score the retrieval fixtures and print the gate metrics (needs `make -C .. pg-up` and `ollama serve`)
+	PLATEPILOT_REQUIRE_DB=1 PLATEPILOT_REQUIRE_VECTOR=1 \
+		go test ./internal/retrieval/ -run TestRetrievalFixtures -count=1 -v
+
+# The agent fixture is fully offline, so unlike eval-retrieval this needs no
+# database and no embedding provider: a green run here always measured
+# something. The same target runs the M6-04 replay, which re-executes every
+# fixed request twice and fails if the two runs disagree.
+eval-agent: ## Score the agent fixtures and replay them (offline, no services needed)
+	go test ./internal/agent/ \
+		-run 'TestAgentEvalSuite|TestFixedRequestReplayRepeatsIdentically|TestReplayComparesModelConfigurations' \
+		-count=1 -v
+
+# The latency runs are minutes of embedding calls against the live corpus, so
+# they sit behind PLATEPILOT_PERF and off the default test path. The agent
+# half is offline; the retrieval half needs the database and Ollama, and says
+# so loudly when it skips.
+perf: ## Measure search/embedding/agent latency, p50 and p95 (needs `make -C .. pg-up` and `ollama serve`)
+	PLATEPILOT_PERF=1 go test ./internal/retrieval/ -run TestRetrievalLatency -count=1 -v -timeout 600s
+	PLATEPILOT_PERF=1 go test ./internal/agent/ -run TestAgentTurnLatency -count=1 -v
 
 test: ## Run the unit tests
 	go test ./...

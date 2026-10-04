@@ -7,6 +7,8 @@ import type {
   DocumentSummary,
   EvidenceBundle,
   EvidenceQuery,
+  InventoryResetResult,
+  InventoryView,
   Overview,
   RestaurantDetail,
   RestaurantPage,
@@ -158,4 +160,14 @@ export const adminApi = {
     post<SearchResponse>('/admin/v1/debug/search', body),
   debugEvidence: (body: EvidenceQuery) =>
     post<EvidenceBundle>('/admin/v1/debug/evidence', body),
+
+  inventory: (id: number, date?: string) =>
+    get<InventoryView>(
+      `/admin/v1/restaurants/${id}/inventory${buildQuery({ date })}`,
+    ),
+  resetInventory: (id: number, date?: string) =>
+    post<InventoryResetResult>(
+      `/admin/v1/restaurants/${id}/inventory/reset${buildQuery({ date })}`,
+      {},
+    ),
 }

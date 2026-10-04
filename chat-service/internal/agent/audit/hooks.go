@@ -16,6 +16,7 @@ import (
 	"github.com/zed1995/platepilot/chat-service/internal/agent/tools"
 	"github.com/zed1995/platepilot/shared/domain/errs"
 	"github.com/zed1995/platepilot/shared/domain/run"
+	"github.com/zed1995/platepilot/shared/idgen"
 	"github.com/zed1995/platepilot/shared/store"
 )
 
@@ -140,6 +141,76 @@ func (h *Hooks) ToolCall(ctx context.Context, ev ToolEvent) {
 		h.logger.Error("audit: record tool call failed",
 			slog.String("run_id", ev.RunID), slog.String("call_id", ev.CallID),
 			slog.String("tool", ev.Name), slog.String("error", err.Error()))
+	}
+}
+
+// NodeEvent is one graph node's outcome within a run.
+type NodeEvent struct {
+	RunID   string
+	TraceID string
+	// Node is the graph node name: ingress, plan, tools, clarify, answer,
+	// finalize.
+	Node string
+	// Status is run.NodeOK or run.NodeError.
+	Status run.NodeStatus
+	// LatencyMS is how long the node took. Nodes that call a model are the
+	// whole reason this span exists, and a duration without a name attached
+	// to it says only that the turn was slow.
+	LatencyMS int64
+	// Seq is the span's position within its run, from 1. It is supplied by the
+	// caller rather than counted here because the caller is the only thing
+	// that knows the run is still going: the run row is finished inside the
+	// finalize node, so a counter cleared when the run finished would number
+	// finalize's own span 1 and sort it ahead of the ingress it came after.
+	Seq int
+	// Detail carries non-sensitive facts the node chose to record: how many
+	// candidates a search returned, how many tool calls this round ran. It is
+	// written by the node and never read on the answer path.
+	Detail    json.RawMessage
+	ErrorCode string
+}
+
+// Node records one graph-node span. A failure is logged, never returned.
+//
+// Spans are written as they happen rather than buffered until finalize. The
+// run that most needs a trace is the one that never reaches finalize, and a
+// buffer flushed at the end would have nothing to say about it: the answer
+// hangs inside plan and the only surviving row is the run start, which is
+// exactly the "the turn failed after 30 seconds" this table exists to replace.
+func (h *Hooks) Node(ctx context.Context, ev NodeEvent) {
+	if h == nil || h.repo == nil {
+		return
+	}
+	if ev.RunID == "" || ev.Node == "" {
+		return
+	}
+	if ev.Seq <= 0 {
+		// A span with no position cannot be placed in the timeline, and the
+		// store rejects it. Dropping it here with a warning is the only
+		// honest outcome: inventing a position would put the node somewhere
+		// it did not run.
+		h.logger.Warn("audit: run node span has no sequence number; span dropped",
+			slog.String("run_id", ev.RunID), slog.String("node", ev.Node))
+		return
+	}
+	record := run.RunNode{
+		NodeID:    idgen.NewUUID(),
+		RunID:     ev.RunID,
+		TraceID:   ev.TraceID,
+		Node:      ev.Node,
+		Seq:       ev.Seq,
+		Status:    ev.Status,
+		StartedAt: time.Now().UTC().Add(-time.Duration(ev.LatencyMS) * time.Millisecond),
+		LatencyMS: ev.LatencyMS,
+		Detail:    ev.Detail,
+		ErrorCode: ev.ErrorCode,
+	}
+	writeCtx, cancel := auditCtx(ctx)
+	defer cancel()
+	if err := h.repo.RecordNode(writeCtx, record); err != nil {
+		h.logger.Warn("audit: record run node failed",
+			slog.String("run_id", ev.RunID), slog.String("node", ev.Node),
+			slog.String("status", string(ev.Status)), slog.String("error", err.Error()))
 	}
 }
 
