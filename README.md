@@ -564,3 +564,10 @@ web/                      # admin console frontend
 - `docs/platepilot-implementation-plan.md`
 - `docs/platepilot-m0-task-document.md`
 - `docs/platepilot-m1-task-document.md`
+- `docs/platepilot-m2-task-document.md`
+- `docs/platepilot-m3-task-document.md`
+- `docs/platepilot-m4-task-document.md`
+- `docs/platepilot-m5-task-document.md`
+- `docs/platepilot-admin-prd.md`
+- `docs/platepilot-admin_plan.md`
+- `docs/platepilot-web-agent-console-task-document.md`
