@@ -148,6 +148,59 @@ export type StreamEvent =
       warnings?: string[]
     }
   | { type: 'error'; code: string; message: string }
+  // phase.progress rewrites the title of the running phase whose id matches
+  // phase_id. It exists so a long-running plan call can show "正在推理
+  // （已 N 秒）" instead of staying on "正在制定下一步计划" for the whole
+  // duration; the row is matched by id, never by phase name.
+  | { type: 'phase.progress'; phase_id: string; title: string }
+  // Phase / step events carry the lifecycle of an in-flight turn. A blank
+  // "运行中" badge is not a status — it is the visible failure mode of a turn
+  // that takes two minutes to plan but never produces a byte of its own. The
+  // server emits phase.started / phase.finished around each of the runner's
+  // coarse phases (ingress / plan / tools / answer) so the console can show
+  // which step is in flight, and step.started / step.finished for the three
+  // sub-actions of ingress (loading_context, embedding_memory, interpreting)
+  // so the loading phase itself is not one big unnamed wait.
+  | {
+      type: 'phase.started'
+      run_id: string
+      thread_id: string
+      phase: 'ingress' | 'plan' | 'tools' | 'answer'
+      phase_id: string
+      title: string
+      started_at: number
+    }
+  | {
+      type: 'phase.finished'
+      run_id: string
+      thread_id: string
+      phase: 'ingress' | 'plan' | 'tools' | 'answer'
+      phase_id: string
+      finished_at: number
+      outcome?: 'ok' | 'failed'
+    }
+  | {
+      type: 'step.started'
+      run_id: string
+      thread_id: string
+      phase: 'ingress'
+      phase_id: string
+      step: 'loading_context' | 'embedding_memory' | 'interpreting'
+      step_id: string
+      title: string
+      started_at: number
+    }
+  | {
+      type: 'step.finished'
+      run_id: string
+      thread_id: string
+      phase: 'ingress'
+      phase_id: string
+      step: 'loading_context' | 'embedding_memory' | 'interpreting'
+      step_id: string
+      finished_at: number
+      outcome?: 'ok' | 'failed'
+    }
 
 export interface SendMessageHandle {
   abort: () => void

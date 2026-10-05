@@ -158,6 +158,159 @@ describe('reduce', () => {
     expect(fresh.citations).toEqual([])
     expect(fresh.runId).toBe('r2')
   })
+
+  it('appends a phase in the order it opened', () => {
+    // Phases arrive in the order the runner executed them, and the list the
+    // console renders is the order the user watched them happen.
+    const state = run([
+      {
+        type: 'phase.started',
+        run_id: 'r1',
+        thread_id: 't1',
+        phase: 'ingress',
+        phase_id: 'ingress-1',
+        title: '正在加载会话上下文',
+        started_at: 1000,
+      },
+      {
+        type: 'phase.started',
+        run_id: 'r1',
+        thread_id: 't1',
+        phase: 'plan',
+        phase_id: 'plan-1',
+        title: '正在制定下一步计划',
+        started_at: 1100,
+      },
+    ])
+    expect(state.phases.map((p) => p.phase)).toEqual(['ingress', 'plan'])
+    expect(state.phases.every((p) => p.status === 'running')).toBe(true)
+  })
+
+  it('closes the right phase by phase_id, not by name', () => {
+    // A tools round that loops back to plan would replace the first round's
+    // row if pairing were by phase name. phase_id is what makes the second
+    // round its own row.
+    const state = run([
+      {
+        type: 'phase.started',
+        run_id: 'r1',
+        thread_id: 't1',
+        phase: 'plan',
+        phase_id: 'plan-1',
+        title: '正在制定下一步计划',
+        started_at: 1100,
+      },
+      {
+        type: 'phase.started',
+        run_id: 'r1',
+        thread_id: 't1',
+        phase: 'plan',
+        phase_id: 'plan-2',
+        title: '正在制定下一步计划',
+        started_at: 1500,
+      },
+      {
+        type: 'phase.finished',
+        run_id: 'r1',
+        thread_id: 't1',
+        phase: 'plan',
+        phase_id: 'plan-1',
+        finished_at: 1500,
+        outcome: 'ok',
+      },
+    ])
+    expect(state.phases[0].status).toBe('ok')
+    expect(state.phases[1].status).toBe('running')
+  })
+
+  it('nests a step under its parent phase', () => {
+    const state = run([
+      {
+        type: 'phase.started',
+        run_id: 'r1',
+        thread_id: 't1',
+        phase: 'ingress',
+        phase_id: 'ingress-1',
+        title: '正在加载会话上下文',
+        started_at: 1000,
+      },
+      {
+        type: 'step.started',
+        run_id: 'r1',
+        thread_id: 't1',
+        phase: 'ingress',
+        phase_id: 'ingress-1',
+        step: 'embedding_memory',
+        step_id: 'ingress-1-embedding_memory',
+        title: '检索长期记忆',
+        started_at: 1050,
+      },
+      {
+        type: 'step.finished',
+        run_id: 'r1',
+        thread_id: 't1',
+        phase: 'ingress',
+        phase_id: 'ingress-1',
+        step: 'embedding_memory',
+        step_id: 'ingress-1-embedding_memory',
+        finished_at: 1080,
+        outcome: 'ok',
+      },
+    ])
+    const ingress = state.phases[0]
+    expect(ingress.steps).toHaveLength(1)
+    expect(ingress.steps[0].step).toBe('embedding_memory')
+    expect(ingress.steps[0].status).toBe('ok')
+  })
+
+  it('marks a phase failed without taking the turn down', () => {
+    // A failed phase is the runner reporting a node error; the run is
+    // already over. The console shows red, not a redirect to the error
+    // page.
+    const state = run([
+      {
+        type: 'phase.started',
+        run_id: 'r1',
+        thread_id: 't1',
+        phase: 'answer',
+        phase_id: 'answer-1',
+        title: '正在生成回答',
+        started_at: 2000,
+      },
+      {
+        type: 'phase.finished',
+        run_id: 'r1',
+        thread_id: 't1',
+        phase: 'answer',
+        phase_id: 'answer-1',
+        finished_at: 2010,
+        outcome: 'failed',
+      },
+    ])
+    expect(state.phases[0].status).toBe('failed')
+  })
+
+  it('keeps phases collected before message.start', () => {
+    // A late message.start (the runner emits it before phase.started
+    // today, but a deployment that has not yet rolled that change sends
+    // it after) must not wipe a phase row the front-end is already
+    // rendering: the timeline would silently disappear.
+    const dirty = run([
+      {
+        type: 'phase.started',
+        run_id: 'r1',
+        thread_id: 't1',
+        phase: 'plan',
+        phase_id: 'plan-1',
+        title: '正在制定下一步计划',
+        started_at: 1100,
+      },
+    ])
+    const fresh = run([{ type: 'message.start', run_id: 'r2', thread_id: 't1' }], dirty)
+    expect(fresh.phases).toHaveLength(1)
+    expect(fresh.text).toBe('')
+    expect(fresh.runId).toBe('r2')
+  })
 })
 
 describe('unresolvedCitations', () => {

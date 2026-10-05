@@ -43,6 +43,11 @@ export interface TurnStatusBarProps {
 
 export function TurnStatusBar({ turn, modelName }: TurnStatusBarProps) {
   const elapsed = useElapsed(turn)
+  // The active phase is the row still showing the spinner. There is at
+  // most one — phases run sequentially by design — and reading the title
+  // here keeps the badge next to it accurate as the runner moves from plan
+  // to tools to answer without the page having to know the phases exist.
+  const activePhase = turn.phases.find((phase) => phase.status === 'running')
 
   if (turn.phase === 'idle') return null
 
@@ -50,6 +55,11 @@ export function TurnStatusBar({ turn, modelName }: TurnStatusBarProps) {
     <div className="space-y-1.5 border-t border-[var(--border-subtle)] px-1 py-2">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-ink-tertiary">
         <StatusTag tone={phaseTone[turn.phase]}>{phaseLabel[turn.phase]}</StatusTag>
+        {activePhase && (
+          <span className="text-ink-secondary" data-testid="active-phase">
+            {activePhase.title}
+          </span>
+        )}
         {modelName && <span>{modelName}</span>}
         {elapsed !== null && <span className="tabular">{formatDuration(elapsed)}</span>}
         {turn.tools.length > 0 && <span className="tabular">工具 {turn.tools.length} 次</span>}

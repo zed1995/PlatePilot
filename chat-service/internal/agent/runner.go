@@ -49,6 +49,15 @@ type Config struct {
 	// about it gets the older, single-delta behaviour; the application turns it
 	// on from configuration.
 	AnswerStreaming bool
+	// PhaseEvents makes the runner publish phase.started / phase.finished
+	// (and the ingress sub-step pair) onto the run's stream. The default is
+	// off, so a caller that has not opted in does not pay the wire cost or
+	// the test noise; the application turns it on from configuration.
+	//
+	// Turning it off does not change the answer — it only stops the events
+	// from being emitted. The transport still accepts them; the closed-set
+	// sweep in httpapi.surfaces whether a counter-frame has been forgotten.
+	PhaseEvents bool
 }
 
 // Deps are the assembled capabilities a runner needs.
@@ -254,9 +263,21 @@ func (r *Runner) invoke(ctx context.Context, em *emitter, in TurnInput) (*TurnRe
 
 	runCtx := withEmitter(ctx, em)
 	runCtx = withRunMeta(runCtx, meta)
+	runCtx = withPhaseCounter(runCtx)
 	r.deps.Auditor.RunStart(runCtx, audit.Meta{
 		RunID: meta.runID, TraceID: meta.traceID,
 		ThreadID: meta.threadID, StartedAt: meta.startedAt,
+	})
+
+	// message.start goes out before the first node so the run's start frame
+	// is the first byte the client sees. Emitting it inside the ingress node
+	// would race against the instrumented wrapper's phase.started: a client
+	// that resets its state on message.start would lose any phase rows that
+	// arrived in the gap.
+	em.send(runCtx, Event{
+		Type:     EventStart,
+		RunID:    meta.runID,
+		ThreadID: meta.threadID,
 	})
 
 	result, err := r.runnable.Invoke(runCtx, in)
@@ -347,23 +368,33 @@ func (r *Runner) compile() error {
 	// error branch, another would measure the wrong clock — and the trace is
 	// only readable while all six agree on what a span means.
 	if err := g.AddLambdaNode(nodeIngress,
-		compose.InvokableLambda(traced(r, nodeIngress, r.ingress, ingressDetail))); err != nil {
+		compose.InvokableLambda(traced(r, nodeIngress,
+			instrumented(r, "ingress", "正在加载会话上下文", r.ingress),
+			ingressDetail))); err != nil {
 		return err
 	}
 	if err := g.AddLambdaNode(nodePlan,
-		compose.InvokableLambda(traced(r, nodePlan, r.plan, planDetail))); err != nil {
+		compose.InvokableLambda(traced(r, nodePlan,
+			instrumented(r, "plan", "正在制定下一步计划", r.plan),
+			planDetail))); err != nil {
 		return err
 	}
 	if err := g.AddLambdaNode(nodeTools,
-		compose.InvokableLambda(traced(r, nodeTools, r.runTools, toolsDetail))); err != nil {
+		compose.InvokableLambda(traced(r, nodeTools,
+			instrumented(r, "tools", "正在调用工具", r.runTools),
+			toolsDetail))); err != nil {
 		return err
 	}
 	if err := g.AddLambdaNode(nodeClarify,
-		compose.InvokableLambda(traced(r, nodeClarify, r.clarifyNode, clarifyDetail))); err != nil {
+		compose.InvokableLambda(traced(r, nodeClarify,
+			instrumented(r, "clarify", "正在请你确认", r.clarifyNode),
+			clarifyDetail))); err != nil {
 		return err
 	}
 	if err := g.AddLambdaNode(nodeAnswer,
-		compose.InvokableLambda(traced(r, nodeAnswer, r.answerNode, answerDetail))); err != nil {
+		compose.InvokableLambda(traced(r, nodeAnswer,
+			instrumented(r, "answer", "正在生成回答", r.answerNode),
+			answerDetail))); err != nil {
 		return err
 	}
 	if err := g.AddLambdaNode(nodeFinalize,

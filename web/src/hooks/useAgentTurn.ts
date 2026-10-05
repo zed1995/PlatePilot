@@ -15,6 +15,7 @@
 //     final until message.end; a message.replace supersedes everything streamed
 //     before it. Nothing here may be written to a store mid-run.
 import { useCallback, useEffect, useRef, useState } from 'react'
+import type { Dispatch, MutableRefObject, SetStateAction } from 'react'
 import { sendMessage, type StreamEvent } from '../api/chat'
 import { collectCitationIds } from '../lib/answer'
 
@@ -53,6 +54,29 @@ export interface Gate {
   summary?: string
 }
 
+export type PhaseName = 'ingress' | 'plan' | 'tools' | 'answer'
+export type StepName = 'loading_context' | 'embedding_memory' | 'interpreting'
+export type PhaseStatus = 'running' | 'ok' | 'failed'
+
+export interface StepView {
+  step: StepName
+  step_id: string
+  title: string
+  status: PhaseStatus
+  startedAt?: number
+  finishedAt?: number
+}
+
+export interface PhaseView {
+  phase: PhaseName
+  phase_id: string
+  title: string
+  status: PhaseStatus
+  startedAt?: number
+  finishedAt?: number
+  steps: StepView[]
+}
+
 export interface TurnState {
   phase: TurnPhase
   runId?: string
@@ -63,6 +87,11 @@ export interface TurnState {
   confirmation?: Gate
   awaiting?: Gate
   memories: MemorySavedItem[]
+  // Phases is the projection of phase.* + step.* events into a renderable
+  // list. A turn that never received a phase event (the AGENT_PHASE_EVENTS
+  // switch off, or a deployment predating the feature) renders as before —
+  // the inline step timeline only appears when there is something to show.
+  phases: PhaseView[]
   finishReason?: string
   usage?: { input_tokens: number; output_tokens: number; total_tokens: number }
   warnings: string[]
@@ -78,17 +107,34 @@ export const initialTurnState: TurnState = {
   citations: [],
   memories: [],
   warnings: [],
+  phases: [],
 }
 
 // reduce is the pure half of the hook, so tests can drive it without React.
 export function reduce(state: TurnState, event: StreamEvent): TurnState {
   switch (event.type) {
     case 'message.start':
+      // Reset state but do not clobber phases already collected. A late
+      // message.start (the runner moves it ahead of the phase frames today,
+      // but a deployment that has not yet rolled that change will still
+      // emit message.start after phase.started, and a reducer that reset
+      // phases would silently drop the timeline the front-end is
+      // rendering).
       return {
-        ...initialTurnState,
+        ...state,
         phase: 'streaming',
         runId: event.run_id,
         threadId: event.thread_id,
+        text: '',
+        tools: [],
+        citations: [],
+        confirmation: undefined,
+        awaiting: undefined,
+        memories: [],
+        finishReason: undefined,
+        usage: undefined,
+        warnings: [],
+        error: undefined,
         startedAt: state.startedAt ?? Date.now(),
       }
     case 'message.delta':
@@ -171,6 +217,91 @@ export function reduce(state: TurnState, event: StreamEvent): TurnState {
       }
     case 'error':
       return { ...state, phase: 'failed', error: event.message }
+    case 'phase.started':
+      // A new phase opens. The list of running phases grows by one; the
+      // view renders them in the order they opened, which is the order the
+      // user watched them happen.
+      return {
+        ...state,
+        phases: [
+          ...state.phases,
+          {
+            phase: event.phase,
+            phase_id: event.phase_id,
+            title: event.title,
+            status: 'running',
+            startedAt: event.started_at,
+            steps: [],
+          },
+        ],
+      }
+    case 'phase.progress': {
+      // Rewrite the title of the running phase the heartbeat is targeting.
+      // phase.finished / phase.started have already placed the row in
+      // state.phases, so the reducer just walks the list and patches the
+      // matching entry rather than appending anything.
+      return {
+        ...state,
+        phases: state.phases.map((p) =>
+          p.phase_id === event.phase_id && p.status === 'running'
+            ? { ...p, title: event.title }
+            : p,
+        ),
+      }
+    }
+    case 'phase.finished': {
+      // Match the running phase by phase_id: tools in particular loops,
+      // and matching by phase name would close the first round on the
+      // second.
+      const outcome: PhaseStatus = event.outcome === 'failed' ? 'failed' : 'ok'
+      return {
+        ...state,
+        phases: state.phases.map((p) =>
+          p.phase_id === event.phase_id
+            ? { ...p, status: outcome, finishedAt: event.finished_at }
+            : p,
+        ),
+      }
+    }
+    case 'step.started':
+      return {
+        ...state,
+        phases: state.phases.map((p) =>
+          p.phase_id === event.phase_id
+            ? {
+                ...p,
+                steps: [
+                  ...p.steps,
+                  {
+                    step: event.step,
+                    step_id: event.step_id,
+                    title: event.title,
+                    status: 'running',
+                    startedAt: event.started_at,
+                  },
+                ],
+              }
+            : p,
+        ),
+      }
+    case 'step.finished': {
+      const outcome: PhaseStatus = event.outcome === 'failed' ? 'failed' : 'ok'
+      return {
+        ...state,
+        phases: state.phases.map((p) =>
+          p.phase_id !== event.phase_id
+            ? p
+            : {
+                ...p,
+                steps: p.steps.map((s) =>
+                  s.step_id === event.step_id
+                    ? { ...s, status: outcome, finishedAt: event.finished_at }
+                    : s,
+                ),
+              },
+        ),
+      }
+    }
     default:
       // An unrecognised event must never break a turn. The union above is what
       // the server emits today, and it is what it will keep emitting — but the
@@ -193,6 +324,53 @@ export interface UseAgentTurn {
 // them, and a render per delta would make the browser spend the whole turn
 // re-rendering instead of appending text. 50ms is below the threshold where
 // streaming reads as chunky and above where it reads as wasted work.
+// flushNow applies the queued events synchronously and resets the timer.
+//
+// It exists so structural events (phase boundaries, tool starts and
+// finishes, message.start / message.end) do not have to wait for the
+// 50ms text-delta batch: a phase change that arrives 1ms before a flood
+// of deltas would otherwise be hidden behind them, and the user would
+// see "正在制定计划…" and then text appearing with no visible step
+// transition.
+function flushNow(
+  pending: MutableRefObject<StreamEvent[]>,
+  setState: Dispatch<SetStateAction<TurnState>>,
+): void {
+  const queued = pending.current
+  pending.current = []
+  if (queued.length === 0) return
+  setState((current) => queued.reduce(reduce, current))
+}
+
+// isStructuralEvent returns true for events whose arrival the user
+// should see immediately rather than after the next text-delta flush.
+// Phases / steps change the visible status row; tool starts and finishes
+// add or close the right-rail timeline row; message.start opens the turn
+// and message.end closes it. The list is closed-set on purpose: adding
+// one means a deliberate edit in two places (this list and the reducer),
+// which is what the SSE union already asks for.
+function isStructuralEvent(event: StreamEvent): boolean {
+  switch (event.type) {
+    case 'phase.started':
+    case 'phase.finished':
+    case 'phase.progress':
+    case 'step.started':
+    case 'step.finished':
+    case 'message.start':
+    case 'message.end':
+    case 'message.replace':
+    case 'tool.start':
+    case 'tool.finish':
+    case 'state.awaiting_input':
+    case 'confirmation.required':
+    case 'memory.saved':
+    case 'error':
+      return true
+    default:
+      return false
+  }
+}
+
 export function useAgentTurn(opts?: { onFinished?: (state: TurnState) => void }): UseAgentTurn {
   const [state, setState] = useState<TurnState>(initialTurnState)
   const handle = useRef<{ abort: () => void } | null>(null)
@@ -206,10 +384,7 @@ export function useAgentTurn(opts?: { onFinished?: (state: TurnState) => void })
 
   const flush = useCallback(() => {
     timer.current = null
-    const queued = pending.current
-    pending.current = []
-    if (queued.length === 0) return
-    setState((current) => queued.reduce(reduce, current))
+    flushNow(pending, setState)
   }, [])
 
   useEffect(
@@ -258,6 +433,22 @@ export function useAgentTurn(opts?: { onFinished?: (state: TurnState) => void })
         threadId,
         content,
         onEvent: (event) => {
+          // Structural events short-circuit the delta batch so a phase
+          // change or a tool row appears the instant it arrives. Deltas
+          // still batch at 50ms; the two paths share the same pending
+          // queue, which is the cheap way to keep ordering without two
+          // state slices.
+          if (isStructuralEvent(event)) {
+            // Drain whatever was queued first so a phase change always
+            // appears after the last delta, never interleaved with it.
+            if (timer.current) {
+              clearTimeout(timer.current)
+              timer.current = null
+            }
+            flushNow(pending, setState)
+            setState((current) => reduce(current, event))
+            return
+          }
           pending.current.push(event)
           if (!timer.current) timer.current = setTimeout(flush, 50)
         },

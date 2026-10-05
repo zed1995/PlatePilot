@@ -42,6 +42,30 @@ const (
 	StreamMemorySaved StreamEventType = "memory.saved"
 	StreamEnd         StreamEventType = "message.end"
 	StreamError       StreamEventType = "error"
+
+	// Phase / step events carry the lifecycle of an in-flight turn: which of
+	// the runner's coarse phases (ingress / plan / tools / answer) is active,
+	// and — inside ingress — which of its three sub-actions is running. They
+	// exist so the front-end can render a turn as a sequence of named
+	// actions rather than a blank spinner; a two-minute plan call that does
+	// not produce a byte of its own is not a hang, and showing the user which
+	// step is in flight is the difference.
+	//
+	// They are additive: existing clients ignore them by event name, the
+	// closed-set sweep below catches their mis-rematch, and a deployment that
+	// does not want them flips one config switch off without changing the
+	// transport.
+	StreamPhaseStarted  StreamEventType = "phase.started"
+	StreamPhaseFinished StreamEventType = "phase.finished"
+	StreamStepStarted   StreamEventType = "step.started"
+	StreamStepFinished  StreamEventType = "step.finished"
+	// StreamPhaseProgress rewrites a running phase's title without
+	// closing it. It exists so a synchronous LLM round that takes tens of
+	// seconds can show progress ("正在推理（已 6 秒）") rather than a
+	// silent spinner. The frame is matched by phase_id, and a client that
+	// kept a "phase started" row replaces its title rather than appending
+	// a new row.
+	StreamPhaseProgress StreamEventType = "phase.progress"
 )
 
 // StreamEvent is the transport-neutral shape of one turn event. The
@@ -93,6 +117,27 @@ type StreamEvent struct {
 	// Error event.
 	Code    string
 	Message string
+
+	// Phase / step events.
+	//
+	// Phase is one of "ingress" / "plan" / "tools" / "answer"; Step is empty
+	// for phase frames and one of "loading_context" / "embedding_memory" /
+	// "interpreting" for the three sub-actions of ingress. PhaseID and StepID
+	// are run-unique, server-assigned strings a client uses to pair start and
+	// finish frames when several rounds of the same phase happen — tools in
+	// particular loops plan->tools->plan, and a client that keyed off Phase
+	// alone would replace the first round's running row on the second.
+	//
+	// StartedAt / FinishedAt are unix milliseconds, computed once on the
+	// server; the client does not get to disagree about how long a step took.
+	Phase      string
+	PhaseID    string
+	Step       string
+	StepID     string
+	Title      string
+	StartedAt  int64
+	FinishedAt int64
+	Outcome    string
 }
 
 // Per-event data payloads, matching the §2.3.2 contract exactly so the front
@@ -188,6 +233,52 @@ type sseErrorData struct {
 	Message string `json:"message"`
 }
 
+// Phase / step payload shapes.
+//
+// The started frame carries the wall-clock instant the runner actually
+// began work (not when it queued the frame) so the client can render an
+// elapsed counter even if the SSE pipe is buffered; finished_at carries the
+// matching instant so the step's duration is one subtraction rather than
+// two server-side timestamps the client has to reconcile.
+type ssePhaseStartedData struct {
+	PhaseID   string `json:"phase_id"`
+	Phase     string `json:"phase"`
+	Title     string `json:"title"`
+	StartedAt int64  `json:"started_at"`
+}
+
+type ssePhaseFinishedData struct {
+	PhaseID    string `json:"phase_id"`
+	Phase      string `json:"phase"`
+	FinishedAt int64  `json:"finished_at"`
+	Outcome    string `json:"outcome,omitempty"`
+}
+
+type sseStepStartedData struct {
+	PhaseID   string `json:"phase_id"`
+	Phase     string `json:"phase"`
+	StepID    string `json:"step_id"`
+	Step      string `json:"step"`
+	Title     string `json:"title"`
+	StartedAt int64  `json:"started_at"`
+}
+
+type sseStepFinishedData struct {
+	PhaseID    string `json:"phase_id"`
+	StepID     string `json:"step_id"`
+	FinishedAt int64  `json:"finished_at"`
+	Outcome    string `json:"outcome,omitempty"`
+}
+
+// ssePhaseProgressData rewrites a running phase's title. PhaseID is the
+// only required field; Title is the replacement for what the client
+// rendered when phase.started arrived. There is no StartedAt because the
+// timestamp does not change — a row is still running.
+type ssePhaseProgressData struct {
+	PhaseID string `json:"phase_id"`
+	Title   string `json:"title"`
+}
+
 // streamWriter encodes StreamEvents as SSE frames. Every frame flushes
 // immediately: tool.start must reach the browser before the tool returns,
 // buffering it until message.end would defeat the point of streaming.
@@ -266,6 +357,41 @@ func (ev StreamEvent) payload() ([]byte, error) {
 		})
 	case StreamError:
 		return json.Marshal(sseErrorData{Code: ev.Code, Message: ev.Message})
+	case StreamPhaseStarted:
+		return json.Marshal(ssePhaseStartedData{
+			PhaseID:   ev.PhaseID,
+			Phase:     ev.Phase,
+			Title:     ev.Title,
+			StartedAt: ev.StartedAt,
+		})
+	case StreamPhaseFinished:
+		return json.Marshal(ssePhaseFinishedData{
+			PhaseID:    ev.PhaseID,
+			Phase:      ev.Phase,
+			FinishedAt: ev.FinishedAt,
+			Outcome:    ev.Outcome,
+		})
+	case StreamStepStarted:
+		return json.Marshal(sseStepStartedData{
+			PhaseID:   ev.PhaseID,
+			Phase:     ev.Phase,
+			StepID:    ev.StepID,
+			Step:      ev.Step,
+			Title:     ev.Title,
+			StartedAt: ev.StartedAt,
+		})
+	case StreamStepFinished:
+		return json.Marshal(sseStepFinishedData{
+			PhaseID:    ev.PhaseID,
+			StepID:     ev.StepID,
+			FinishedAt: ev.FinishedAt,
+			Outcome:    ev.Outcome,
+		})
+	case StreamPhaseProgress:
+		return json.Marshal(ssePhaseProgressData{
+			PhaseID: ev.PhaseID,
+			Title:   ev.Title,
+		})
 	default:
 		// An unknown event type would desynchronize the client's state machine;
 		// dropping it with an error is safer than emitting a nameless frame.

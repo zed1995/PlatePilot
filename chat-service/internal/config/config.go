@@ -59,6 +59,13 @@ const (
 	// is the user-visible cost of the whole turn; the switch exists so a client
 	// that cannot handle a mid-answer replacement can opt out.
 	defaultAgentAnswerStreaming = true
+
+	// defaultAgentPhaseEvents publishes the per-phase lifecycle frames
+	// (phase.started / phase.finished, plus the three ingress sub-steps). It
+	// is on by default because the verification console relies on them to
+	// render the turn as a sequence of named actions; deployments that do not
+	// consume them can switch them off without losing any other capability.
+	defaultAgentPhaseEvents = true
 )
 
 // AgentConfig holds the agent runtime knobs. They stay effective even when no
@@ -101,6 +108,12 @@ type AgentConfig struct {
 	// is the documented fallback for a client that does not understand
 	// message.replace, which is the only event streaming introduces.
 	AnswerStreaming bool
+	// PhaseEvents makes the runner emit phase.started / phase.finished (and
+	// the ingress sub-step pair) onto the run's stream. The default is on
+	// because the console relies on those frames to show which step the turn
+	// is in; deployments that want a quieter stream or that predate the
+	// feature can flip it off.
+	PhaseEvents bool
 }
 
 // AdminConfig holds the administration console settings. The console is off by
@@ -268,6 +281,7 @@ func Load() (Config, error) {
 			ResolveAmbiguityGap:  l.Float("AGENT_RESOLVE_AMBIGUITY_GAP", defaultAgentResolveAmbiguityGap),
 			MemoryWriteEnabled:   l.Bool("AGENT_MEMORY_WRITE_ENABLED", defaultAgentMemoryWriteEnabled),
 			AnswerStreaming:      l.Bool("PLATEPILOT_ANSWER_STREAMING", defaultAgentAnswerStreaming),
+			PhaseEvents:          l.Bool("AGENT_PHASE_EVENTS", defaultAgentPhaseEvents),
 		},
 		Admin: AdminConfig{
 			Enabled:         l.Bool("ADMIN_ENABLED", false),

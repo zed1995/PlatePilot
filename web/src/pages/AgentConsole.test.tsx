@@ -610,3 +610,82 @@ test('a refreshed memory says updated, not remembered', async () => {
 
   expect(await screen.findByText(/已更新记忆/)).toBeInTheDocument()
 })
+
+// The page used to show a blank "运行中" badge for the entire TTFB and plan
+// call, which made two-minute turns look like hangs. Phase events replace
+// that with a per-step timeline in the transcript and an active-phase
+// subtitle next to the badge.
+test('phase events paint an inline step timeline and an active phase label', async () => {
+  const user = userEvent.setup()
+  renderConsole()
+
+  const input = await screen.findByLabelText('消息输入')
+  await user.type(input, '拉面安静推荐')
+  await user.click(screen.getByRole('button', { name: /发送/ }))
+  await waitFor(() => expect(harness.streams).toHaveLength(1))
+
+  // First batch brings phase events while the turn is still in flight.
+  // Asserting here, before message.end, is what proves the timeline is
+  // showing the work the agent is doing — the failure mode this whole
+  // change exists to fix.
+  await act(async () => {
+    stream().emit({ type: 'message.start', run_id: 'run-1', thread_id: 'thread-1' })
+    stream().emit({
+      type: 'phase.started',
+      run_id: 'run-1',
+      thread_id: 'thread-1',
+      phase: 'ingress',
+      phase_id: 'ingress-1',
+      title: '正在加载会话上下文',
+      started_at: 1,
+    })
+    stream().emit({
+      type: 'step.started',
+      run_id: 'run-1',
+      thread_id: 'thread-1',
+      phase: 'ingress',
+      phase_id: 'ingress-1',
+      step: 'loading_context',
+      step_id: 'ingress-1-loading_context',
+      title: '读取最近会话与候选快照',
+      started_at: 2,
+    })
+    stream().emit({
+      type: 'step.finished',
+      run_id: 'run-1',
+      thread_id: 'thread-1',
+      phase: 'ingress',
+      phase_id: 'ingress-1',
+      step: 'loading_context',
+      step_id: 'ingress-1-loading_context',
+      finished_at: 3,
+      outcome: 'ok',
+    })
+    stream().emit({
+      type: 'phase.started',
+      run_id: 'run-1',
+      thread_id: 'thread-1',
+      phase: 'plan',
+      phase_id: 'plan-1',
+      title: '正在制定下一步计划',
+      started_at: 4,
+    })
+  })
+
+  // The transcript carries the phase list in arrival order. The plan phase
+  // is the active one when message.end has not arrived yet.
+  const timeline = await screen.findByTestId('step-timeline')
+  expect(within(timeline).getByText('正在加载会话上下文')).toBeInTheDocument()
+  expect(within(timeline).getByText('正在制定下一步计划')).toBeInTheDocument()
+  expect(within(timeline).getByText('读取最近会话与候选快照')).toBeInTheDocument()
+
+  // Closing the turn ends the timeline: once message.end lands the run is
+  // over, and the inline timeline has done its job.
+  await act(async () => {
+    stream().emit({ type: 'message.delta', delta: '结论：' })
+    stream().emit({ type: 'message.end', finish_reason: 'stop' })
+    stream().end()
+  })
+
+  await waitFor(() => expect(screen.queryByTestId('step-timeline')).not.toBeInTheDocument())
+})

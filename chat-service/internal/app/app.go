@@ -243,6 +243,7 @@ func New(cfg config.Config, logger *slog.Logger, deps Deps, version string) (*Ap
 			AnswerModel:       cfg.Chat.AnswerModel,
 			MaxClarifications: cfg.Agent.MaxClarifications,
 			AnswerStreaming:   cfg.Agent.AnswerStreaming,
+			PhaseEvents:       cfg.Agent.PhaseEvents,
 		}, agentDeps)
 		if err != nil {
 			return nil, fmt.Errorf("build agent runner: %w", err)

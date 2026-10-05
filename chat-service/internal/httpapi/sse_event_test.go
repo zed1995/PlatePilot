@@ -23,6 +23,11 @@ func everyStreamEventType() []StreamEventType {
 		StreamMemorySaved,
 		StreamEnd,
 		StreamError,
+		StreamPhaseStarted,
+		StreamPhaseFinished,
+		StreamPhaseProgress,
+		StreamStepStarted,
+		StreamStepFinished,
 	}
 }
 
@@ -164,6 +169,118 @@ func TestAwaitingInputStreamEventOmitsEmptyPendingFields(t *testing.T) {
 	for _, absent := range []string{"pending_action", "missing_slots"} {
 		if _, present := decoded[absent]; present {
 			t.Fatalf("%s must be omitted when empty: %s", absent, data)
+		}
+	}
+}
+
+// The phase.started frame is the cue the front-end uses to switch the
+// visible status spinner from "loading the thread" to whatever the new
+// phase's title says. The frame must therefore carry a stable phase id, a
+// machine-readable phase name, a human title, and a started_at instant;
+// without the id a second plan round would replace the first round's row
+// and the user would never know a tools loop happened.
+func TestPhaseStartedFrameCarriesIdAndTitle(t *testing.T) {
+	data, err := (StreamEvent{
+		Type:      StreamPhaseStarted,
+		PhaseID:   "plan-1",
+		Phase:     "plan",
+		Title:     "正在制定下一步计划",
+		StartedAt: 1717700000000,
+	}).payload()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"phase_id", "phase", "title", "started_at"} {
+		if _, present := decoded[want]; !present {
+			t.Fatalf("phase.started must carry %s: %s", want, data)
+		}
+	}
+	if decoded["phase_id"] != "plan-1" || decoded["phase"] != "plan" {
+		t.Fatalf("id/name round-trip failed: %s", data)
+	}
+}
+
+// A phase without an outcome is a started frame masquerading as a finished
+// one. The field is omitted on success to keep the wire shape minimal, and
+// is required on failure so the front-end can mark the row red instead of
+// leaving it hanging.
+func TestPhaseFinishedFrameOmitsOutcomeWhenEmpty(t *testing.T) {
+	data, err := (StreamEvent{
+		Type:       StreamPhaseFinished,
+		PhaseID:    "plan-1",
+		Phase:      "plan",
+		FinishedAt: 1717700005000,
+	}).payload()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := decoded["outcome"]; present {
+		t.Fatalf("outcome must be omitted when empty: %s", data)
+	}
+}
+
+// The step frames are scoped inside a phase, so they carry the parent
+// phase_id alongside their own step_id. A step row that could not be
+// attached to its phase would be a free-floating spinner the front-end has
+// to guess at, which is what phase_id is here to prevent.
+func TestStepStartedFrameCarriesParentPhase(t *testing.T) {
+	data, err := (StreamEvent{
+		Type:      StreamStepStarted,
+		PhaseID:   "ingress-1",
+		Phase:     "ingress",
+		StepID:    "i2",
+		Step:      "embedding_memory",
+		Title:     "检索长期记忆",
+		StartedAt: 1717700001000,
+	}).payload()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded["phase_id"] != "ingress-1" || decoded["step_id"] != "i2" {
+		t.Fatalf("step ids round-trip failed: %s", data)
+	}
+	if decoded["step"] != "embedding_memory" {
+		t.Fatalf("step name = %v", decoded["step"])
+	}
+}
+
+// A phase.progress frame carries the new title for the row the front-end
+// was already rendering. PhaseID is the only required key; title is the
+// replacement string the server picked (typically "正在推理（已 N 秒）").
+func TestPhaseProgressFrameRewritesOnlyTitleAndPhaseID(t *testing.T) {
+	data, err := (StreamEvent{
+		Type:    StreamPhaseProgress,
+		PhaseID: "plan-1",
+		Title:   "正在推理（已 6 秒）",
+	}).payload()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded["phase_id"] != "plan-1" || decoded["title"] != "正在推理（已 6 秒）" {
+		t.Fatalf("phase_id/title round-trip failed: %s", data)
+	}
+	// The shape must be minimal: a progress frame that also carried
+	// finished_at or step fields would tempt a client into rendering a
+	// closed phase on top of a running one.
+	for _, absent := range []string{"phase", "step", "step_started_at", "finished_at", "outcome"} {
+		if _, present := decoded[absent]; present {
+			t.Fatalf("%s must be omitted from phase.progress: %s", absent, data)
 		}
 	}
 }

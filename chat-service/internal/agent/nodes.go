@@ -27,6 +27,13 @@ import (
 )
 
 // ingress initializes the turn state and opens the event stream.
+//
+// message.start is the first frame the front-end sees, and the front-end
+// has been sitting on a blank page for the entire TTFB. Emitting it at the
+// top — before any DB read, memory lookup, or model call — is what turns
+// "I sent a message and nothing is happening" into "I sent a message and
+// the agent is loading the thread". The phase.started frame that follows
+// it is the breadcrumb that says which step is running.
 func (r *Runner) ingress(ctx context.Context, in TurnInput) (*TurnState, error) {
 	meta := runMetaFromContext(ctx)
 	if meta.runID == "" {
@@ -42,9 +49,21 @@ func (r *Runner) ingress(ctx context.Context, in TurnInput) (*TurnState, error) 
 		Intent:    IntentUnknown,
 		StartedAt: meta.startedAt,
 	}
-	r.loadConversationContext(ctx, st, in)
-	r.loadMemoryContext(ctx, st)
-	r.interpret(ctx, st)
+	// message.start is emitted by invoke() before any graph node runs so that
+	// the run's start frame is the first byte the client receives. Emitting it
+	// here instead would race against the instrumented wrapper's
+	// phase.started and let phase.started arrive first; a client that resets
+	// its state on message.start would then lose the phase rows that
+	// arrived before it.
+	emitStep(ctx, "loading_context", "读取最近会话与候选快照", func() {
+		r.loadConversationContext(ctx, st, in)
+	})
+	emitStep(ctx, "embedding_memory", "检索长期记忆", func() {
+		r.loadMemoryContext(ctx, st)
+	})
+	emitStep(ctx, "interpreting", "提取意图与槽位", func() {
+		r.interpret(ctx, st)
+	})
 
 	messages := make([]domainchat.ChatMessage, 0, len(in.History)+len(st.replayedHistory)+2)
 	messages = append(messages, in.History...)
@@ -54,7 +73,6 @@ func (r *Runner) ingress(ctx context.Context, in TurnInput) (*TurnState, error) 
 		Content: in.UserInput,
 	})
 	st.Messages = messages
-	emitFromContext(ctx, Event{Type: EventStart, RunID: meta.runID, ThreadID: in.ThreadID})
 	return st, nil
 }
 
@@ -104,7 +122,20 @@ func (r *Runner) plan(ctx context.Context, st *TurnState) (*TurnState, error) {
 	}
 	messages = append(messages, st.Messages...)
 
+	// The model round is the part of plan that takes the longest, and it is
+	// synchronous from the runner's point of view. A heartbeat rewrites the
+	// active "正在制定下一步计划" row every few seconds so the user can
+	// see the call is making progress instead of silently waiting.
+	//
+	// stopProgress is nil under AGENT_PHASE_EVENTS=false — there is no row
+	// for the heartbeat to update, and startPhaseProgress returns nil to
+	// signal "no ticker was started"; the close is therefore a no-op in
+	// that case.
+	stopProgress := startPhaseProgress(ctx, "正在制定下一步计划")
 	resp, err := r.planModel.Generate(ctx, einomodel.ToEinoMessages(messages))
+	if stopProgress != nil {
+		close(stopProgress)
+	}
 	if err != nil {
 		return nil, err
 	}

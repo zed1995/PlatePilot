@@ -1977,6 +1977,68 @@ context 上（与 `slots.WithPlan` 同样的机制与理由）。
 `internal/memorywrite`）；`shared` 全绿（含 439s 的 Postgres 契约套件），
 `data-pipeline` 全绿。
 
+### M5 范围内补充：Agent Console 流式过程可见性（计划外加入的 M5-08）
+
+不在原 M5-01…M5-07 七片计划里，由用户在 M5 收口后单独触发（2026-10-05）。
+**问题**：发出消息后前端只显示「运行中」，中间的 plan / 工具调用 / 检索过程没有任何
+视觉提示，最后整段答案突然出现。**根因**有三个：
+
+1. `message.start` 在 `ingress` 节点**末尾**才发出（`nodes.go:30-59`），意味着 TTFB 期间
+   （3×DB 读 + memory embedding + LLM Extract）浏览器看不到任何字节。
+2. `planModel.Generate` 是同步非流式调用，5-30s 没有任何事件。
+3. 既有的 `tool.start` / `tool.finish` 虽在流里，但只渲染在右侧「工具链」tab 的
+   `ToolTimeline` 中，**对话区内不可见**。`useAgentTurn` 的 50ms 节流进一步把已经到达
+   的事件压成「每 50ms 一次」视觉。
+
+**修法**：在 SSE 协议上新增 4 个事件（`phase.started` / `phase.finished` /
+`step.started` / `step.finished`），由 `instrumented` 包装器在每个图节点前后发出，
+ingress 内部三个子动作各发一对 step 事件；前端把 phase/step 渲染为对话区**内联**
+的步骤列表，并在状态条显示当前活跃 phase 的标题。`message.start` 提前到 `ingress`
+顶部，让前端一收到请求就知道已开始。
+
+**关键改动**：
+
+- **后端**：`httpapi/sse.go` 新增 4 个 `StreamEventType` 常量与对应 payload 形状
+  （`Phase/PhaseID/Step/StepID/Title/StartedAt/FinishedAt/Outcome`），`payload()` 加
+  4 个 case；`agent/state.go` 给 `Event` 加同名字段；`agent/nodes_instrument.go`（新增）
+  提供 `instrumented` 包装器 + `emitStep` helper + `phaseCounter`（每个 phase 名单独
+  计数，使 plan<->tools 循环的多次进入各有独立 id）；`agent/runner.go` 在
+  `compile()` 里把每个 Lambda 包成 `traced(r, name, instrumented(r, phase, title, fn), detail)`；
+  `nodes.go` 的 `ingress` 把 `EventStart` 提前到顶部，三个子动作改用 `emitStep` 包起来。
+- **配置**：`AgentConfig.PhaseEvents bool`（env `AGENT_PHASE_EVENTS`，默认 true）——
+  关闭时 `instrumented` 直接 pass-through，`sse.payload()` 不发出 4 个新事件，
+  前端 reducer 的 default 分支忽略未知事件，部署退化为老行为。
+- **前端**：`api/chat.ts` 的 `StreamEvent` union 加 4 个成员；`hooks/useAgentTurn.ts`
+  的 `TurnState.phases` 字段 + reducer 4 个 case + 节流分流（关键事件
+  —— `phase.*` / `step.*` / `message.start|end|replace` / `tool.start|finish` / 状态/错误——
+  立即 flush；文本 delta 维持 50ms 批处理）；`components/agent/step-timeline.tsx`
+  （新增）展示 phase + 嵌套 step 行；`message-list.tsx` 在 assistant Bubble **之前**
+  渲染 `<StepTimeline>`（仅当 `streaming === true`，turn 结束后不显示——右栏
+  ToolTimeline 已永久记录）；`turn-status-bar.tsx` 在「运行中」徽章旁追加活跃
+  phase 的中文标题。
+- **测试**：后端 `nodes_instrument_test.go`（6 个用例覆盖开关、id 配对、错误时
+  也发 finished、多次 visit id 递增、step 嵌套、无 parent phase 时降级运行）+
+  `sse_event_test.go` 扩展封闭集合与 3 个 payload 断言；前端 `useAgentTurn.test.ts`
+  加 5 个 phase/step reducer case，`step-timeline.test.tsx` 4 个组件 case，
+  `AgentConsole.test.tsx` 端到端脚本化断言「步骤列表可见 + 关闭后消失」。
+
+**测试结果**：`chat-service/internal/agent` 包 7 个包全绿（含新增 6 个测试），
+`httpapi` 82s 全绿（含新增 3 个测试 + 封闭集合从 11 增至 15），`app` /
+`config` 全绿；`shared` / `data-pipeline` 编译通过；前端 `npm test` 117 个
+用例全绿（含新增 9 个）。
+
+**影响**：
+- 正向：TTFB 期间前端立刻看到 phase.started；plan 阶段显示「正在制定下一步计划」占位
+  + 转圈；工具调用边调用边出现在对话区（不再只藏在右栏）；总耗时不变（不改 planModel
+  内部、不动 ingestion / embedding / retrieval 实现）。
+- 中性：`turn-status-bar` 多了一行副标题、`message-list` 多了一个内联步骤列表；
+  关闭开关 `AGENT_PHASE_EVENTS=false` 部署退化为老行为，无破坏性。
+- 中性：事件总数从 11 增至 15（`message.*` 5 + `tool.*` 2 + `citation` 1 +
+  `state.awaiting_input` / `confirmation.required` / `memory.saved` 3 +
+  `phase.*` / `step.*` 4）；M5-07 总结的"每个新事件都要在四处登记"约定继续生效
+  —— `agent.EventType` 常量、`agent.Event` 字段、`httpapi.StreamEventType` 常量、
+  `sse.payload()` 分支，外加 `httpapi.StreamEvent` 字段与 `app.toStreamEvent` 映射。
+
 ---
 
 ## 里程碑收口（M5-01 … M5-07）

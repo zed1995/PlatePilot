@@ -244,6 +244,33 @@ const (
 	EventEnd EventType = "message.end"
 	// EventError closes a failed turn; the code is an errs.Code.
 	EventError EventType = "error"
+
+	// EventPhaseStarted marks the entry of one of the runner's coarse phases:
+	// ingress (load context + interpret), plan (decide next step), tools
+	// (execute read-only calls), or answer (compose grounded text).
+	//
+	// PhaseID is a run-unique id used to pair start/finish frames across the
+	// plan<->tools loop: a client that keyed off Phase alone would replace the
+	// first round's running row on the second round and never show the loop.
+	EventPhaseStarted EventType = "phase.started"
+	// EventPhaseFinished closes a phase. Outcome is "ok" or "failed"; empty
+	// means the caller left it blank, which is treated as ok by the transport.
+	EventPhaseFinished EventType = "phase.finished"
+	// EventStepStarted marks one of the three sub-actions of ingress
+	// (loading_context, embedding_memory, interpreting). Steps exist only
+	// inside ingress today; if a future phase needs them, the Step vocabulary
+	// grows but the contract (scoped under a phase_id) does not.
+	EventStepStarted EventType = "step.started"
+	// EventStepFinished closes a step with the same outcome vocabulary as
+	// phases.
+	EventStepFinished EventType = "step.finished"
+	// EventPhaseProgress updates a running phase's title without closing
+	// it. A synchronous LLM call inside plan can take tens of seconds and
+	// would otherwise show no bytes for the whole stretch; a heartbeat that
+	// rewords the active phase row is the difference between "still thinking"
+	// and "stuck". The frame is paired to a phase by PhaseID, and the client
+	// replaces the existing row rather than appending a new one.
+	EventPhaseProgress EventType = "phase.progress"
 )
 
 // Event is one observable occurrence in a turn.
@@ -289,6 +316,26 @@ type Event struct {
 	Warnings     []string
 	Code         string
 	Message      string
+
+	// Phase / step events.
+	//
+	// Phase is "ingress" / "plan" / "tools" / "answer"; Step is empty on
+	// phase frames and one of "loading_context" / "embedding_memory" /
+	// "interpreting" on step frames. PhaseID and StepID are run-unique
+	// server-assigned ids a client uses to match start and finish frames
+	// across the plan<->tools loop.
+	//
+	// StartedAt / FinishedAt are unix milliseconds stamped by the runner at
+	// the moment of transition; the transport passes them through unchanged
+	// so a client's elapsed counter agrees with the server's.
+	Phase      string
+	PhaseID    string
+	Step       string
+	StepID     string
+	Title      string
+	StartedAt  int64
+	FinishedAt int64
+	Outcome    string
 }
 
 type emitterKey struct{}

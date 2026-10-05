@@ -10,6 +10,7 @@ import type { MessageView } from '../../api/types'
 import type { MemorySavedItem, TurnState } from '../../hooks/useAgentTurn'
 import { ErrorState } from '../error-state'
 import { AnswerText } from './answer-text'
+import { StepTimeline } from './step-timeline'
 import { cn } from '../../lib/utils'
 
 export interface MessageListProps {
@@ -34,11 +35,15 @@ export function MessageList({
 
   // Follow the tail while text arrives. Only while streaming: yanking the
   // viewport on a re-read of history would fight the user's scroll.
+  //
+  // The deps cover both the bubble text and the step timeline: a phase
+  // change adds height to the transcript and the user would have to scroll
+  // manually to keep watching it grow otherwise.
   useEffect(() => {
     if (!streaming) return
     const node = scroller.current
     if (node) node.scrollTop = node.scrollHeight
-  }, [streaming, turn.text, turn.tools.length])
+  }, [streaming, turn.text, turn.tools.length, turn.phases.length])
 
   const hasTurn = Boolean(prompt) || Boolean(turn.text) || turn.tools.length > 0
 
@@ -55,6 +60,14 @@ export function MessageList({
       ))}
 
       {prompt && <Bubble role="user" content={prompt} />}
+
+      {/* The inline step timeline appears while the turn is in flight and
+          fades out of relevance once it ends: a settled turn's phases
+          belong to history, and the right-rail replay already shows them.
+          The component renders nothing when no phase events have arrived,
+          so a deployment that turned AGENT_PHASE_EVENTS off gets exactly
+          the same render as before this change. */}
+      {streaming && <StepTimeline phases={turn.phases} />}
 
       {hasTurn && (
         <Bubble

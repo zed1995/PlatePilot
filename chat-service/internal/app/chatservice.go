@@ -370,6 +370,20 @@ func toStreamEvent(ev agent.Event) httpapi.StreamEvent {
 		MemoryType:      ev.MemoryType,
 		MemoryContent:   ev.MemoryContent,
 		MemoryRefreshed: ev.MemoryRefreshed,
+		// Phase / step events pass through with no transformation: the agent
+		// and the transport already agree on field names and the only thing
+		// they disagree on is the field they live in. A field that did not
+		// make the hop would render the front-end's step row with empty
+		// timestamps and a blank title, which is exactly the failure mode the
+		// events exist to prevent.
+		Phase:      ev.Phase,
+		PhaseID:    ev.PhaseID,
+		Step:       ev.Step,
+		StepID:     ev.StepID,
+		Title:      ev.Title,
+		StartedAt:  ev.StartedAt,
+		FinishedAt: ev.FinishedAt,
+		Outcome:    ev.Outcome,
 	}
 	if ev.Type == agent.EventToolFinish {
 		if ev.OK {
