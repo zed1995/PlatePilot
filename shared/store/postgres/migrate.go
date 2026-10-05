@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/zed1995/platepilot/shared/domain/errs"
 )
 
 //go:embed migrations/*.sql
@@ -188,4 +190,123 @@ func (c *Client) MigrationStatuses(ctx context.Context, migrations []Migration) 
 		out = append(out, MigrationStatus{Version: m.Version, Applied: applied, AppliedAt: appliedAt})
 	}
 	return out, nil
+}
+
+// PendingMigrations returns the embedded migrations this database has not
+// recorded, in the order they must be applied.
+//
+// It is read-only by construction. Applying migrations is the data pipeline's
+// job, and a serving process that quietly ran DDL would be a second,
+// unreviewed writer of the schema.
+//
+// A database without a schema_migrations table is not an error here, it is the
+// extreme case of "nothing has been applied": to_regclass reports the missing
+// relation as NULL rather than raising, so the caller hears "every migration is
+// pending" instead of an undefined_table error about the bookkeeping table
+// itself.
+func (c *Client) PendingMigrations(ctx context.Context) ([]Migration, error) {
+	ctx, cancel := c.withTimeout(ctx)
+	defer cancel()
+
+	migrations, err := Migrations()
+	if err != nil {
+		return nil, err
+	}
+
+	var tracked bool
+	if err := c.pool.QueryRow(ctx,
+		"SELECT to_regclass('schema_migrations') IS NOT NULL").Scan(&tracked); err != nil {
+		return nil, operationError("postgres: look up schema_migrations", err)
+	}
+	if !tracked {
+		return migrations, nil
+	}
+
+	applied, err := c.appliedVersions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	pending := make([]Migration, 0, len(migrations))
+	for _, m := range migrations {
+		if _, ok := applied[m.Version]; !ok {
+			pending = append(pending, m)
+		}
+	}
+	return pending, nil
+}
+
+// appliedVersions reads the set of recorded migration versions.
+func (c *Client) appliedVersions(ctx context.Context) (map[string]struct{}, error) {
+	rows, err := c.pool.Query(ctx, "SELECT version FROM schema_migrations")
+	if err != nil {
+		return nil, operationError("postgres: read schema_migrations", err)
+	}
+	defer rows.Close()
+
+	applied := make(map[string]struct{})
+	for rows.Next() {
+		var version string
+		if err := rows.Scan(&version); err != nil {
+			return nil, operationError("postgres: scan schema_migrations", err)
+		}
+		applied[version] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, operationError("postgres: read schema_migrations", err)
+	}
+	return applied, nil
+}
+
+// VerifySchema fails when this database is behind the migrations embedded in
+// the binary.
+//
+// It exists because both halves of that mismatch are quiet. The audit path
+// never fails a turn — a write error there is logged and the turn carries on —
+// so a statement against a column that does not exist yet loses rows and tells
+// the user nothing. The read path does surface it, but as a generic upstream
+// error, reported while someone is trying to diagnose something else. Refusing
+// to start collapses both into one message that names the missing migration and
+// the command that applies it.
+//
+// It deliberately does not check the opposite direction. The bookkeeping table
+// records what has been applied, not what the schema contains, so a database
+// that is ahead of the binary — a rollback without a schema rollback — passes
+// here and is reported at the first write instead, by operationError's
+// not_null_violation case.
+//
+// An unreachable database is not this function's concern either: Connect
+// already pinged it, and "reachable but stale" is the fault worth naming
+// separately from "unreachable".
+func (c *Client) VerifySchema(ctx context.Context) error {
+	pending, err := c.PendingMigrations(ctx)
+	if err != nil {
+		return err
+	}
+	if len(pending) == 0 {
+		return nil
+	}
+	versions := make([]string, 0, len(pending))
+	for _, m := range pending {
+		versions = append(versions, m.Version)
+	}
+	return errs.New(errs.CodeInvalidArgument, fmt.Sprintf(
+		"postgres: database %q is behind this binary: %d migration(s) not applied (%s); run `make migrate`",
+		c.connectedDatabase(), len(pending), strings.Join(versions, ", ")))
+}
+
+// connectedDatabase reports the database the pool actually opened.
+//
+// It is deliberately not DatabaseName, which returns the configured label: a
+// deployment may set that label independently of the DSN, and a message whose
+// single job is to say which database is behind must not be able to name a
+// different one.
+func (c *Client) connectedDatabase() string {
+	if c.pool != nil {
+		if cfg := c.pool.Config(); cfg != nil && cfg.ConnConfig != nil {
+			if name := cfg.ConnConfig.Database; name != "" {
+				return name
+			}
+		}
+	}
+	return c.database
 }

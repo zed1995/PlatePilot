@@ -2,8 +2,14 @@
 
 通用约定在 [../AGENTS.md](../AGENTS.md)；本文件只写这个 CLI。
 
-批处理侧：**它是唯一写库的进程**。`chat-service` 只读，`web/` 只读。
-`migrate` 也归它——不要在任何服务启动时自动应用迁移。
+批处理侧：**导入餐厅语料的写侧**——把 Google Local 的餐馆与评论读进来，清洗、
+生成知识文档与向量。它写的是内容表：`restaurants`、`reviews`、
+`review_summaries`、`knowledge_documents`，以及入库审计用的
+`ingestion_batches` / `ingestion_rejections`。在线侧的运行时数据（会话、
+Agent run 审计、记忆、预约）归 `chat-service` 写，两边表集不重叠；`web/` 不直接连库。
+（`boundaries` 目前没有代码写入——`0001_init` 建表，几何由
+`data/boundaries/*.geojson` 手工导入，应用侧只读。）
+`migrate` 也归它——**DDL 与 schema 变更只在这里**，不要在任何服务启动时自动应用迁移。
 
 ```bash
 make check-config    # 打印解析后的配置

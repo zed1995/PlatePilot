@@ -3,7 +3,14 @@
 通用约定在 [../AGENTS.md](../AGENTS.md)；本文件只写这个服务。
 
 在线侧：HTTP + SSE 对话 API、Agent 运行时、`/admin/v1` 只读运维 API。
-**它只读数据库**——任何写库行为属于 `data-pipeline`。
+**语料只读、运行时可写**：`restaurants` / `reviews` / `knowledge_documents`
+这类由 `data-pipeline` 导入的内容表，本服务只读（走读端口）；它写的是自己的
+运行时表——会话 `conversations` / `conversation_messages` /
+`conversation_checkpoints` / `conversation_candidates`，Agent 运行审计
+`agent_runs` / `run_nodes` / `tool_calls`，以及 `user_memories`、
+`reservations` / `reservation_slots`。两边表集不重叠，谁也不写对方的表。
+**DDL 与 schema 变更只属于 `data-pipeline`**：本服务不建表、不迁移，只在启动时
+`VerifySchema` 核对（见下）。
 
 ```bash
 make run         # :8080
@@ -56,6 +63,10 @@ make eval-retrieval   # 检索指标门禁（需 make -C .. pg-up）
   `make run-admin` / `ADMIN_ENABLED=true` 只在你本机用。
 - 新配置项进 `internal/config`（含默认值、校验、`Redacted()`，密钥不进日志），
   并同步根 `.env.example`。
+- 启动时用内嵌迁移列表核对 `schema_migrations`（`postgres.Client.VerifySchema`）：
+  落后就**拒绝启动**并点名缺哪个迁移。这个检查只读——`make migrate` 是
+  `data-pipeline` 的事，本服务不自己改 schema。新增迁移时不用动它，它是读
+  `Migrations()` 的。
 - 错误一律用 `shared/domain/errs` 的错误码，由 `internal/httperr` 统一映射成 HTTP 状态，
   别在 handler 里自己造状态码语义。
 - 面向用户的解释文案用中文。

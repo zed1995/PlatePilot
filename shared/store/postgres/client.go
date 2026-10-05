@@ -147,8 +147,29 @@ func operationError(op string, err error) error {
 			return errs.Wrap(errs.CodeInvalidArgument, op+": referenced row does not exist", err)
 		case "23514", "22001", "22P02": // check_violation, string_data_right_truncation, invalid_text_representation
 			return errs.Wrap(errs.CodeInvalidArgument, op+": value rejected by the schema: "+pgErr.Message, err)
-		case "42P01": // undefined_table
-			return errs.Wrap(errs.CodeInvalidArgument, op+": relation does not exist; run migrate", err)
+		// Schema drift, in the direction that costs the most: the statement
+		// names an object this database does not have, so the binary is ahead
+		// of the schema. These belong together because they are one mistake
+		// seen from different statements, and 42703 in particular is what a
+		// migration that adds a column looks like from the side that has not
+		// been redeployed with it.
+		//
+		// Without this case they fall through to the provider_unavailable
+		// default below, and "the schema is behind" is then reported as "the
+		// database is down" — a reachable database described as an outage. The
+		// audit path is where that hurts most: it swallows write errors by
+		// design, so a 42703 there loses rows and says nothing to the user.
+		case "42P01", "42703", "42883", "42704", "3F000":
+			// undefined_table, undefined_column, undefined_function,
+			// undefined_object, invalid_schema_name
+			return errs.Wrap(errs.CodeInvalidArgument, op+": schema object does not exist; run migrate", err)
+		// Schema drift in the other direction: the schema is ahead of the
+		// binary, which is what a rollback without a schema rollback looks
+		// like. The column exists and this statement simply never supplied it,
+		// so the hint is the mirror image of the one above.
+		case "23502": // not_null_violation
+			return errs.Wrap(errs.CodeInvalidArgument, op+": column "+pgErr.ColumnName+
+				" must not be null; the schema is ahead of this binary, so run the matching binary or roll the schema back", err)
 		case "57014": // query_canceled
 			return errs.Wrap(errs.CodeProviderTimeout, op+": query canceled", err)
 		case "53300", "08006", "08003": // too_many_connections, connection_failure, cannot_connect_now

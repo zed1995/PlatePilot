@@ -371,6 +371,16 @@ func Connect(ctx context.Context, cfg config.Config, logger *slog.Logger, versio
 		if err != nil {
 			return nil, fmt.Errorf("connect to postgres: %w", err)
 		}
+		// A service whose schema is behind its binary must not start. The
+		// alternative is not "it works anyway": the audit path swallows write
+		// errors by design, so a missing column costs the trail silently, and
+		// the read path reports it as an upstream outage. Failing here is the
+		// one place the fault is cheap to see. The check only reads — applying
+		// migrations belongs to the pipeline.
+		if err := client.VerifySchema(ctx); err != nil {
+			_ = client.Close(context.WithoutCancel(ctx))
+			return nil, fmt.Errorf("verify postgres schema: %w", err)
+		}
 		// Both read-side repositories come off the same pool. They are separate
 		// types because they answer different questions -- hard-filtered
 		// restaurants versus scoped documents -- but one connection is enough

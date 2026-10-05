@@ -27,7 +27,9 @@
   连注释里都不许出现 `postgres` / `postgis` / `pgvector` / `sql`，这是防止
   某个具体后端悄悄爬回领域层的手段。
 - **迁移由 `data-pipeline migrate` 应用**，不由本库或服务启动时自行执行。
-  SQL 只写在 `store/postgres/migrations/`。
+  SQL 只写在 `store/postgres/migrations/`。服务侧的 `Client.VerifySchema` 只**读**
+  `schema_migrations` 核对是否落后（落后就拒绝启动），它不应用任何迁移，新增迁移
+  也不用改它——它读的是 `Migrations()`。
 - 新增仓储方法要同时在 `store/contract` 加 case，`memory` 和 `postgres` 都要实现，
   保证离线与真库跑同一套断言。
 - Postgres 相关测试在连不上库时 **skip**（`PLATEPILOT_TEST_POSTGRES_DSN` 指别的实例），
