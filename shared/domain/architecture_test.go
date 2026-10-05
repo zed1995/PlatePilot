@@ -16,8 +16,8 @@ const domainImportAllowPrefix = "github.com/zed1995/platepilot/shared/domain"
 
 // TestDomainLayerHasNoFrameworkOrVendorDependencies enforces the PRD's rule that
 // the domain layer depends on no database driver, Eino, Hertz, Ollama, or vendor
-// SDK. It is the test that made the Atlas-to-PostgreSQL migration cheap: the 798
-// lines of domain DTOs never named a storage engine.
+// SDK. It is what keeps a change of storage engine cheap: the 798 lines of
+// domain DTOs never name a storage engine.
 func TestDomainLayerHasNoFrameworkOrVendorDependencies(t *testing.T) {
 	var checked int
 	err := filepath.WalkDir(".", func(path string, entry os.DirEntry, err error) error {
@@ -126,11 +126,11 @@ func TestServicesDoNotDependOnEachOther(t *testing.T) {
 }
 
 // TestDomainLayerDoesNotNameAStorageEngine is a narrower, more legible guard
-// than the import check above: the domain must not even mention a storage engine
-// by name in a comment or a type, because that is how "MongoDB" or "Atlas" tends
-// to creep back into a supposedly backend-neutral layer.
+// than the import check above: the domain must not even mention the storage
+// engine by name in a comment or a type, because storage vocabulary is how a
+// backend starts shaping a supposedly backend-neutral layer.
 func TestDomainLayerDoesNotNameAStorageEngine(t *testing.T) {
-	banned := []string{"mongo", "atlas", "postgres", "postgis", "pgvector", "sql"}
+	banned := []string{"postgres", "postgis", "pgvector", "sql"}
 	err := filepath.WalkDir(".", func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
 			return err

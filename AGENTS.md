@@ -66,9 +66,8 @@ data-pipeline ─┘
 - `shared` **绝不 import 任何服务**；两个服务之间**绝不互相 import**，要共用就
   下沉到 `shared`。
 - **database driver、Hertz、Eino、Ollama 这些具体技术不得越过各自的边界**：
-  - `shared/domain/**` 只允许依赖标准库和自身：连 `mongo` / `atlas` /
-    `postgres` / `postgis` / `pgvector` / `sql` 这些词出现在源码或注释里都会
-    让测试失败；
+  - `shared/domain/**` 只允许依赖标准库和自身：连 `postgres` / `postgis` /
+    `pgvector` / `sql` 这些词出现在源码或注释里都会让测试失败；
   - `chat-service/internal/agent/**` 之外不许出现 Eino 类型，其中 Eino 的 message
     / schema DTO 进一步只准出现在 `agent/einomodel` 和 `agent/toolreg`；
   - `chat-service/internal/admin` 不许 import 具体的 store 适配器，只能面向端口。

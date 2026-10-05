@@ -1,8 +1,7 @@
 # Local PostgreSQL for PlatePilot.
 #
-# Replaces MongoDB Atlas. The image is built rather than pulled because no
-# published image carries both pgvector and PostGIS for arm64; see
-# deploy/postgres/Dockerfile.
+# The image is built rather than pulled because no published image carries
+# both pgvector and PostGIS for arm64; see deploy/postgres/Dockerfile.
 services:
   postgres:
     build:

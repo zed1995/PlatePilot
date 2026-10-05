@@ -217,6 +217,12 @@ revisit.
 - **Chinese text search is trigram-based.** `pg_trgm` handles Chinese *fuzzy*
   matching but is not a Chinese tokenizer. Adequate for name/address matching;
   revisit if the corpus grows Chinese-language descriptive content.
+- **Identity is a request header, not authentication.** `/v1` trusts whatever
+  `X-User-ID` the caller sends, and `/admin/v1` is gated only by a loopback
+  check — there are no credentials anywhere. This is deliberate for a local,
+  single-user demo (the admin rationale is in `docs/platepilot-admin-prd.md`
+  §5.3–5.4), and it is the first thing to replace before any multi-user or
+  hosted deployment.
 - **One Postgres instance is a single point of failure.** Acceptable for a
   local-first MVP; it is the explicit trade for zero per-month cost.
 - **The full corpus lives on local disk** (2.9 GB, of which `reviews` is 2.7 GB).
@@ -224,7 +230,7 @@ revisit.
 ## Data pipeline (M1)
 
 ```bash
-# create collections + indexes (idempotent; add --indexes-only to just add indexes)
+# create tables + indexes (idempotent; already-applied versions are skipped)
 make migrate
 
 # parse and count without touching the database
@@ -334,7 +340,7 @@ half-written corpus behind. `data/processed/` is git-ignored.
 
 `data/processed/` is a local artifact: re-run `prefilter` after re-importing
 restaurants, since the joinable set is read from the current `restaurants`
-collection.
+table.
 
 ## Observing a long import
 

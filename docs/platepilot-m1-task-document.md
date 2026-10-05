@@ -241,7 +241,7 @@ PostgreSQL 17 + pgvector + PostGIS + pg_trgm
 `data-pipeline` 不 import `chat-service`；`shared/domain` 不 import pgx 或任何 SQL 驱动。
 
 `shared/domain/architecture_test.go` 有一条测试守卫这个边界：领域层源码中不得出现
-`mongo` / `atlas` / `postgres` / `postgis` / `pgvector` / `sql` 等存储引擎字样。
+`postgres` / `postgis` / `pgvector` / `sql` 等存储引擎字样。
 
 ### 2.2 目标目录结构（M1 结束时）
 
@@ -1000,11 +1000,11 @@ data-pipeline import --stage=all --limit=100000   # 第二次
 
 **实现要点**
 
-- 统计**物化**进 `restaurants.review_stats`，不要每次搜索实时 `$lookup + count`（PRD §4.6 明确要求）。
+- 统计**物化**进 `restaurants` 的统计列，不要每次搜索实时 `COUNT(*)`（PRD §4.6 明确要求）。
 - 计数增量 vs 重建：`--stage=stats` 是全量重算，可重复执行以修复漂移。
 - `source_review_count` 与 `stored_review_count` **语义不同，禁止互相覆盖**；`computed_avg` 只在样本足够时展示，且标注"入库样本平均"。
 - 截顶判定：`num_of_reviews` 达到 9998（或特定阈值）时置 `source_review_count_capped=true`，不当作精确值。
-- 聚合管道用 `$match`（按 restaurant_id 分批）→ `$group` → `$merge` 写回，分批避免大集合全表聚合超时。
+- 聚合用一条 `UPDATE restaurants … FROM (SELECT restaurant_id, count(*) … GROUP BY restaurant_id)` 写回，按 `restaurant_id` 分批，避免大表全表聚合超时。
 
 **依赖**：M1-05。  
 **工作量**：M。

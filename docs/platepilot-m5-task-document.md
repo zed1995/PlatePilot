@@ -1047,21 +1047,31 @@ psql "$POSTGRES_DSN" -c \
   - Eino ToolsNode 与工具描述：<https://www.cloudwego.io/docs/eino/core_modules/components/tools_node_guide/>
   - OpenAI Chat Completions（工具调用与结构化输出）：<https://platform.openai.com/docs/api-reference/chat>
   - pgvector（HNSW 与过滤）：<https://github.com/pgvector/pgvector>
-  - Hertz SSE：<https://github.com/hertz-contrib/sse>
+  - Hertz SSE：<https://pkg.go.dev/github.com/cloudwego/hertz/pkg/protocol/sse>
 
 ## 附录 E：实施记录（M5 实际落地时的发现）
 
 > 按 `AGENTS.md` §8：实施过程中的偏差追加在此处，不回改前面的计划。
 > 记录格式：[任务 ID] 计划 vs 实际 + 原因 + 影响。
 
-*（待实施后填写。已知需要在实施时确认的项：）*
+开工时列出的四项待确认项均已关闭，逐条记录如下（细节见对应任务小节）：
 
-1. `POST /v1/conversations/:id/resume`：计划中的 PRD §7.2 端点在 M5 由
-   `GET /v1/conversations/:id`（读状态）+ 继续发消息替代，需确认是否需要别名端点。
-2. 自然语言"附近/近我"：无地理编码器，M5 降级为 borough/neighborhood + warning，
-   需确认是否接受该限制或引入 M6 的 geocoder。
-3. `chat-service check-config`：M4 文档曾承诺，M5-01 作为可选补做或明确放弃。
-4. Conversation 未读/离线工具：`Resume` 语义（读 checkpoint 继续 vs 回放整轮）需在 M5-05 落地时定型。
+1. `POST /v1/conversations/:id/resume` —— **关闭：不新增该端点。**
+   PRD §7.2 里的恢复端点由「继续发下一条消息」+ `GET /v1/conversations/:id`
+   （读状态）替代：`ingress` 读到 checkpoint 后补槽并续跑既有 `PendingAction`，
+   复用 M4-08 的 `Runner.Resume` 语义。决定见 §M5-05「状态机扩展」第 3 条。
+2. 自然语言"附近/近我" —— **关闭：降级为行政区/商圈并留痕。**
+   项目没有地理编码器，无法把"附近"变成可度量的中心点；
+   `slots.normalize.warnUngeocodableProximity` 把它降级为 borough/neighborhood
+   过滤并写入 `Plan.Warnings`，而不是静默丢弃。M6 未引入 geocoder，
+   该限制作为已知取舍保留在 `README.md` §Known limitations。
+3. `chat-service check-config` —— **关闭：已补做。**
+   `chat-service/main.go` 提供 `check-config` 子命令，加载并校验配置后打印摘要并退出
+   （`chat-service/Makefile:check-config`），与 `data-pipeline check-config` 对齐。
+4. Conversation 未读/离线工具与 `Resume` 语义 —— **关闭：定型为"读 checkpoint 继续"。**
+   不重放整轮：回放走只读的 run/trace 端点，续跑走「下一条消息 + checkpoint」。
+   两者的分工在 §M5-05「实现要点」中确立——历史回放只取 user/assistant 文本，
+   候选与挂起状态走 checkpoint，两条路径互不干扰。
 
 ---
 

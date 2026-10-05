@@ -1,8 +1,7 @@
 // Package postgres is the PostgreSQL adapter: the system of record for
 // restaurants, reviews, knowledge documents, and ingestion audit.
 //
-// It replaces the MongoDB adapter. PostgreSQL was chosen because the product
-// needs three things in one store that a document database makes awkward:
+// PostgreSQL was chosen because the product needs three things in one store:
 // structured hard filters, geography, and vector recall. See
 // deploy/postgres/migrations for the schema and the index strategy.
 package postgres

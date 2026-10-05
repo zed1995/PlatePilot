@@ -24,8 +24,8 @@
 
 - **domain 层只准依赖标准库和 `shared/domain` 自身**（`domain/architecture_test.go`
   的两个测试用 AST 强制）：它在持久化之上，不认识任何一种存储引擎。
-  连注释里都不许出现 `mongo` / `atlas` / `postgres` / `postgis` / `pgvector` /
-  `sql`，这是防止某个具体后端悄悄爬回领域层的手段。
+  连注释里都不许出现 `postgres` / `postgis` / `pgvector` / `sql`，这是防止
+  某个具体后端悄悄爬回领域层的手段。
 - **迁移由 `data-pipeline migrate` 应用**，不由本库或服务启动时自行执行。
   SQL 只写在 `store/postgres/migrations/`。
 - 新增仓储方法要同时在 `store/contract` 加 case，`memory` 和 `postgres` 都要实现，

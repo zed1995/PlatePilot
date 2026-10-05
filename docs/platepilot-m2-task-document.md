@@ -5,7 +5,7 @@
 > 里程碑目标：把 M1 已落库的 36,133 家餐厅与 4,156,055 条评论，变成**可向量化、可按 scope 检索、可审计、可增量重建**的知识文档层
 > 退出条件（Gate B）：≥500 家餐厅生成餐厅级文档；≥5,000 条 evidence chunk 生成成功；所有向量均为 1024 维；向量检索能返回正确 scope
 
-> 存储层沿用自建 PostgreSQL（pgvector + PostGIS + pg_trgm）。PRD 中的 Atlas Vector Search 语义，在本项目中由 pgvector HNSW + partial index 实现，语义等价、运维更简单。
+> 存储层为自建 PostgreSQL（pgvector + PostGIS + pg_trgm）。餐厅级与证据级向量召回由 pgvector HNSW + partial index 实现，无需外部向量或搜索服务。
 
 ## 0. 如何使用本文档
 

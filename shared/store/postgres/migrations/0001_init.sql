@@ -1,7 +1,7 @@
 -- PlatePilot initial schema.
 --
--- Replaces the MongoDB/Atlas design. The shape follows from three measured
--- properties of the corpus rather than from convenience:
+-- The shape follows from three measured properties of the corpus rather than
+-- from convenience:
 --
 --   * 36k restaurants and ~4M reviews fit comfortably on one machine, so the
 --     schema favours query expressiveness over sharding or horizontal scale.
@@ -135,8 +135,8 @@ CREATE INDEX IF NOT EXISTS restaurants_rating_source
     ON restaurants (rating_source_avg DESC)
     WHERE rating_source_avg IS NOT NULL;
 
--- Fuzzy name/address matching. pg_trgm covers the typo-tolerant lookup that
--- Atlas Search provided; it is the reason no external search engine is needed.
+-- Fuzzy name/address matching. pg_trgm covers typo-tolerant lookup, which is
+-- the reason no external search engine is needed.
 CREATE INDEX IF NOT EXISTS restaurants_name_trgm
     ON restaurants USING gin (name gin_trgm_ops);
 

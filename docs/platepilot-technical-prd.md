@@ -2,8 +2,8 @@
 
 > PlatePilot：Evidence-grounded Restaurant Discovery Agent
 
-> 版本：v0.12（Draft）  
-> 日期：2026-09-29  
+> 版本：v0.14  
+> 日期：2026-10-05  
 > 项目定位：练手型、Agent 核心、Go 实现、远端 Chat Provider 负责聊天模型、PostgreSQL（pgvector + PostGIS）负责数据和向量  
 > 本次重点：Eino Agent 编排、OpenAI-Compatible Chat Provider、本地 Qwen Embedding、PostgreSQL（pgvector + PostGIS）和 Go 技术栈
 > 实施计划：[platepilot-implementation-plan.md](platepilot-implementation-plan.md)
@@ -286,193 +286,168 @@ From the business
 
 ### 4.1 存储分层
 
-MongoDB Atlas 同时承载内容数据、向量数据和 Agent 运行数据，本地只运行 Go 服务、Eino 和 Qwen 模型服务：
+一个 PostgreSQL 实例同时承载内容数据、向量数据、地理检索和 Agent 运行数据，本地只运行 Go 服务、PostgreSQL 和 Qwen 模型服务，不需要独立的搜索引擎或向量数据库：
 
 ```text
 Google Local Raw Data
        |
        v
-MongoDB Atlas Content Collections
-  restaurants
-  restaurant_documents   # 已合并进 restaurants（§4.4）
+内容表
+  restaurants            # 含内嵌的 hours / attributes_raw / relative_results（§4.4）
   reviews
   review_summaries
        |
        v
-MongoDB Atlas Vector Collections
-  knowledge_documents
+知识表（含向量）
+  knowledge_documents    # pgvector，按 borough × retrieval_scope 分区索引
   user_memories
        |
        v
-MongoDB Atlas Agent Collections
+Agent 运行表
   conversations
   conversation_checkpoints
+  conversation_messages
+  conversation_candidates
   agent_runs
   tool_calls
-  evaluation_cases
+  run_nodes
        |
        v
-Optional Mock Collections
-  mock_policies
-  mock_inventory
-  mock_holds
-  mock_reservations
+可选 Mock 预约表
+  reservation_slots
+  reservations
+       |
+       v
+地理与导入审计
+  boundaries
+  ingestion_batches / ingestion_rejections
 ```
 
-### 4.2 Collection 总览
+扩展由 `0001_init.sql` 建立：`vector`（pgvector）、`postgis`、`pg_trgm`。
 
-| Collection | 用途 | 主要索引 |
+### 4.2 表总览
+
+Schema 由 `shared/store/postgres/migrations/` 下的版本化 SQL 建立，`make migrate` 幂等执行
+（已应用版本记在 `schema_migrations`）。
+
+| 表 | 用途 | 主要索引 |
 |---|---|---|
-| `restaurants` | 餐厅结构化主数据 | `source_record_id` 唯一、地理索引、筛选项 |
-| `restaurant_documents` | 营业时间、属性和原始资料（**已合并进 `restaurants`**，见 §4.4） | — |
-| `reviews` | 精选评论和必要元数据 | `restaurant_id + reviewed_at`、`text_hash` |
-| `review_summaries` | 预计算主题和情绪摘要 | `restaurant_id + topic` |
-| `knowledge_documents` | 可嵌入知识 chunk | `vector_index`、`restaurant_id + is_active` |
-| `user_memories` | 长期偏好 | `user_id`、可选向量索引 |
-| `conversations` | 会话元数据 | `user_id + updated_at` |
-| `conversation_checkpoints` | 可恢复 Agent 状态 | `thread_id + version` |
-| `agent_runs` | 单次运行和状态轨迹 | `trace_id`、`thread_id + started_at` |
-| `tool_calls` | 工具调用审计 | `run_id`、`tool_name` |
-| `evaluation_cases` | RAG/Agent 评测样本 | `suite_id`、`case_id` |
-| `mock_*` | 可选预约演示 | 按业务场景创建 |
+| `restaurants` | 餐厅结构化主数据（hours / attributes_raw / relative_results 为内嵌列） | `source_record_id` 唯一、`location` GiST、`cuisine_tags` GIN、`price_level`、`rating_source_avg DESC`、`is_active_for_demo` 部分索引 |
+| `reviews` | 精选评论和必要元数据 | `(restaurant_id, reviewed_at DESC)`、`(restaurant_id, text_hash, rating, reviewed_at)` 唯一 |
+| `review_summaries` | 预计算主题和情绪摘要 | 主键 `(restaurant_id, topic)` |
+| `knowledge_documents` | 可嵌入知识 chunk（pgvector） | `(restaurant_id, retrieval_scope, doc_type, content_hash)` 唯一、按 borough × retrieval_scope 的 HNSW 部分索引 |
+| `user_memories` | 长期偏好 | `(user_id, updated_at DESC) WHERE deleted_at IS NULL` |
+| `conversations` | 会话元数据 | `(user_id, updated_at DESC)` |
+| `conversation_checkpoints` | 可恢复 Agent 状态（每线程一行，含挂起动作） | 主键 `thread_id` |
+| `conversation_messages` | 线程消息，供历史回放与分页 | 唯一 `(thread_id, seq)`、`(thread_id, seq DESC)` |
+| `conversation_candidates` | 最近一次搜索的候选快照，"第二家"的位置语义靠它 | 主键 `(thread_id, position)` |
+| `agent_runs` | 单次运行与状态轨迹 | `trace_id` 唯一、`(thread_id, started_at DESC)`、`started_at DESC` |
+| `tool_calls` | 工具调用审计 | `(run_id, created_at)` |
+| `run_nodes` | 节点级 trace：一次运行经过的每个图节点 | 唯一 `(run_id, seq)`、`(trace_id, seq)` |
+| `reservation_slots` | Mock 库存 | `(restaurant_id, slot_date, slot_time)`、`CHECK (booked <= capacity)` |
+| `reservations` | Mock 预约 / hold | `idempotency_key` 唯一、`(hold_expires_at) WHERE status='held'` |
+| `boundaries` | 行政区多边形（NYC DCP） | `geom` GiST、`name` GIN(pg_trgm) |
+| `ingestion_batches` / `ingestion_rejections` | 导入审计与拒绝记录 | `(stage, started_at DESC)`、`batch_id` |
+
+RAG 与 Agent 的评测样本是仓库内的测试数据
+（`chat-service/internal/retrieval/testdata`、`chat-service/internal/agent/testdata`），
+不落库为 `evaluation_cases` 表；导入审计的拒绝原因按开放式 `jsonb` 计数存
+`ingestion_batches.reject_reasons`，不为每种原因加列。
 
 ### 4.3 `restaurants`
 
-一个餐厅尽量保存为一个文档，避免读取主信息时多次查询：
+一行一店，读取主信息不需要第二次查询：
 
-```json
-{
-  "_id": "uuid",
-  "source": "google_local_2021",
-  "source_record_id": "gmap_id",
-  "name": "Joe's Pizza",
-  "address": "7 Carmine St, New York, NY",
-  "location": {
-    "type": "Point",
-    "coordinates": [-74.002, 40.730]
-  },
-  "categories": ["Pizza restaurant", "Restaurant"],
-  "cuisine_tags": ["pizza", "italian"],
-  "description": "Short summary",
-  "price": {
-    "raw": "$$",
-    "level": 2
-  },
-  "rating": {
-    "source_avg": 4.5,
-    "computed_avg": 4.48,
-    "rating_count_for_computed_avg": 180
-  },
-  "review_stats": {
-    "source_review_count": 9998,
-    "source_review_count_capped": true,
-    "stored_review_count": 9998,
-    "text_review_count": 5200,
-    "representative_review_count": 25,
-    "embedded_review_count": 8,
-    "last_reviewed_at": "2021-09-01T00:00:00Z",
-    "stats_updated_at": "2026-09-29T00:00:00Z"
-  },
-  "attributes": {
-    "accepts_reservations": "unknown",
-    "wheelchair_accessible": "true",
-    "outdoor_seating": "unknown",
-    "takeout": "true",
-    "delivery": "true",
-    "dine_in": "true",
-    "good_for_kids": "true",
-    "good_for_groups": "true",
-    "atmosphere_tags": ["casual"],
-    "popular_for_tags": ["lunch", "dinner"]
-  },
-  "snapshot_status": "open",
-  "is_active_for_demo": true,
-  "observed_at": "2021-09-01T00:00:00Z",
-  "source_url": "https://www.google.com/maps/...",
-  "created_at": "2026-09-29T00:00:00Z",
-  "updated_at": "2026-09-29T00:00:00Z"
-}
-```
+| 列 | 类型 | 来源 / 说明 |
+|---|---|---|
+| `id` | `bigint identity` | 内部代理键；外部标识见下一行 |
+| `source` / `source_record_id` | `text` | `google_local_2021` / Google `gmap_id`，后者唯一（重导入是 upsert） |
+| `name` / `address` | `text` | 名称、地址；两列都有 `pg_trgm` GIN 支持模糊匹配 |
+| `borough` | `text` | 导入时由 DCP 多边形判定；仅 `manhattan`/`brooklyn`/`queens`/`bronx`/`staten_island`，区外为 `NULL` |
+| `location` | `geography(Point,4326)` | PostGIS；距离以米为单位，`ST_DWithin` 走 GiST |
+| `categories` / `cuisine_tags` | `text[]` | 原始 `category` 与归一化菜系；后者有 GIN 索引 |
+| `description` | `text` | 短描述，进语义文档 |
+| `price_raw` / `price_level` | `text` / `smallint` | 异常货币字符保留在 `price_raw`；`price_level` 限 1–4 |
+| `rating_source_avg` | `double precision` | Meta `avg_rating` |
+| `rating_computed_avg` / `rating_count` | `double precision` / `integer` | 由入库评论聚合；样本足够时才可引用 |
+| `source_review_count` | `integer` | Meta `num_of_reviews` |
+| `source_review_count_capped` | `boolean` | 头部截顶标识（9,998 不是精确值） |
+| `stored_review_count` | `integer` | `reviews` 表中实际保存的评论数 |
+| `text_review_count` | `integer` | 有有效文本的评论数 |
+| `representative_review_count` | `integer` | 被选为代表证据的评论数 |
+| `embedded_review_count` | `integer` | 进入 RAG 文档的评论数 |
+| `last_reviewed_at` / `stats_updated_at` | `timestamptz` | 评论时间下界与统计刷新时间 |
+| `attributes` / `attributes_raw` | `jsonb` | 规范化属性（三态）与原始 `MISC` |
+| `hours` | `jsonb` | 营业时间快照，保留原始文本 |
+| `relative_results` | `text[]` | 原始近邻 POI ID，未用于召回 |
+| `snapshot_status` | `text` | 2021 快照状态，不当作实时状态 |
+| `knowledge_score` | `double precision` | 字段与评论覆盖度打分，决定谁进 embedding 批次 |
+| `is_active_for_demo` | `boolean` | 演示集开关；检索的硬过滤与多个部分索引都挂在它上面 |
+| `observed_at` | `timestamptz` | 统一 `2021-09` |
+| `source_url` / `created_at` / `updated_at` | `text` / `timestamptz` | 来源链接与审计时间 |
 
 关键设计：
 
 - 三态属性使用 `"true"`、`"false"`、`"unknown"`，避免把缺失当 false。
-- `location` 使用 GeoJSON，支持 `$near` 和距离筛选。
-- `source_review_count` 保留截顶警告，不把 9,998 当精确值。
-- `stored_review_count` 表示 Mongo `reviews` collection 中实际保存的评论数。
-- `embedded_review_count` 表示实际进入 RAG 的评论数。
-- `source_review_count`、`stored_review_count` 和 `embedded_review_count` 语义不同，不能互相覆盖。
-- `raw_payload` 可选保存，用于审计和重新加工。
+- `location` 用 `geography` 而不是 `geometry`，因为产品推理的单位是米而不是度数。
+- `source_review_count`、`stored_review_count`、`text_review_count`、`embedded_review_count`
+  语义不同，不能互相覆盖。
+- 表上的 `CHECK` 约束限定 `price_level` 的取值、`borough` 的枚举，以及 `location`
+  必须落在服务区 bbox 内（区外坐标在导入时就被拒，约束是第二道防线）。
 
-### 4.4 `restaurant_documents`
+### 4.4 附属资料：内嵌进 `restaurants`
 
-> **决策更新（2026-09-29，M1 实现）**：本集合已**合并进 `restaurants`**。
-> 实测附属文档数量约为主表的 3 倍，且只写不读、读取时总要和餐厅一起 join；
-> 按 MongoDB「读在一起的写在一起」的原则改为内嵌：
-> `restaurants.hours`（`[]HoursEntry`，保留原始文本）、
-> `restaurants.attributes_raw`（原始 MISC）、`restaurants.relative_results`。
-> 下面的原始设计保留作为背景，不再是实现目标。
+> **决策（2026-09-29，M1 实现）**：原设计的独立 `restaurant_documents` 表**不再存在**。
+> 实测附属文档数量约为主表的 3 倍，而且只写不读、读取时总要和餐厅一起取，
+> 因此按"读在一起的放在一起"改为内嵌列：
+> `restaurants.hours`（`jsonb`，保留原始营业时间文本）、
+> `restaurants.attributes_raw`（原始 `MISC`）、
+> `restaurants.relative_results`（`text[]`）。
+> 规范化后的属性写 `restaurants.attributes`，供检索过滤使用。
 
-用于保存不适合全部塞进主文档的字段：
-
-```json
-{
-  "restaurant_id": "uuid",
-  "document_type": "hours",
-  "raw": [["Monday", "11AM-10PM"]],
-  "normalized": [
-    {"weekday": 1, "open_minute": 660, "close_minute": 1320, "is_closed": false}
-  ],
-  "observed_at": "2021-09-01T00:00:00Z",
-  "source_record_id": "gmap_id"
-}
-```
-
-建议的 `document_type`：
-
-- `hours`
-- `attributes_raw`
-- `description`
-- `relative_results`
-- `source_snapshot`
+原设计里 `document_type` 的取值（`hours` / `attributes_raw` / `description` /
+`relative_results` / `source_snapshot`）也随之失效：它们现在分别对应上面三个内嵌列、
+`restaurants.description`，以及 `source` / `source_record_id` / `observed_at` 这三个来源列。
 
 ### 4.5 `reviews`
 
-只保存经过清洗的评论：
+只保存经过清洗的评论；评论人姓名、`user_id` 和图片链接不进入本表。
 
-```json
-{
-  "_id": "sha256:gmap_id+time+text",
-  "restaurant_id": "uuid",
-  "rating": 5,
-  "reviewed_at": "2021-03-01T12:00:00Z",
-  "text": "Great pizza and fast service.",
-  "language": "en",
-  "text_hash": "sha256",
-  "is_representative": true,
-  "topic_tags": ["food", "service"],
-  "source_observed_at": "2021-09-01T00:00:00Z"
-}
-```
+| 列 | 类型 | 说明 |
+|---|---|---|
+| `id` | `bigint identity` | 代理键，不是外部 ID |
+| `restaurant_id` | `bigint` | 外键，`ON DELETE CASCADE` |
+| `rating` | `smallint` | 1–5，`CHECK` 约束 |
+| `reviewed_at` | `timestamptz` | 由原始 `time`（Unix 毫秒）转换 |
+| `text` | `text` | 正文；空文本默认 `''` |
+| `language` | `text` | 标记语言 |
+| `text_hash` | `text` | 正文摘要，参与幂等键 |
+| `is_representative` | `boolean` | 是否被选为代表证据（部分索引挂在它上面） |
+| `topic_tags` | `text[]` | 主题标签（`food` / `service` / `ambience` …） |
+| `source_observed_at` | `timestamptz` | 统一 `2021-09` |
 
-不保存原始用户姓名、`user_id` 和图片链接到 RAG 可检索集合。原始数据如需审计，可放在权限更高的收藏集或对象存储中。
+幂等键这里有一处纠正。早期设计把评论主键取为
+`sha256(gmap_id + user_id + time + text_hash)`，并靠 `ON CONFLICT (id)` 去重；
+改用数据库自增 id 后主键不再可用来去重，幂等因此改为唯一索引
+`(restaurant_id, text_hash, rating, reviewed_at)`。在全量 4.15M 行语料上验证过：
+两种键选出的行完全一致（`rating` 与 `user_id` 都由正文决定，没有任何分组出现分歧），
+所以这次替换没有语义损失。
+
+原始数据如需审计，放在权限更高的对象存储或受限表中，不进本表。
 
 ### 4.6 `review_summaries`
 
-```json
-{
-  "restaurant_id": "uuid",
-  "topic": "service",
-  "sentiment": 0.72,
-  "positive_ratio": 0.81,
-  "summary": "服务整体积极，常见正向词包括 friendly、fast、attentive。",
-  "evidence_count": 86,
-  "valid_from": "2017-01-01T00:00:00Z",
-  "valid_to": "2021-09-01T00:00:00Z",
-  "generated_by": "<provider>/<model-id>",
-  "generated_at": "2026-09-29T00:00:00Z"
-}
-```
+按主题聚合，主键是 `(restaurant_id, topic)`。整批重算、整批读取，因此独立于 `reviews`：
+
+| 列 | 类型 | 说明 |
+|---|---|---|
+| `restaurant_id` / `topic` | `bigint` / `text` | 复合主键 |
+| `sentiment` | `double precision` | 该主题的情绪得分 |
+| `positive_ratio` | `double precision` | 正面占比 |
+| `summary` | `text` | 主题摘要文本 |
+| `evidence_count` | `integer` | 参与本主题的评论数 |
+| `valid_from` / `valid_to` | `timestamptz` | 有效时间窗（`valid_to` 为空表示仍在生效） |
+| `generated_by` / `generated_at` | `text` / `timestamptz` | 生成者（`<provider>/<model-id>` 或规则版本）与生成时间 |
 
 主题建议包括：
 
@@ -494,53 +469,46 @@ Optional Mock Collections
 |---|---|---|---|
 | `source_review_count` | Meta `num_of_reviews` | 热度、筛选和展示参考 | 头部可能截顶，例如 9,998 |
 | `source_review_count_capped` | 加工规则 | 标识是否可能截顶 | 不能用于精确统计 |
-| `stored_review_count` | `reviews` collection 聚合 | 表示实际保存的评论数 | 只代表入库数据 |
-| `text_review_count` | `reviews` collection 聚合 | 表示有有效文本的评论数 | 更适合 RAG 覆盖度 |
+| `stored_review_count` | `reviews` 表聚合 | 表示实际保存的评论数 | 只代表入库数据 |
+| `text_review_count` | `reviews` 表聚合 | 表示有有效文本的评论数 | 更适合 RAG 覆盖度 |
 | `representative_review_count` | 代表评论选择逻辑 | 表示可用于展示的证据数 | 不是原始总评论数 |
 | `embedded_review_count` | 文档构建结果 | 表示参与 embedding 的数量 | 不是原始总评论数 |
-| `source_avg_rating` | Meta `avg_rating` | 来源评分 | 与抽样评论计算值可能不同 |
-| `computed_avg_rating` | `reviews` 聚合 | 入库评论平均分 | 仅在评论样本足够时有参考性 |
+| `rating_source_avg` | Meta `avg_rating` | 来源评分 | 与抽样评论计算值可能不同 |
+| `rating_computed_avg` | `reviews` 表聚合 | 入库评论平均分 | 仅在评论样本足够时有参考性 |
 
-建议将聚合结果写入 `restaurants.review_stats`，而不是每次搜索时对 `reviews` 做 `$lookup + count`。MongoDB 的数据更新流程可以使用聚合管道 `$merge`，把统计结果物化回餐厅文档或独立的 `restaurant_review_stats` collection。
+这些聚合直接物化为 `restaurants` 上的列，而不是每次搜索时对 `reviews` 做 `COUNT(*)`
+或 join：它们在几乎每次取餐厅时都要读，join 的成本超过那点存储节省。
+由 pipeline 在导入/回填时用一条 `UPDATE … FROM (SELECT …)` 刷新，并同步写
+`stats_updated_at`。
 
 判断规则：
 
 1. 用户搜索“评论多”“很热门”时，优先使用 `source_review_count`。
 2. 用户问“有多少条评论被 RAG 收录”时，使用 `stored_review_count` 或 `embedded_review_count`。
-3. 用户问“平均分”时，优先展示 `source_avg_rating`，并标明是 2021 快照。
-4. 如果只想展示当前知识库评论样本的平均分，使用 `computed_avg_rating`，不要伪装成原始平均分。
-5. `reviews` collection 只负责保存证据，不负责在热查询时实时计算总数。
+3. 用户问“平均分”时，优先展示 `rating_source_avg`，并标明是 2021 快照。
+4. 如果只想展示当前知识库评论样本的平均分，使用 `rating_computed_avg`，不要伪装成原始平均分。
+5. `reviews` 表只负责保存证据，不负责在热查询时实时计算总数。
 
 ### 4.7 `knowledge_documents`
 
-这是 Atlas Vector Search 的核心集合：
+这是向量检索的核心表，维数在表定义上固定：
 
-```json
-{
-  "_id": "uuid",
-  "restaurant_id": "uuid",
-  "retrieval_scope": "evidence",
-  "doc_type": "review_summary",
-  "title": "Service experience",
-  "content": "Restaurant-level evidence text",
-  "content_hash": "sha256",
-  "embedding": [0.012, -0.034, 0.117],
-  "embedding_model": "qwen3-embedding:0.6b",
-  "embedding_dimensions": 1024,
-  "metadata": {
-    "cuisine_tags": ["pizza"],
-    "price_level": 2,
-    "rating": 4.5,
-    "topics": ["service"],
-    "snapshot_at": "2021-09-01T00:00:00Z",
-    "source": "google_local_2021"
-  },
-  "source_record_ids": ["gmap_id", "review_id"],
-  "snapshot_at": "2021-09-01T00:00:00Z",
-  "version": 1,
-  "is_active": true
-}
-```
+| 列 | 类型 | 说明 |
+|---|---|---|
+| `document_id` | `bigint identity` | 主键 |
+| `restaurant_id` | `bigint` | 外键 |
+| `retrieval_scope` | `text` | `restaurant` 或 `evidence`，`CHECK` 约束 |
+| `doc_type` | `text` | 见下方取值 |
+| `title` / `content` | `text` | 可读标题与正文（正文是 embedding 的输入） |
+| `content_hash` | `text` | 内容摘要，参与幂等键 |
+| `embedding` | `vector(1024)` | pgvector；`qwen3-embedding:0.6b` |
+| `embedding_model` / `embedding_dimensions` | `text` / `integer` | 记录生成向量的模型与维数，防止切换模型后混用旧向量 |
+| `borough` | `text` | 从餐厅反规范化下来，使部分索引的谓词是本地列判断而不是回表 join |
+| `metadata` | `jsonb` | 检索过滤用的餐厅字段（菜系、价格、评分、主题、快照时间、来源） |
+| `source_record_ids` | `text[]` | 来源 `gmap_id` 与评论标识 |
+| `snapshot_at` | `timestamptz` | 数据观测时间 |
+| `version` | `integer` | 同一文档内容变化时递增，旧版本留在表里但 `is_active=false` |
+| `is_active` | `boolean` | 只有 active 文档可被召回；`CHECK` 强制 active 的行必须有向量 |
 
 推荐 `doc_type`：
 
@@ -550,168 +518,184 @@ Optional Mock Collections
 - `restaurant_review_summary`
 - `restaurant_representative_reviews`
 
-同时增加 `retrieval_scope`：
+两个 scope 共用一张表，靠 `retrieval_scope` 分开：
 
 - `restaurant`：每个餐厅一条餐厅级语义摘要，用于召回候选餐厅。
 - `evidence`：每家餐厅多条事实或评论证据，用于回答和引用。
 
-两个 scope 可以使用同一个 collection 和同一个向量索引，但查询时必须强制加 scope 过滤。等性能和索引规模成为问题时，再拆成 `restaurant_search_documents` 和 `evidence_documents` 两个 collection。
+**常见做法在这里不成立**：直觉上"一个向量索引 + 查询时加 scope 过滤"就够了，
+实测却会**返回空结果**而不是慢结果。在 30,198 条 active 文档、manhattan 分区上，
+`restaurant` 只有 2,010 条而 `evidence` 有 18,287 条；HNSW 是定宽束搜索，
+它取回约 `ef_search`（默认 40）个近邻就停，不会为了过滤条件继续往下找。
+于是 scope=`restaurant` 的召回扎进一个 90% 是 evidence 的分区，取回的 40 个近邻几乎
+全是 evidence，scope 过滤把它们全部丢掉，查询返回 0 行——而同一条查询禁用索引后
+能在 42ms 内返回 5 行。所以索引必须按 `(borough, retrieval_scope)` 分区（§4.10），
+把召回的谓词本身放进索引。
 
-禁止跨餐厅拼接同一个 chunk。
+禁止跨餐厅拼接同一个 chunk。批内 upsert 的幂等键是
+`(restaurant_id, retrieval_scope, doc_type, content_hash)`：内容没变就跳过，
+内容变了就新增一个版本而不是覆盖旧行。这个键刻意不含 `is_active` 和 `version`，
+因为这两列在文档生命周期里会变，把它们纳入键就正好废掉了重建所依赖的幂等性。
 
-### 4.8 Agent 运行 Collection
+### 4.8 Agent 运行表
+
+会话模型是**规范化**的，没有塞进一个 JSON blob：消息回放与 checkpoint 恢复是两条独立
+路径，`(thread_id, seq)` 给历史分页一个走索引的顺序；每个查询都带 `thread_id`
+或 `user_id`，一个会话的行不可能出现在另一个会话里。
 
 #### `conversations`
 
-保存线程元数据：
-
-```text
-_id
-user_id
-title
-current_state
-created_at
-updated_at
-last_message_at
-```
+线程元数据：`thread_id`（主键）、`user_id`、`title`、`current_state`
+（`idle` / `awaiting_clarification` / `awaiting_confirmation` / `completed` / `failed`，
+`CHECK` 约束）、`created_at`、`updated_at`、`last_message_at`。
 
 #### `conversation_checkpoints`
 
-保存可恢复状态：
+每线程一行，是状态恢复的最终来源：
 
-```text
-thread_id
-version
-state
-pending_action
-missing_slots
-evidence_ids
-selected_restaurant_id
-created_at
-```
+| 列 | 说明 |
+|---|---|
+| `thread_id` | 主键，外键指向 `conversations` |
+| `version` | 单调递增；保存时的 `UPDATE` 带 `WHERE version < $new`，过期写入影响 0 行 |
+| `state` | 与 `conversations.current_state` 同一枚举 |
+| `pending_action` / `missing_slots` | 待执行动作与待补槽位 |
+| `evidence_ids` / `selected_restaurant_id` | 本轮证据与指代解析出的餐厅 |
+| `pending_tool_call_id` / `pending_arguments` | 已请求但未获批准的写调用（挂起动作） |
+| `clarification_count` | 本线程已澄清次数；连续澄清上限靠它，`CHECK` 不许为负 |
+| `created_at` | — |
 
-Eino 可以负责运行时图结构，但恢复时必须从该 collection 读取业务状态。
+挂起动作存在这里而不是进程内存里，是因为确认是**后一个请求**，可能跨重启到达。
+Eino 负责运行时图结构，但恢复时业务状态必须从这张表读。
+
+#### `conversation_messages`
+
+线程消息，供历史回放与分页：`message_id`（主键）、`thread_id`、`role`
+（`user` / `assistant` / `tool`）、`content`、`tool_calls`（`jsonb`）、
+`evidence_ids`（`bigint[]`）、`seq`（线程内自增位置，`UNIQUE (thread_id, seq)` 是并发追加的兜底）、
+`created_at`。
+
+#### `conversation_candidates`
+
+最近一次搜索的候选快照，一行一个 `(thread_id, position)`：
+`restaurant_id`、`name`、`score`、`reasons`（`text[]`）、`snapshot_at`、`created_at`。
+复合主键就是全部身份——两个线程不会共用位置，一个线程也不会在位置 2 上放两家餐厅，
+"第二家"因此是一个确定性引用。产生候选的那一轮整组覆盖，没产生候选的那一轮不动它。
 
 #### `agent_runs`
 
-```text
-trace_id
-thread_id
-run_id
-status
-model_provider
-model_name
-started_at
-finished_at
-latency_ms
-token_input
-token_output
-retrieval_count
-tool_call_count
-error_code
-```
+一次运行一行：`run_id`（主键）、`trace_id`（唯一）、`thread_id`、`status`
+（`running` / `succeeded` / `failed` / `cancelled`）、`model_provider`、`model_name`、
+`started_at`、`finished_at`、`latency_ms`、`token_input`、`token_output`、
+`retrieval_count`、`tool_call_count`、`error_code`。
 
 #### `tool_calls`
 
-```text
-call_id
-run_id
-tool_name
-arguments
-result_summary
-status
-latency_ms
-created_at
-```
+一次工具调用一行：`call_id`（主键）、`run_id`（外键，`ON DELETE CASCADE`）、
+`tool_name`、`arguments`（`jsonb`，**只保存脱敏摘要**：白名单业务字段、截断）、
+`result_summary`、`status`（`ok` / `error`）、`latency_ms`、`created_at`。
+联系方式、自由格式标识和密钥永不进入这一列。
 
-只能保存脱敏参数，不能保存密钥和完整联系人信息。
+#### `run_nodes`
+
+节点级 trace，补上 `agent_runs` 和 `tool_calls` 都答不了的那个问题——"哪一步失败了"。
+不调用工具的节点（`plan` 与 `answer`，恰好是两次模型调用）在 `tool_calls` 里没有行，
+于是一次在 `answer` 里失败的运行，在审计上和在 `plan` 里失败的运行长得一模一样。
+本表一次运行经过的每个节点一行：`node_id`、`run_id`、`trace_id`、`node`、`seq`、
+`status`、`started_at`、`latency_ms`、`detail`（`jsonb`，节点自己写的候选数、工具名、
+结束原因）、`error_code`。排序键是 `seq` 而不是 `started_at`：一次快运行的相邻节点会落在
+同一毫秒里，依赖时钟精度的顺序是会变的顺序。
 
 #### `user_memories`
 
-```text
-user_id
-memory_type
-content
-source
-confidence
-embedding
-created_at
-updated_at
-deleted_at
-```
+`memory_id`（主键）、`user_id`、`memory_type`（`preference` / `constraint` / `fact`）、
+`content`、`source`、`confidence`、`embedding`（`vector(1024)`，可空）、
+`created_at`、`updated_at`、`deleted_at`。
 
+删除是**软删除**：审计留着行，`List` 只看 `deleted_at IS NULL` 的行。
 长期偏好必须由用户明确要求保存，并支持查看、修改和删除。
 
-### 4.9 可选 Mock 预约集合
+### 4.9 可选 Mock 预约表
 
-预约不再是系统核心。如果需要演示工具调用，可使用以下 collection：
+预约不是系统核心。演示工具调用时用两张表：
 
-- `mock_policies`
-- `mock_inventory`
-- `mock_holds`
-- `mock_reservations`
+- `reservation_slots`：Mock 库存。一行一个 `(restaurant_id, slot_date, slot_time)` 时段，
+  `capacity` 与 `booked` 都是普通计数——没有真实桌位图可建模，库存由应用按模板生成而不是导入。
+- `reservations`：hold 与预约。`status` ∈ `held` / `confirmed` / `cancelled` / `expired`，
+  另有 `hold_expires_at`、`party_size`、`idempotency_key`。
 
 实现原则：
 
-- 单 slot 文档用条件更新和版本号保证原子性。
-- hold 和 reservation 使用唯一幂等键。
-- 只有确认后才创建最终预约。
-- 如果需要跨多个文档写入，再使用 MongoDB transaction。
-- 预约 collection 不影响 RAG 和 Agent 主链路。
+- 单 slot 用**条件更新**保证原子性：`UPDATE … SET booked = booked + $n WHERE slot_id = $id AND booked + $n <= capacity`。
+- `CHECK (booked >= 0 AND booked <= capacity)` 是第二道防线：即使调用方写错了条件，
+  超卖的更新也会被行本身拒绝，而不是只被那条语句的措辞拒绝。
+- `reservations.idempotency_key` 唯一。键由服务端铸造（`thread_id + action + request_id +
+  sha256(arguments)`），不用 checkpoint 版本——记录确认结果这个动作本身会推进版本，
+  于是"重试"恰好重算不出同一个键，而重试正是幂等唯一存在的场景。
+- 只有确认后才写 `confirmed`；确认前只有 `held`。
+- hold 过期由清扫器把 `status='held'` 且超过 `hold_expires_at` 的行置为 `expired`。
+- 预约表不影响 RAG 与 Agent 主链路；`RESERVATION_ENABLED=false`（默认）时相关工具根本不注册。
 
-### 4.10 Atlas Vector Search 索引
+### 4.10 pgvector HNSW 索引（按 borough × retrieval_scope 分区）
 
-`knowledge_documents` 的向量索引至少包含：
+`knowledge_documents.embedding` 是 `vector(1024)`，距离用余弦，索引是 HNSW
+（`vector_cosine_ops`）。这里有一条被实测推翻的直觉，值得写下来：
 
-```json
-{
-  "fields": [
-    {"type": "vector", "path": "embedding", "numDimensions": 1024, "similarity": "cosine"},
-    {"type": "filter", "path": "restaurant_id"},
-    {"type": "filter", "path": "retrieval_scope"},
-    {"type": "filter", "path": "doc_type"},
-    {"type": "filter", "path": "is_active"},
-    {"type": "filter", "path": "metadata.cuisine_tags"},
-    {"type": "filter", "path": "metadata.price_level"},
-    {"type": "filter", "path": "metadata.rating"}
-  ]
-}
-```
-
-查询流程使用 Atlas `$vectorSearch`：
-
-1. 先执行结构化过滤，限制餐厅 ID、菜系、价格和快照范围。
-2. 对过滤后的后台执行向量召回。
-3. 同一个 collection 返回文档和筛选元数据。
-4. 如果还需要更强的关键词召回，使用独立的 Atlas Search 索引。
-
-本地 Go 服务不保存向量，只保存连接配置和 Provider 接口。
-
-### 4.11 Atlas Search 索引
-
-Vector Search 和 Search 是两种不同的索引，需要分别创建：
-
-- `vector_index`：用于 `knowledge_documents.embedding`。
-- `search_index`：用于餐厅名称、地址、描述和必要的关键词字段。
-
-建议 Search 索引覆盖：
+**给向量查询加 `WHERE` 不会保留索引。** pgvector 的 HNSW 是 `ORDER BY` 结构，
+规划器无法假定过滤后的流仍然有序，于是：
 
 ```text
-restaurants.name
-restaurants.address
-restaurants.categories
-restaurants.description
-knowledge_documents.title
-knowledge_documents.content
+ORDER BY embedding <=> q            -> Index Scan using knowledge_documents_hnsw
+WHERE borough = 'manhattan'
+  ORDER BY embedding <=> q          -> Seq Scan，49759 行被逐行过滤
 ```
 
-名称匹配可以使用：
+实测在 5 万行上，加一个 borough 条件就把索引扫描退化成了顺序扫描。
+而**带过滤的召回才是常态**，不是例外（地点是用户的硬条件之一）。
+所以索引按召回真正使用的谓词分区，每个 `(borough, retrieval_scope)` 一份：
 
-- 标准分词和大小写折叠。
-- `autocomplete` 类型。
-- 对地址使用独立字段或 ngram 分析器。
+```sql
+CREATE INDEX … ON knowledge_documents USING hnsw (embedding vector_cosine_ops)
+    WHERE is_active AND borough = 'manhattan' AND retrieval_scope = 'evidence';
+```
 
-Atlas Search 和 Vector Search 的结果在 Go 服务中做融合，不能假设一次查询可以同时完成两种检索。
+不带 borough 约束的查询仍走 0001 建立的无过滤索引；按 borough 分区的旧索引也保留
+（删除它们需要在 3 万行表上拿 `ACCESS EXCLUSIVE` 锁重建，而规划器已经优先选更窄的那几个）。
+
+查询流程：
+
+1. **先**在 `restaurants` 上做结构化过滤（餐厅 ID、菜系、价格、评分、地点、演示集），
+   得到候选餐厅集合。
+2. 对候选集合做 scoped 向量召回（`retrieval_scope` 决定召回餐厅还是证据）。
+   谓词进索引，召回因此不会因为过滤而返回空（原因见 §4.7）。
+3. 需要更强名称/地址匹配时叠加 `pg_trgm` 关键词通道（§4.11）。
+4. 三个通道加上餐厅自身的 `knowledge_score` 先验，在 Go 层融合排序。
+
+向量不落在 Go 服务里，也不落在进程内缓存里：它只存在于 `knowledge_documents.embedding`，
+Go 侧只有连接与 Provider 接口。
+
+### 4.11 关键词与地名检索（`pg_trgm`）
+
+锚点检索与模糊匹配都在同一个库里完成，没有独立的搜索引擎：
+
+- `restaurants.name`、`restaurants.address`：`gin_trgm_ops` GIN 索引，承担错拼容忍的名称/地址查找。
+- `boundaries.name`：同样 `gin_trgm_ops`，且名称在装载时归一化，
+  使 `Staten Island` 与 `staten_island` 命中同一行。
+- 地名 → 区域的解析优先走 `boundaries` 的 `ST_Contains` 反查（点 → 行政区），
+  名称输入走 `boundaries.name` 的 trigram 匹配。
+
+需要知道的限制：`pg_trgm` 处理中文的**模糊**匹配，但它不是中文分词器。
+对名称和地址够用；如果语料里的中文描述性内容增长，需要重新考虑这一层。
+
+三个召回通道（结构化、关键词、向量）由 PostgreSQL 各自完成，
+**融合在 Go 层做**——不能假设一次查询可以同时完成两种检索。四个权重
+（`RETRIEVAL_WEIGHT_STRUCTURED` / `KEYWORD` / `VECTOR` / `QUALITY`，默认 `1.0 / 0.5 / 1.0 / 0.2`）
+是可配置的，默认让结构化通道占主导：满足全部明示条件的餐厅不应被
+只是"读起来相关"的餐厅挤掉。
+
+检索链路上还有一层可选重排（rerank Provider）。它是可选的且**失败即降级**：
+没有配置或调用失败时保留融合顺序并在 trace 里记一句，因为重排只是改善一个已经可用的排序，
+为它丢掉整个请求是更差的交换；重排结果还会被校验为原候选的一个排列，
+丢弃候选的重排会被整份丢掉——那是一次静默的错误答案，而不是一次降级。
 
 ## 5. 写入链路
 
@@ -728,8 +712,8 @@ Google Local gzip
   -> review aggregation
   -> document builder
   -> embedding
-  -> MongoDB Atlas upsert
-  -> Atlas Vector Search index refresh/verification
+  -> PostgreSQL upsert（restaurants / reviews / review_summaries）
+  -> knowledge_documents 写入（HNSW 索引由迁移建立，写入后即生效）
   -> ingestion report
 ```
 
@@ -751,8 +735,8 @@ Google Local gzip
 
 #### Step 3：Deduplication
 
-- Meta 按 `gmap_id` 去重。
-- Review 使用 `sha256(gmap_id + user_id + time + text_hash)` 生成稳定 `review_id`，作为 Mongo `_id` 或唯一索引；原始 `user_id` 只用于哈希，不持久化到 curated review。
+- Meta 按 `gmap_id` 去重：`restaurants.source_record_id` 上有唯一索引，重导入是 upsert 而不是重复插入。
+- Review 用 `(restaurant_id, text_hash, rating, reviewed_at)` 唯一索引去重；原始 `user_id` 只参与哈希计算，不持久化到 curated 评论。
 - 完全重复记录只保留一条；冲突记录保留来源并标记。
 
 #### Step 4：Normalization
@@ -809,9 +793,9 @@ Google Local gzip
 #### Step 8：Embedding and Indexing
 
 - 对 `knowledge_documents.content` 生成向量。
-- 使用 `content_hash` 和版本做幂等 upsert。
-- 将餐厅筛选字段同时写入 `metadata`，供 Atlas Vector Search 的 `filter` 使用。
-- 向量写入后再创建或更新 Atlas Vector Search 索引。
+- 使用 `(restaurant_id, retrieval_scope, doc_type, content_hash)` 做幂等 upsert。
+- 将餐厅筛选字段同时写入 `knowledge_documents.metadata`（`jsonb`）与反规范化的 `borough` 列，
+  前者供结构化过滤，后者让分区索引的谓词是本地列判断。
 - 新批次全部成功后再切换 `is_active`，避免半批次污染。
 
 #### Step 9：Batch Report
@@ -851,9 +835,9 @@ User message
 ```text
 query
   -> parse hard filters
-  -> MongoDB Atlas structured filter
-  -> Atlas Search name/address/text search
-  -> Atlas Vector Search over knowledge_documents
+  -> PostgreSQL 结构化过滤（restaurants）
+  -> pg_trgm 名称/地址模糊检索
+  -> pgvector 召回（knowledge_documents，retrieval_scope=restaurant）
   -> hybrid score fusion
   -> optional rerank
   -> restaurant result cards
@@ -912,10 +896,10 @@ Stage 2: Evidence Recall
 
 餐厅召回可以使用：
 
-- `restaurants` 结构化过滤。
-- Atlas Search 名称和地址检索。
-- `retrieval_scope=restaurant` 的餐厅级语义检索。
-- 评论主题摘要生成的餐厅 popularity/quality 特征。
+- `restaurants` 结构化过滤（菜系、价格、评分、地点、演示集开关）。
+- `pg_trgm` 名称和地址模糊检索。
+- `retrieval_scope=restaurant` 的餐厅级语义检索（pgvector）。
+- 评论主题摘要生成的餐厅 popularity/quality 特征，作为融合时的 `knowledge_score` 先验。
 
 餐厅级向量只能代表整个餐厅，不能直接使用随机单条评论代表餐厅。否则会出现一家餐厅多条评论挤占候选、情绪噪声放大和不同餐厅不可比的问题。
 
@@ -959,8 +943,8 @@ Stage 2: Evidence Recall
 question
   -> identify restaurant
   -> retrieve structured restaurant facts
-  -> Atlas $vectorSearch on active knowledge_documents
-  -> optional Atlas Search keyword recall
+  -> pgvector 召回 active knowledge_documents（retrieval_scope=evidence）
+  -> 叠加 pg_trgm 关键词召回（可选）
   -> filter by restaurant_id/source/snapshot
   -> deduplicate evidence
   -> rerank
@@ -985,9 +969,8 @@ user intent
   -> propose slots
   -> build reservation summary
   -> wait for explicit confirmation
-  -> hold slot
-  -> confirm reservation
-  -> publish outbox event
+  -> hold slot（booked + 1，status=held，带 hold_expires_at）
+  -> confirm reservation（status=confirmed，幂等键已落库）
   -> return reservation number
 ```
 
@@ -998,7 +981,8 @@ user intent
 - 未确认最终摘要时不能创建预约。
 - hold 过期后必须重新查询。
 - 相同幂等键必须返回同一结果。
-- 并发预约必须通过 MongoDB 条件更新、版本号或唯一索引保证容量一致。
+- 并发预约必须通过 `reservation_slots` 的条件更新（`booked + n <= capacity`）加
+  `CHECK (booked <= capacity)` 约束保证容量一致。
 
 ### 6.6 取消和改期链路
 
@@ -1020,34 +1004,85 @@ reservation_id
 
 ### 7.1 Agent 工具
 
-| 工具 | 类型 | 功能 |
-|---|---|---|
-| `search_restaurants` | 只读 | 结构化过滤和餐厅级语义召回，返回候选餐厅 |
-| `get_restaurant_evidence` | 只读 | 按餐厅和问题召回佐证、来源和快照时间 |
-| `get_availability` | 只读 | 查询 Mock 时段 |
-| `hold_slot` | 临时写入 | 创建短时 hold |
-| `confirm_reservation` | 最终写入 | 确认预约 |
-| `cancel_reservation` | 写入 | 取消预约 |
-| `reschedule_reservation` | 写入 | 新预约加旧预约补偿 |
-| `list_user_reservations` | 只读 | 查询预约 |
-| `get_policy` | 只读 | 获取 Mock 政策 |
+注册的工具见 `chat-service/internal/agent/tools/`，装配与注册在
+`chat-service/internal/app/app.go`。非只读工具必须声明确认策略
+（`toolreg.Entry.Confirmation`：`required` / `implicit`），注册期做双向校验——
+写工具声明 `none` 或留空会被拒绝，只读工具挂确认闸门同样会被拒绝。
+
+| 工具 | 类型 | 确认策略 | 功能 | 注册条件 |
+|---|---|---|---|---|
+| `search_restaurants` | 只读 | — | 结构化过滤和餐厅级语义召回，返回候选餐厅 | 有对话服务时 |
+| `get_restaurant_evidence` | 只读 | — | 按餐厅和问题召回佐证、来源和快照时间 | 有对话服务时 |
+| `get_availability` | 只读 | — | 查询 Mock 时段 | `RESERVATION_ENABLED=true` |
+| `resolve_restaurant` | 只读 | — | 同名餐厅消歧：名称 → id 的查表，不经检索软通道 | 有餐厅仓储时 |
+| `save_memory` | 写入 | `implicit` | 写入用户明确要求记住的长期偏好 | 有记忆仓储且 `AGENT_MEMORY_WRITE_ENABLED` 打开 |
+| `request_reservation` | 写入 | `required` | 先占位，经确认闸门批准后落库为预约 | `RESERVATION_ENABLED=true` |
+
+`hold_slot` / `confirm_reservation` 不作为独立工具存在：短时 hold 与落库都收敛在
+`request_reservation` 内部，确认那一步由 `hitl` 闸门 +
+`POST /v1/conversations/{id}/confirm` 承担。
+
+预约的取消、改期与「我的预约」查询不在 MVP 范围，因此没有
+`cancel_reservation` / `reschedule_reservation` / `list_user_reservations`；
+Mock 政策随 slot 一并返回 `policy_version`，不单独提供 `get_policy`。
 
 所有工具参数使用 Go struct 和 JSON Schema 校验，输出带 `request_id`、状态、来源和错误码。
 
 ### 7.2 API
 
-- `POST /v1/threads/{thread_id}/messages`
-- `POST /v1/threads/{thread_id}/resume`
-- `GET /v1/restaurants/search`
-- `GET /v1/restaurants/{restaurant_id}/evidence`
-- `GET /v1/restaurants/{restaurant_id}/availability`
-- `POST /v1/reservations/holds`
-- `POST /v1/reservations`
-- `POST /v1/reservations/{reservation_id}/cancel`
-- `POST /v1/reservations/{reservation_id}/reschedule`
-- `GET /v1/reservations`
+实际注册的路由见 `chat-service/internal/httpapi/router.go` 与各 `register*Routes`
+函数；面向客户端的契约描述以 `README.md` 为准。
 
-对话接口使用 Hertz + `hertz-contrib/sse` 输出文本增量、节点进度、工具调用、引用和等待确认事件。
+**检索（只读）**
+
+- `POST /v1/restaurants/search` —— 结构化过滤 + 语义召回，条件放请求体
+- `POST /v1/restaurants/evidence` —— 跨餐厅证据召回
+- `POST /v1/restaurants/{restaurant_id}/evidence` —— 指定餐厅的证据召回
+- `POST /v1/restaurants/interpret` —— 只读槽位抽取（回答"你听懂了什么"）
+
+**对话**
+
+- `GET /v1/conversations`、`POST /v1/conversations`、`GET /v1/conversations/{id}`
+- `GET /v1/conversations/{id}/messages`、`POST /v1/conversations/{id}/messages`
+  —— 一轮对话，SSE 流式
+- `GET /v1/conversations/{id}/candidates` —— 该轮的检索候选快照
+- `POST /v1/conversations/{id}/confirm` —— 对挂起的写入作答
+  （`{"decision":"confirm"|"cancel"}`）
+
+**运行回放（只读）**
+
+- `GET /v1/conversations/{id}/runs`、`GET /v1/runs/{run_id}`、
+  `GET /v1/runs/{run_id}/nodes`、`GET /v1/traces/{trace_id}`
+
+**记忆**
+
+- `GET /v1/memories`、`PATCH /v1/memories/{memory_id}`、
+  `DELETE /v1/memories/{memory_id}`
+
+**运维台（`/admin/v1`，仅 loopback）**
+
+- 只读：`GET /admin/v1/overview`、`GET /admin/v1/restaurants`（含 `/{id}`、
+  `/{id}/reviews`、`/{id}/summaries`、`/{id}/documents`）、
+  `GET /admin/v1/documents`（含 `/{id}`）、`GET /admin/v1/batches`（含 `/{id}`）、
+  `GET /admin/v1/boundaries`、`GET /admin/v1/restaurants/{id}/inventory`
+- Mock 库存重置：`POST /admin/v1/restaurants/{id}/inventory/reset`
+- 检索调试（单通道）：`POST /admin/v1/debug/search`、`POST /admin/v1/debug/evidence`
+
+另有 `GET /healthz` 存活探针。
+
+对话接口使用 Hertz + `github.com/cloudwego/hertz/pkg/protocol/sse`，输出文本增量、
+节点进度、工具调用、引用和等待确认事件。
+
+**没有提供的端点。** 预约写入口收敛到确认闸门，因此不存在 `POST /v1/reservations*`
+（holds / 创建 / cancel / reschedule / 列表）——取消与改期不在 MVP 范围；
+对话恢复也不单独设 `resume` 端点：继续对话就是发下一条消息，重连后读状态用
+`GET /v1/conversations/{id}`。
+
+> **身份与鉴权**：`/v1` 的身份取自请求头 `X-User-ID`
+> （`chat-service/internal/httpapi/conversation_handler.go:HeaderUserID`），
+> 是 M4 起的**占位约定，不是认证**；缺失该头的归属类端点会明确拒绝而非放宽。
+> `/admin/v1` 只做 loopback 限制、不做认证（理由见 `platepilot-admin-prd.md` §5.3–5.4）。
+> 真实 principal 仍待后续里程碑。
 
 ## 8. 技术栈
 
@@ -1056,13 +1091,13 @@ reservation_id
 | 语言 | Go 1.26+ | 数据处理、后端、Agent 和评测 |
 | 包管理 | Go Modules | 依赖和构建 |
 | API | CloudWeGo Hertz | REST、路由、中间件和统一错误响应 |
-| SSE | `hertz-contrib/sse` | 文本、节点、工具和引用流式事件 |
+| SSE | `github.com/cloudwego/hertz/pkg/protocol/sse` | 文本、节点、工具和引用流式事件 |
 | 数据模型 | Go struct + JSON Schema | 工具输入输出和 API 校验 |
-| 数据库访问 | `go.mongodb.org/mongo-driver/v2` | MongoDB Atlas 官方 Go Driver |
-| 数据库 | MongoDB Atlas | 餐厅、知识、Agent 状态和向量 |
-| 向量检索 | Atlas Vector Search | `$vectorSearch` 和 filter fields |
-| 关键词检索 | Atlas Search / 应用层分词 | 名称、地址和文本关键词 |
-| Schema 管理 | Atlas CLI / `mongosh` / 版本化 JSON | Collection、索引和 Search Index |
+| 数据库访问 | `github.com/jackc/pgx/v5` | 连接池、超时与类型化查询 |
+| 数据库 | PostgreSQL 16+（pgvector + PostGIS + pg_trgm） | 餐厅、评论、知识、向量、地理与 Agent 运行数据 |
+| 向量检索 | pgvector HNSW | `vector_cosine_ops`，按 borough × retrieval_scope 的部分索引（§4.10） |
+| 关键词检索 | `pg_trgm` GIN | 名称/地址模糊匹配与地名匹配；不引入独立搜索引擎 |
+| Schema 管理 | 版本化 SQL 迁移（`shared/store/postgres/migrations/`） | 表、索引和扩展；`make migrate` 幂等执行 |
 | Agent 工作流 | CloudWeGo Eino Graph | 状态图、节点路由、工具调用和中断 |
 | LLM 抽象 | 项目 Provider 接口 | 不绑定具体厂商；按能力描述模型 |
 | Chat 模型 | OpenAI-Compatible Chat API | 意图、槽位、规划、工具调用和回答 |
@@ -1073,26 +1108,26 @@ reservation_id
 | MCP | `modelcontextprotocol/go-sdk` | 可选工具协议和外部工具接入 |
 | 数据处理 | `compress/gzip` + `bufio` + `encoding/json` | 流式读取大规模 JSONL |
 | 并发处理 | goroutine + worker pool + `errgroup` | 解析、清洗和批处理 |
-| 数据分析 | Go 流式统计 + DuckDB CLI（可选） | 导入审计和数据探索 |
+| 数据分析 | Go 流式统计 + `ingestion_batches` / `ingestion_rejections` | 导入审计和数据探索 |
 | 数据校验 | Go validator + 自定义规则 | 字段规范化和缺失处理 |
 | 缓存 | 进程内缓存（可选） | 模型状态和热门查询 |
-| 前端 | `html/template` 或 templ + HTMX | 聊天、候选卡片和 trace 展示 |
+| 前端 | Vite + React + TypeScript（`web/`） | 管理后台与 Agent 验证台；独立 npm 项目，与 Go 模块分开构建 |
 | 测试 | Go `testing` + Hertz `ut` + 接口 Mock | 单元、集成和 Agent 回放 |
 | 代码质量 | `golangci-lint` + `go vet` | lint、静态检查和格式 |
 | 日志 | `log/slog` | 结构化事件 |
-| 可观测性 | OpenTelemetry Go + `hertz-contrib/obs-opentelemetry` | HTTP、trace、节点、工具和 token |
-| 本地运行 | Go + Ollama | 不需要本地数据库 |
+| 可观测性 | 自建 trace 审计（`agent_runs` / `tool_calls` / `run_nodes`）+ `log/slog` | HTTP、节点、工具和 token |
+| 本地运行 | PostgreSQL（Docker）+ Go + Ollama | 一条 `make` 起库、迁移、起服务 |
 
 ### 8.1 技术选择理由
 
 - Go 很适合流式解析 gzip JSONL、并发清洗和构建高吞吐 API。
-- MongoDB Atlas 同时承载餐厅、知识、向量和 Agent 运行数据，本地不需要数据库。
-- Atlas Vector Search 支持向量和过滤字段，适合当前文档型 RAG 数据。
+- 一个 PostgreSQL 实例同时承载餐厅、评论、知识、向量、地理与 Agent 运行数据，不需要独立的搜索引擎或向量数据库。
+- 3.6 万餐厅 + 415 万评论在一台机器上绰绰有余，因此 schema 偏向查询表达力而不是分片；pgvector 与 PostGIS 把过滤和距离都放在进程外执行。
 - Eino Graph 用于实现显式 Agent 工作流、条件路由和人工确认中断。
 - Hertz 与 Eino 同属 CloudWeGo，HTTP 服务、中间件和 Agent 运行时可使用一致的服务治理方式。
-- 项目自己的 `conversations` 和 `conversation_checkpoints` collection 仍是状态恢复的最终来源，不能完全依赖 Eino 内存状态。
+- 项目自己的 `conversations` 和 `conversation_checkpoints` 表仍是状态恢复的最终来源，不能完全依赖 Eino 内存状态。
 - 领域层只依赖 Chat、Tool Calling、Structured Output 和 Embedding 接口，具体厂商 SDK 只出现在 Adapter 层。
-- 不在 MVP 使用消息队列；outbox collection 加后台 worker 即可演示最终一致性。
+- 不在 MVP 使用消息队列；预约写入的最终一致性由 `reservations.idempotency_key` 唯一约束与状态机保证。
 - 不在 MVP 使用复杂实体对齐和知识图谱；先把字段和场景做丰富。
 
 ### 8.2 Go 生态替换说明
@@ -1101,12 +1136,12 @@ Go 没有与 Python LangGraph 完全等价的“官方一站式”框架，因�
 
 1. **LLM 与结构化输出**：使用项目自定义 `ChatProvider`，默认由 OpenAI-Compatible Adapter 实现，Eino 只消费该端口。
 2. **工作流编排**：使用 Eino Graph，或在核心状态机上实现项目自己的显式状态机。
-3. **RAG 检索**：使用官方 Mongo Go Driver 执行结构化过滤，使用 Atlas Vector Search 做向量召回，并在 Go 层进行融合排序。
+3. **RAG 检索**：结构化过滤、`pg_trgm` 关键词检索与 pgvector 向量召回都在 PostgreSQL 内完成，Go 层只做通道融合与可选重排（`chat-service/internal/retrieval/`）。
 4. **工具协议**：可选使用官方 MCP Go SDK。
 5. **Embedding 与 rerank**：Embedding 默认使用本地 Ollama 的 `qwen3-embedding:0.6b`；rerank 先留空，后续通过同一 Provider 模式接入。
-6. **前端**：如果严格限制编程语言为 Go，使用 Go 模板 + HTMX，避免引入 TypeScript 业务代码。
+6. **前端**：独立成 npm 项目（Vite + React + TypeScript），不塞进 Go 模块（§8.6）；Go 侧只提供 HTTP API。
 
-需要接受的主要差异是：Go 的 RAG/Agent 框架成熟度低于 Python，但本项目的核心是 MongoDB Atlas、混合检索、Agent 状态机和工具调用，这些用 Go 实现没有阻塞。
+需要接受的主要差异是：Go 的 RAG/Agent 框架成熟度低于 Python，但本项目的核心是 PostgreSQL 上的混合检索、Agent 状态机和工具调用，这些用 Go 实现没有阻塞。
 
 ### 8.3 LLM Provider 抽象
 
@@ -1189,22 +1224,23 @@ qwen3-embedding:0.6b
 - 16 GB M5 Air 可以稳定运行。
 - 在线 query embedding 延迟较低；批量文档 embedding 建议使用后台任务。
 
-Atlas Vector Search 的索引维度固定为 `1024`，并把 `embedding_model`、`embedding_dimensions` 和版本写入 `knowledge_documents`，避免模型切换后混用旧向量。
+`knowledge_documents.embedding` 的维度在表定义上固定为 `vector(1024)`，并把 `embedding_model`、`embedding_dimensions` 和 `version` 写入 `knowledge_documents`，避免模型切换后混用旧向量。
 
 ### 8.6 服务划分
 
-仓库是一个 Go module，包含两个可独立构建、运行和部署的进程，外加一份共享库，并预留前端位置：
+仓库是多模块结构：两个可独立构建、运行和部署的 Go 服务，一份共享库，外加一个 npm 前端项目。根目录没有 `go.mod` / `package.json`，各目录各自构建：
 
 ```text
 data-pipeline/    数据生产：批处理 CLI，负责写入链路（raw → curated → knowledge → embedding）
 chat-service/     聊天服务：常驻 HTTP / SSE，负责读取链路（检索 → 证据 → Agent → 回答）
 shared/           共享库：领域 DTO、端口接口、适配器、配置原语、日志与测试工具
-web/              预留前端（M6-06）
+web/              管理后台与 Agent 验证台（Vite + React + TypeScript）
 ```
 
 - 两个服务互不 import，只通过 `shared/` 共享代码。
+- 两个服务用 `replace github.com/zed1995/platepilot/shared => ../shared` 依赖共享库，因此可以单独 build/test/deploy，不需要 `go.work`。
 - 写入与读取严格分离，但共享同一套领域 DTO 与端口接口，避免数据语义漂移。
-- `shared/domain` 仍不依赖 Mongo、Eino、Hertz 或任何厂商 SDK。
+- `shared/domain` 不依赖 pgx、Eino、Hertz 或任何厂商 SDK。
 - 本地开发可分别启动：`make run-chat`（默认 `:8080`）与 `make run-pipeline`。
 
 ## 9. API 框架约定
@@ -1214,8 +1250,9 @@ HTTP 服务统一使用 CloudWeGo Hertz：
 - 路由和处理器使用 Hertz。
 - API 合约以手写的 Hertz 路由 + Go 请求/响应结构体为唯一事实来源。
 - 请求参数使用 Hertz binding 和 validation。
-- 通用中间件包括 request ID、recovery、CORS、认证上下文、限流和 OpenTelemetry。
-- SSE 使用 `hertz-contrib/sse`。
+- 通用中间件包括 request ID、logging、recovery 和 CORS；`/admin/v1` 另挂 loopback 守卫。
+- `/v1` 的身份来自请求头 `X-User-ID`，是占位约定而非认证（见 §7.2）。
+- SSE 使用 `github.com/cloudwego/hertz/pkg/protocol/sse`。
 - 领域层和 Agent 工具不依赖 Hertz Context；HTTP 层负责把 Hertz Context 转换成项目自己的 RequestContext。
 - 流式响应必须支持客户端取消，并取消对应的 Eino 执行。
 
@@ -1310,19 +1347,19 @@ HTTP 服务统一使用 CloudWeGo Hertz：
 
 ## 12. 交付分期
 
-### Phase 1：数据写入 Atlas
+### Phase 1：数据写入 PostgreSQL
 
 - 流式读取 Meta 和 Review。
 - 完成去重、字段归一化和餐厅过滤。
 - 建立 `restaurants`（含内嵌附属资料）、`reviews` 和 `review_summaries`。
 - 导入一批精选餐厅。
-- 完成 MongoDB 查询接口和餐厅搜索 API。
+- 完成 PostgreSQL 查询接口和餐厅搜索 API。
 
 ### Phase 2：RAG 写入链路
 
 - 生成评论聚合和知识文档。
 - 使用本地 `qwen3-embedding:0.6b` 生成向量。
-- 写入 `knowledge_documents` 并创建 Atlas Vector Search 索引。
+- 写入 `knowledge_documents`；HNSW 索引由迁移建立，写入即生效。
 - 完成混合检索、`get_restaurant_evidence` 和引用。
 - 建立最小 RAG 评测集。
 
@@ -1339,7 +1376,7 @@ HTTP 服务统一使用 CloudWeGo Hertz：
 - 工具超时、降级、重试和错误恢复。
 - trace、token、成本和检索质量看板。
 - Prompt 版本、模型对比和 Agent 回放。
-- 前端演示、Atlas 数据模型和 Agent 状态图展示。
+- 前端演示、数据模型和 Agent 状态图展示。
 
 ## 13. MVP 验收标准
 
@@ -1366,19 +1403,19 @@ MVP 至少满足：
 | bbox 不是严格曼哈顿 | 地区筛选不准 | 文档声明近似范围；P1 再引入行政区 polygon |
 | 类别和属性有噪音 | 搜索误召回 | curated 层增加规范化标签和过滤规则 |
 | 评论量过大 | embedding 成本高 | 只对精选餐厅和代表性评论生成文档 |
-| Atlas 写入量和存储成本 | 导入或索引超预算 | 先导入样本，监控集合和索引大小；全量评论与向量化分离 |
+| 导入数据量与索引存储 | 导入或索引超预算 | 先导入样本，监控表与索引大小；全量评论与向量化分离 |
 | 评论偏置和恶意文本 | 错误结论或注入 | 聚合、过滤、rerank、引用隔离和输出 guardrail |
 | 缺失字段被当成 false | 产生错误事实 | 使用三态 `true/false/unknown` |
 | Agent 工具选择错误 | 调错工具或遗漏检索 | 结构化工具 schema、状态机、轨迹评估和回放 |
-| Atlas 网络或索引配置错误 | RAG 不可用 | 连接重试、索引版本化、健康检查和降级检索 |
+| 数据库不可用或索引缺失 | RAG 不可用 | 连接重试、迁移版本化（`schema_migrations`）、健康检查和降级检索 |
 | 远端模型能力不一致 | 工具调用或结构化输出失败 | 维护模型能力表；只允许支持所需能力的模型进入 Agent 路由 |
-| 组件过多 | 本地难运行 | MongoDB Atlas + Go HTTP 服务 + Ollama + 远端 Chat API + Eino 即可 |
+| 组件过多 | 本地难运行 | PostgreSQL + Go HTTP 服务 + Ollama + 远端 Chat API + Eino 即可 |
 
 ## 15. 第一条纵向切片
 
 推荐先完成：
 
-> 读取一批 Google Local Meta 和 Review -> 清洗并写入 MongoDB Atlas 的 `restaurants` 和 `reviews` -> 为每家餐厅生成 profile 和 review summary -> 用本地 Qwen3-Embedding 生成向量 -> 使用 Atlas Vector Search 和结构化过滤完成混合检索 -> 返回餐厅候选、证据和快照时间 -> Eino 调用 ChatProvider 生成规划和回答 -> 在 trace 中回放完整 Agent 链路。
+> 读取一批 Google Local Meta 和 Review -> 清洗并写入 PostgreSQL 的 `restaurants` 和 `reviews` -> 为每家餐厅生成 profile 和 review summary -> 用本地 Qwen3-Embedding 生成向量写入 `knowledge_documents` -> 用结构化过滤 + `pg_trgm` 关键词 + pgvector 向量召回完成混合检索 -> 返回餐厅候选、证据和快照时间 -> Eino 调用 ChatProvider 生成规划和回答 -> 在 trace 中回放完整 Agent 链路。
 
 这条切片同时验证：
 

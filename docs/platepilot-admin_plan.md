@@ -22,7 +22,7 @@
 
 ### 必须遵守的硬约束
 
-1. **领域层禁词测试**（[architecture_test.go](file:///Users/zed/Codes/PlatePilot/shared/domain/architecture_test.go#L128-L161)）：`shared/domain/` 下任何 `.go` 文件（含注释）不得出现 `mongo/atlas/postgres/postgis/pgvector/sql`。新包 `shared/domain/inspect/` 的注释必须规避这些词。
+1. **领域层禁词测试**（[architecture_test.go](file:///Users/zed/Codes/PlatePilot/shared/domain/architecture_test.go#L128-L161)）：`shared/domain/` 下任何 `.go` 文件（含注释）不得出现 `postgres/postgis/pgvector/sql`。新包 `shared/domain/inspect/` 的注释必须规避这些词。
 2. **领域层零第三方依赖**：新 DTO 包只能 import stdlib 与 `shared/domain/*`（可用 `encoding/json`）。
 3. **只读**：InspectStore 无写方法；`/admin/v1` 只注册 GET + 两个 POST（检索语义）；架构测试断言。
 4. **keyset 分页，无 OFFSET**；空列表返回 `[]` 而非 `null`；资源不存在返回 `not_found`。
