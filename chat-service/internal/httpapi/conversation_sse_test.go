@@ -108,11 +108,31 @@ func (f *fakeChatService) ListCandidates(_ context.Context, threadID string) (Ca
 	if threadID == "thread-nil-candidates" {
 		return CandidatePage{}, nil
 	}
+	if threadID == "thread-no-snapshot" {
+		// A candidate the store never dated. It is not a special case in the
+		// product — only in this fixture, which needs one row without a
+		// snapshot to prove the field is left out rather than sent as year 1.
+		return CandidatePage{Candidates: []conversation.Candidate{
+			{ThreadID: threadID, Position: 1, RestaurantID: 11, Name: "A Ramen", Score: 0.91},
+		}}, nil
+	}
 	return CandidatePage{Candidates: []conversation.Candidate{
-		{ThreadID: threadID, Position: 1, RestaurantID: 11, Name: "A Ramen", Score: 0.91},
-		{ThreadID: threadID, Position: 2, RestaurantID: 22, Name: "B Ramen", Score: 0.83},
+		{
+			ThreadID: threadID, Position: 1, RestaurantID: 11, Name: "A Ramen", Score: 0.91,
+			Reasons:    []string{"评论推断：安静（ambience）"},
+			SnapshotAt: candidateSnapshotAt,
+		},
+		{
+			ThreadID: threadID, Position: 2, RestaurantID: 22, Name: "B Ramen", Score: 0.83,
+			Reasons:    []string{"硬条件命中：菜系=ramen"},
+			SnapshotAt: candidateSnapshotAt,
+		},
 	}}, nil
 }
+
+// candidateSnapshotAt is the fixed observation date the candidate fixture
+// carries, so a test asserting on it does not depend on when it runs.
+var candidateSnapshotAt = time.Date(2021, 9, 1, 12, 0, 0, 0, time.UTC)
 
 type listCall struct {
 	threadID string

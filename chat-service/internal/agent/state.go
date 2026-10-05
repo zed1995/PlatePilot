@@ -78,7 +78,9 @@ type TurnState struct {
 	// MemoryContext is the system-segment built from the user's long-term
 	// memories. Empty when there is nothing to inject.
 	MemoryContext string
-	// DroppedMemoryCount records how many memories the window cut.
+	// DroppedMemoryCount records how many of the user's live memories the
+	// injection window left out. Constraints are never counted here: they are
+	// injected in full, so only retrieved preferences and facts can be cut.
 	DroppedMemoryCount int
 
 	Intent     Intent
@@ -129,6 +131,13 @@ type TurnState struct {
 	// template instead of shipping an ungrounded generation.
 	RetrievalEmpty bool
 
+	// AvailabilityRestaurantIDs and AvailableSlotIDs record what this turn's
+	// availability lookups saw. They are the value domain a mocked booking's
+	// arguments are checked against: a slot id the turn never read is a slot id
+	// the model invented, whatever the schema says about its type.
+	AvailabilityRestaurantIDs []int64
+	AvailableSlotIDs          []string
+
 	// ClarificationOptions are the restaurants a name matched equally well. When
 	// non-empty the turn stops and asks, because answering about "the" Katz's
 	// when the user meant a different one is a wrong answer that reads as a
@@ -147,6 +156,15 @@ type TurnState struct {
 
 	// ToolRounds counts completed tool-execution rounds.
 	ToolRounds int
+	// ToolCallSeq numbers this run's audit rows for tool calls, from 1, in the
+	// order the model asked for them. It lives on the turn rather than in the
+	// tools node because it has to survive across rounds: a run may execute
+	// several rounds, and the read path needs one order for the whole run.
+	//
+	// It is assigned on the goroutine that owns the round, before any call is
+	// launched, so concurrent calls cannot race for a number and the numbering
+	// cannot depend on which store answered first.
+	ToolCallSeq int
 	// PendingToolCalls reports whether the most recent model response requested
 	// another tool round.
 	PendingToolCalls bool
@@ -178,7 +196,20 @@ const (
 	// EventStart opens a turn.
 	EventStart EventType = "message.start"
 	// EventDelta is one answer text increment.
+	//
+	// Under answer streaming it is a provisional increment rather than the
+	// whole answer: a client accumulates them, and discards what it accumulated
+	// only if an EventAnswerReplace arrives.
 	EventDelta EventType = "message.delta"
+	// EventAnswerReplace carries the corrected full answer text.
+	//
+	// It exists because a streamed answer that violates citation closure cannot
+	// be un-sent: the first generation has already been rendered by the time
+	// the violation is known. The replacement is a whole body, not a
+	// correction, which is why it travels in Text rather than reusing Delta —
+	// a client that could not tell an increment from a replacement would append
+	// the corrected text to the text it is meant to replace.
+	EventAnswerReplace EventType = "message.replace"
 	// EventToolStart marks the beginning of one tool invocation.
 	EventToolStart EventType = "tool.start"
 	// EventToolFinish marks the end of one tool invocation.
@@ -231,6 +262,10 @@ type Event struct {
 	// Text / citation events.
 	Delta     string
 	Citations []int64
+	// Text is the whole replacement body carried by a message.replace event.
+	// It is separate from Delta so "increment" and "replace" never share a
+	// field and a client cannot accidentally append one to the other.
+	Text string
 
 	// Awaiting-input event.
 	State         string

@@ -190,11 +190,18 @@ type threadListResponse struct {
 // Position is carried rather than implied by array index because the UI renders
 // it as an ordinal — "第二家" — and an index-derived ordinal would silently
 // renumber every bubble the moment one duplicate was dropped.
+//
+// Reasons and SnapshotAt travel with the row because they are what makes the
+// ranking checkable: the reasons say why this restaurant ranked where it did,
+// and the snapshot time says how old the data behind it is. A list of names and
+// scores without them presents a ranking as eternal and unexplained.
 type candidateView struct {
-	Position     int     `json:"position"`
-	RestaurantID int64   `json:"restaurant_id"`
-	Name         string  `json:"name,omitempty"`
-	Score        float64 `json:"score,omitempty"`
+	Position     int        `json:"position"`
+	RestaurantID int64      `json:"restaurant_id"`
+	Name         string     `json:"name,omitempty"`
+	Score        float64    `json:"score,omitempty"`
+	Reasons      []string   `json:"reasons,omitempty"`
+	SnapshotAt   *time.Time `json:"snapshot_at,omitempty"`
 }
 
 type candidateListResponse struct {
@@ -246,12 +253,21 @@ func toThreadResponse(detail ThreadDetail) threadResponse {
 func toCandidateListResponse(page CandidatePage) candidateListResponse {
 	views := make([]candidateView, 0, len(page.Candidates))
 	for _, candidate := range page.Candidates {
-		views = append(views, candidateView{
+		view := candidateView{
 			Position:     candidate.Position,
 			RestaurantID: candidate.RestaurantID,
 			Name:         candidate.Name,
 			Score:        candidate.Score,
-		})
+			Reasons:      candidate.Reasons,
+		}
+		// A snapshot the store never recorded is left out rather than sent as
+		// the zero time: "1 January year 1" is not an observation date, and a
+		// client rendering it would print a date the data never had.
+		if !candidate.SnapshotAt.IsZero() {
+			at := candidate.SnapshotAt
+			view.SnapshotAt = &at
+		}
+		views = append(views, view)
 	}
 	return candidateListResponse{Candidates: views}
 }

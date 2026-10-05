@@ -26,6 +26,7 @@ type StreamEventType string
 const (
 	StreamStart         StreamEventType = "message.start"
 	StreamDelta         StreamEventType = "message.delta"
+	StreamReplace       StreamEventType = "message.replace"
 	StreamToolStart     StreamEventType = "tool.start"
 	StreamToolFinish    StreamEventType = "tool.finish"
 	StreamCitation      StreamEventType = "citation"
@@ -59,7 +60,13 @@ type StreamEvent struct {
 	LatencyMS  int64
 
 	// Text / citation events.
+	//
+	// Delta is provisional under answer streaming: a client accumulates it and
+	// must replace everything it accumulated when ReplaceText arrives. The two
+	// are separate fields because a replacement is not an increment, and a
+	// client that appended one to the other would render the answer twice.
 	Delta       string
+	ReplaceText string
 	EvidenceIDs []int64
 
 	// Awaiting-input event: the thread parked a question for the user.
@@ -97,6 +104,16 @@ type sseStartData struct {
 
 type sseDeltaData struct {
 	Delta string `json:"delta"`
+}
+
+// sseReplaceData tells the client to discard what it rendered for this run and
+// keep this text instead.
+//
+// It is a whole body rather than a diff because the corrected answer is a fresh
+// generation, not an edit of the first one: character offsets from the first
+// body do not survive into the second.
+type sseReplaceData struct {
+	Text string `json:"text"`
 }
 
 type sseToolStartData struct {
@@ -210,6 +227,8 @@ func (ev StreamEvent) payload() ([]byte, error) {
 		return json.Marshal(sseStartData{RunID: ev.RunID, ThreadID: ev.ThreadID})
 	case StreamDelta:
 		return json.Marshal(sseDeltaData{Delta: ev.Delta})
+	case StreamReplace:
+		return json.Marshal(sseReplaceData{Text: ev.ReplaceText})
 	case StreamToolStart:
 		return json.Marshal(sseToolStartData{CallID: ev.CallID, Tool: ev.Tool})
 	case StreamToolFinish:

@@ -119,6 +119,11 @@ function query(params: object): string {
 export type StreamEvent =
   | { type: 'message.start'; run_id: string; thread_id: string }
   | { type: 'message.delta'; delta: string }
+  // The corrected answer body. Deltas are provisional — the server publishes
+  // text as it is generated, and a citation that turns out to be out of range
+  // is repaired afterwards — so a replacement means "discard this run's text
+  // and keep this instead", not "append this".
+  | { type: 'message.replace'; text: string }
   | { type: 'tool.start'; call_id: string; tool: string }
   | { type: 'tool.finish'; call_id: string; status: string; latency_ms: number }
   | { type: 'citation'; evidence_ids: number[] }

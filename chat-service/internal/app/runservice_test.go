@@ -81,7 +81,7 @@ func TestGetRunAssemblesTheRunAndItsToolChain(t *testing.T) {
 	for i, name := range []string{"search_restaurants", "get_restaurant_evidence"} {
 		if err := runs.RecordToolCall(context.Background(), run.ToolCallRecord{
 			CallID: name, RunID: "run-1", ToolName: name,
-			Status: "ok", LatencyMS: int64(10 * (i + 1)), CreatedAt: started,
+			Status: "ok", Seq: i + 1, LatencyMS: int64(10 * (i + 1)), CreatedAt: started,
 		}); err != nil {
 			t.Fatalf("record tool call: %v", err)
 		}

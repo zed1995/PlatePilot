@@ -44,10 +44,10 @@ func TestRunRecordToolCall(t *testing.T) {
 	if err := repo.Start(ctx, run.AgentRun{RunID: "run-1", Status: run.StatusRunning}); err != nil {
 		t.Fatal(err)
 	}
-	if err := repo.RecordToolCall(ctx, run.ToolCallRecord{CallID: "c1", RunID: "run-1", ToolName: "search_restaurants", Status: "ok"}); err != nil {
+	if err := repo.RecordToolCall(ctx, run.ToolCallRecord{CallID: "c1", RunID: "run-1", ToolName: "search_restaurants", Status: "ok", Seq: 1}); err != nil {
 		t.Fatalf("record: %v", err)
 	}
-	if err := repo.RecordToolCall(ctx, run.ToolCallRecord{CallID: "c2", RunID: "missing"}); !errors.Is(err, errs.ErrNotFound) {
+	if err := repo.RecordToolCall(ctx, run.ToolCallRecord{CallID: "c2", RunID: "missing", Seq: 1}); !errors.Is(err, errs.ErrNotFound) {
 		t.Fatalf("want errs.ErrNotFound for unknown run, got %v", err)
 	}
 }

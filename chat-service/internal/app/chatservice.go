@@ -291,31 +291,22 @@ func (s *chatService) SendMessage(
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	forwarded := make(chan agent.Event)
-	go func() {
-		defer close(forwarded)
-		_, events := s.runner.Run(ctx, agent.TurnInput{
-			TraceID:   in.TraceID,
-			ThreadID:  in.ThreadID,
-			UserID:    in.UserID,
-			UserInput: in.Content,
-		})
-		for ev := range events {
-			select {
-			case forwarded <- ev:
-			case <-ctx.Done():
-				return
-			}
-		}
-	}()
-
-	for ev := range forwarded {
-		if err := emit(toStreamEvent(ev)); err != nil {
-			cancel()
-			return err
-		}
-	}
-	return nil
+	// RunLive rather than Run: Run only hands back its events once the turn is
+	// over, so every frame — including the answer's first token — would reach
+	// the client at the same moment. The graph is driven on its own goroutine
+	// and the frames are forwarded as they are produced, which is the whole
+	// point of an SSE turn. RunLive cancels the run when emit fails, so a
+	// disconnected client stops the model call instead of draining into a dead
+	// socket.
+	_, err := s.runner.RunLive(ctx, agent.TurnInput{
+		TraceID:   in.TraceID,
+		ThreadID:  in.ThreadID,
+		UserID:    in.UserID,
+		UserInput: in.Content,
+	}, func(ev agent.Event) error {
+		return emit(toStreamEvent(ev))
+	})
+	return err
 }
 
 // toStreamEvent maps an agent event onto the transport-neutral stream event.
@@ -329,6 +320,7 @@ func toStreamEvent(ev agent.Event) httpapi.StreamEvent {
 		Tool:          ev.Tool,
 		LatencyMS:     ev.LatencyMS,
 		Delta:         ev.Delta,
+		ReplaceText:   ev.Text,
 		EvidenceIDs:   ev.Citations,
 		FinishReason:  ev.FinishReason,
 		Usage:         ev.Usage,

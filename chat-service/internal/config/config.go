@@ -53,6 +53,12 @@ const (
 	// its own input check rather than by a confirmation step, so switching it
 	// off removes a capability the user asked for rather than closing a hole.
 	defaultAgentMemoryWriteEnabled = true
+
+	// defaultAgentAnswerStreaming publishes the composed answer as it is
+	// generated. It is on by default because the first-token latency it removes
+	// is the user-visible cost of the whole turn; the switch exists so a client
+	// that cannot handle a mid-answer replacement can opt out.
+	defaultAgentAnswerStreaming = true
 )
 
 // AgentConfig holds the agent runtime knobs. They stay effective even when no
@@ -89,6 +95,12 @@ type AgentConfig struct {
 	// Switching it off removes the capability rather than closing a hole, which
 	// is why it is a separate switch from anything about retrieval.
 	MemoryWriteEnabled bool
+
+	// AnswerStreaming publishes the composed answer incrementally instead of as
+	// one message.delta. Turning it off restores the single-delta behaviour and
+	// is the documented fallback for a client that does not understand
+	// message.replace, which is the only event streaming introduces.
+	AnswerStreaming bool
 }
 
 // AdminConfig holds the administration console settings. The console is off by
@@ -165,10 +177,24 @@ const (
 
 // ChatConfig holds the OpenAI-compatible chat provider settings (used from M4).
 type ChatConfig struct {
-	Provider     string
-	BaseURL      string
-	APIKey       string
-	Model        string
+	Provider string
+	BaseURL  string
+	APIKey   string
+	Model    string
+	// PlanModel, AnswerModel and ExtractModel put different models behind the
+	// three jobs a turn asks of one: deciding what to do next, writing the
+	// answer, and reading the sentence into slots. They are the cheapest form
+	// of model routing — a small model for extraction and a large one for the
+	// answer, with no router component in between.
+	//
+	// Empty means "the same as Model". The fallback is resolved at load time
+	// rather than at each use, so nothing downstream has to know it exists and
+	// an operator reading the startup summary sees the model each job really
+	// uses.
+	PlanModel    string
+	AnswerModel  string
+	ExtractModel string
+
 	ExtraHeaders map[string]string
 
 	Timeout time.Duration
@@ -194,6 +220,10 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("load .env: %w", err)
 	}
 	l := sharedcfg.NewLoader()
+	// Read once and reuse: it is the default for all three per-node overrides,
+	// and reading it three times would let the values drift apart if the
+	// loader ever acquired state.
+	chatModel := l.String("CHAT_MODEL", "")
 	cfg := Config{
 		App:       l.App(),
 		Log:       l.Log(),
@@ -217,7 +247,10 @@ func Load() (Config, error) {
 			Provider:              l.String("CHAT_PROVIDER", ""),
 			BaseURL:               l.String("CHAT_BASE_URL", ""),
 			APIKey:                l.String("CHAT_API_KEY", ""),
-			Model:                 l.String("CHAT_MODEL", ""),
+			Model:                 chatModel,
+			PlanModel:             modelOverride(l, "CHAT_MODEL_PLAN", chatModel),
+			AnswerModel:           modelOverride(l, "CHAT_MODEL_ANSWER", chatModel),
+			ExtractModel:          modelOverride(l, "CHAT_MODEL_EXTRACT", chatModel),
 			ExtraHeaders:          l.StringMap("CHAT_EXTRA_HEADERS_JSON"),
 			Timeout:               l.Duration("CHAT_TIMEOUT", defaultChatTimeout),
 			MaxRetries:            l.Int("CHAT_MAX_RETRIES", defaultChatMaxRetries),
@@ -234,6 +267,7 @@ func Load() (Config, error) {
 			ResolveMinSimilarity: l.Float("AGENT_RESOLVE_MIN_SIMILARITY", defaultAgentResolveMinSimilarity),
 			ResolveAmbiguityGap:  l.Float("AGENT_RESOLVE_AMBIGUITY_GAP", defaultAgentResolveAmbiguityGap),
 			MemoryWriteEnabled:   l.Bool("AGENT_MEMORY_WRITE_ENABLED", defaultAgentMemoryWriteEnabled),
+			AnswerStreaming:      l.Bool("PLATEPILOT_ANSWER_STREAMING", defaultAgentAnswerStreaming),
 		},
 		Admin: AdminConfig{
 			Enabled:         l.Bool("ADMIN_ENABLED", false),
@@ -422,6 +456,9 @@ func (c Config) Summary() map[string]any {
 		"postgres_database":            c.Postgres.Database,
 		"chat_provider":                c.Chat.Provider,
 		"chat_model":                   c.Chat.Model,
+		"chat_model_plan":              c.Chat.PlanModel,
+		"chat_model_answer":            c.Chat.AnswerModel,
+		"chat_model_extract":           c.Chat.ExtractModel,
 		"chat_timeout":                 c.Chat.Timeout.String(),
 		"chat_max_retries":             c.Chat.MaxRetries,
 		"chat_supports_tools":          c.Chat.SupportsTools,
@@ -435,6 +472,7 @@ func (c Config) Summary() map[string]any {
 		"agent_resolve_min_similarity": c.Agent.ResolveMinSimilarity,
 		"agent_resolve_ambiguity_gap":  c.Agent.ResolveAmbiguityGap,
 		"agent_memory_write_enabled":   c.Agent.MemoryWriteEnabled,
+		"agent_answer_streaming":       c.Agent.AnswerStreaming,
 		"embedding_provider":           c.Embedding.Provider,
 		"embedding_model":              c.Embedding.Model,
 		"embedding_dimensions":         c.Embedding.Dimensions,
@@ -454,6 +492,20 @@ func (c Config) Summary() map[string]any {
 		"reservation_hold_ttl":         c.Reservation.HoldTTL.String(),
 		"reservation_policy_version":   c.Reservation.PolicyVersion,
 	}
+}
+
+// modelOverride resolves one per-node model variable.
+//
+// An override with content wins; anything else — the variable unset, or set to
+// nothing — means "use the base model". That is the same rule the loader's
+// other helpers apply to an empty value, and it is why the resolution happens
+// here rather than at each use: `CHAT_MODEL_PLAN=` must mean "no override", not
+// "ask the provider for whatever its default model is".
+func modelOverride(l *sharedcfg.Loader, key, base string) string {
+	if value := strings.TrimSpace(l.String(key, "")); value != "" {
+		return value
+	}
+	return base
 }
 
 func validateAddr(addr string) error {

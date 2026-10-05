@@ -42,6 +42,13 @@ type scriptedProvider struct {
 
 	chunks    []domainchat.ChatChunk
 	streamErr error
+	// chunkDelay paces the stream, one wait per chunk; completeDelay is the
+	// same cost charged to a whole completion. They exist for the perf harness,
+	// where an instantaneous fake would make time-to-first-text unmeasurable:
+	// the point there is to hold the decode cost still and measure what the
+	// runtime does with it. Both are zero everywhere else.
+	chunkDelay    time.Duration
+	completeDelay time.Duration
 }
 
 type toolCallReq struct {
@@ -49,7 +56,17 @@ type toolCallReq struct {
 	specs []domaintool.ToolSpec
 }
 
-func (p *scriptedProvider) Complete(_ context.Context, req domainchat.ChatRequest) (domainchat.ChatResponse, error) {
+func (p *scriptedProvider) Complete(ctx context.Context, req domainchat.ChatRequest) (domainchat.ChatResponse, error) {
+	// A completion pays the same decode cost as the equivalent stream — the
+	// tokens take that long either way; the difference under test is when the
+	// runtime lets the client see them, not how fast the model is.
+	if p.completeDelay > 0 {
+		select {
+		case <-time.After(p.completeDelay):
+		case <-ctx.Done():
+			return domainchat.ChatResponse{}, ctx.Err()
+		}
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.completeReqs = append(p.completeReqs, req)
@@ -68,8 +85,32 @@ func (p *scriptedProvider) Stream(_ context.Context, req domainchat.ChatRequest)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.completeReqs = append(p.completeReqs, req)
-	chunks := p.chunks
-	return &scriptedStream{chunks: chunks, err: p.streamErr}, nil
+	// An error here is a provider that cannot stream at all, which is what the
+	// answer composer recovers from by falling back to a one-shot completion.
+	// A stream that opens and then dies is a different case, and tests that want
+	// it drive it through the chunk queue.
+	if p.streamErr != nil {
+		return nil, p.streamErr
+	}
+	if len(p.chunks) > 0 {
+		return &scriptedStream{chunks: p.chunks, delay: p.chunkDelay}, nil
+	}
+	// No streamed script: serve the next one-shot answer as a single chunk. It
+	// keeps a turn that only queued completeResps behaving the same whether or
+	// not streaming is switched on, so enabling the flag cannot silently change
+	// what an existing test asserts.
+	if len(p.completeResps) == 0 {
+		return &scriptedStream{}, nil
+	}
+	resp := p.completeResps[0]
+	p.completeResps = p.completeResps[1:]
+	if resp.Message.Content == "" {
+		return &scriptedStream{}, nil
+	}
+	return &scriptedStream{delay: p.chunkDelay, chunks: []domainchat.ChatChunk{{
+		Delta:        resp.Message.Content,
+		FinishReason: resp.FinishReason,
+	}}}, nil
 }
 
 func (p *scriptedProvider) SupportsTools() bool         { return p.supportTools }
@@ -94,17 +135,23 @@ func (p *scriptedProvider) ChatWithTools(ctx context.Context, req domainchat.Cha
 	return resp, nil
 }
 
+// scriptedStream replays a queued chunk list. Chunks are consumed, so a test
+// that wants a second stream must queue a second script.
 type scriptedStream struct {
 	chunks []domainchat.ChatChunk
-	err    error
+	// delay is waited before each chunk. Zero means no wait at all rather than
+	// an immediate timer, so the default costs nothing.
+	delay time.Duration
 }
 
 func (s *scriptedStream) Recv() (domainchat.ChatChunk, error) {
-	if s.err != nil {
-		return domainchat.ChatChunk{}, s.err
-	}
 	if len(s.chunks) == 0 {
 		return domainchat.ChatChunk{}, io.EOF
+	}
+	// The wait models decode time, so it comes before a token and not before
+	// the end of the stream.
+	if s.delay > 0 {
+		time.Sleep(s.delay)
 	}
 	chunk := s.chunks[0]
 	s.chunks = s.chunks[1:]

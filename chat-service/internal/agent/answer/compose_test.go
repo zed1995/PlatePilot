@@ -10,7 +10,7 @@ import (
 	domainchat "github.com/zed1995/platepilot/shared/domain/chat"
 	"github.com/zed1995/platepilot/shared/domain/errs"
 	"github.com/zed1995/platepilot/shared/domain/evidence"
-	"github.com/zed1995/platepilot/shared/domain/retrieval"
+	domainretrieval "github.com/zed1995/platepilot/shared/domain/retrieval"
 	"github.com/zed1995/platepilot/shared/domain/review"
 	"github.com/zed1995/platepilot/shared/domain/search"
 )
@@ -318,7 +318,7 @@ func TestComposeSortsSoftConditionsByWhetherEvidenceSupportsThem(t *testing.T) {
 		Evidence: []evidence.Evidence{
 			reviewEvidence(10, review.TopicAmbience, "很安静，适合聊天"),
 		},
-		SoftConditions: []retrieval.SoftCondition{
+		SoftConditions: []domainretrieval.SoftCondition{
 			{Text: "安静", Topic: review.TopicAmbience},
 			{Text: "服务好", Topic: review.TopicService},
 			{Text: "有个安静的院子"},
@@ -533,7 +533,7 @@ func TestComposeOrdersTheContextBlocks(t *testing.T) {
 		Candidates: []search.RestaurantCandidate{
 			{RestaurantID: 42, Name: "Trattoria Bella"},
 		},
-		SoftConditions: []retrieval.SoftCondition{{Text: "安静", Topic: review.TopicAmbience}},
+		SoftConditions: []domainretrieval.SoftCondition{{Text: "安静", Topic: review.TopicAmbience}},
 		MissingSlots:   []string{"party_size"},
 	})
 	if err != nil {

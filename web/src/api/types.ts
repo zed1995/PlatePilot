@@ -427,11 +427,19 @@ export interface MessageListResponse {
 // CandidateView is one row of a thread's candidate snapshot. Position is the
 // ordinal a follow-up says — "第二家" — so it is carried rather than derived
 // from the array index.
+//
+// Reasons and snapshot_at make the ranking checkable: the reasons say why this
+// restaurant ranked where it did, and the snapshot date says how old the data
+// behind it is. snapshot_at is absent when the store never recorded one, which
+// is different from a date — a client must not render an absent field as a
+// timestamp.
 export interface CandidateView {
   position: number
   restaurant_id: number
   name?: string
   score?: number
+  reasons?: string[]
+  snapshot_at?: string
 }
 
 export interface CandidateListResponse {

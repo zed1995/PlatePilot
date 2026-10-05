@@ -398,6 +398,120 @@ func TestSummaryOmitsSecrets(t *testing.T) {
 	}
 }
 
+// The three per-node models are optional. A deployment that names only
+// CHAT_MODEL has to keep getting that one model for all three jobs — the
+// override is an addition to the environment contract, not a second way to
+// configure the model that everyone must now know about.
+func TestPerNodeModelsFallBackToChatModel(t *testing.T) {
+	t.Setenv("CHAT_MODEL", "vendor/base-model")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	for name, got := range map[string]string{
+		"CHAT_MODEL":         cfg.Chat.Model,
+		"CHAT_MODEL_PLAN":    cfg.Chat.PlanModel,
+		"CHAT_MODEL_ANSWER":  cfg.Chat.AnswerModel,
+		"CHAT_MODEL_EXTRACT": cfg.Chat.ExtractModel,
+	} {
+		if got != "vendor/base-model" {
+			t.Errorf("%s = %q, want the base model", name, got)
+		}
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+}
+
+func TestLoadParsesPerNodeModelOverrides(t *testing.T) {
+	t.Setenv("CHAT_MODEL", "vendor/base-model")
+	t.Setenv("CHAT_MODEL_PLAN", "vendor/planner")
+	t.Setenv("CHAT_MODEL_ANSWER", "vendor/writer")
+	t.Setenv("CHAT_MODEL_EXTRACT", "vendor/reader")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Chat.Model != "vendor/base-model" {
+		t.Errorf("CHAT_MODEL = %q, want it left alone by the overrides", cfg.Chat.Model)
+	}
+	for name, got := range map[string]string{
+		"CHAT_MODEL_PLAN":    cfg.Chat.PlanModel,
+		"CHAT_MODEL_ANSWER":  cfg.Chat.AnswerModel,
+		"CHAT_MODEL_EXTRACT": cfg.Chat.ExtractModel,
+	} {
+		if got == "" || got == "vendor/base-model" {
+			t.Errorf("%s = %q, want its own model", name, got)
+		}
+	}
+	if cfg.Chat.PlanModel != "vendor/planner" ||
+		cfg.Chat.AnswerModel != "vendor/writer" ||
+		cfg.Chat.ExtractModel != "vendor/reader" {
+		t.Errorf("overrides landed in the wrong fields: %+v", cfg.Chat)
+	}
+}
+
+// Naming one node must not move the others off the base model: routing is the
+// point, and a single override that quietly un-routed the two it did not name
+// would send them to the provider's default model instead.
+func TestAPerNodeOverrideLeavesTheOthersOnTheBaseModel(t *testing.T) {
+	t.Setenv("CHAT_MODEL", "vendor/base-model")
+	t.Setenv("CHAT_MODEL_ANSWER", "vendor/writer")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Chat.AnswerModel != "vendor/writer" {
+		t.Fatalf("CHAT_MODEL_ANSWER = %q", cfg.Chat.AnswerModel)
+	}
+	if cfg.Chat.PlanModel != "vendor/base-model" || cfg.Chat.ExtractModel != "vendor/base-model" {
+		t.Fatalf("unnamed nodes did not stay on the base model: %+v", cfg.Chat)
+	}
+}
+
+// An override set to nothing is not an override. `CHAT_MODEL_PLAN=` occurs
+// naturally when an operator comments out the value but leaves the assignment,
+// and it must not mean "let the provider pick", which would silently route the
+// planning rounds away from the model the deployment configured.
+func TestAnEmptyPerNodeOverrideIsNotAnOverride(t *testing.T) {
+	t.Setenv("CHAT_MODEL", "vendor/base-model")
+	t.Setenv("CHAT_MODEL_PLAN", "")
+	t.Setenv("CHAT_MODEL_ANSWER", "   ")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Chat.PlanModel != "vendor/base-model" {
+		t.Errorf("empty CHAT_MODEL_PLAN gave %q, want the base model", cfg.Chat.PlanModel)
+	}
+	if cfg.Chat.AnswerModel != "vendor/base-model" {
+		t.Errorf("blank CHAT_MODEL_ANSWER gave %q, want the base model", cfg.Chat.AnswerModel)
+	}
+}
+
+// The startup summary is where an operator checks what a deployment actually
+// resolved to, so it has to report the effective models rather than the raw
+// variables — three identical names are the honest answer for a deployment
+// that overrode nothing.
+func TestSummaryReportsTheEffectivePerNodeModels(t *testing.T) {
+	cfg := baseConfig()
+	cfg.Chat.Model = "vendor/base-model"
+	cfg.Chat.PlanModel = "vendor/planner"
+	cfg.Chat.AnswerModel = "vendor/writer"
+	cfg.Chat.ExtractModel = "vendor/reader"
+	summary := cfg.Summary()
+	for key, want := range map[string]string{
+		"chat_model":         "vendor/base-model",
+		"chat_model_plan":    "vendor/planner",
+		"chat_model_answer":  "vendor/writer",
+		"chat_model_extract": "vendor/reader",
+	} {
+		if got := fmt.Sprint(summary[key]); got != want {
+			t.Errorf("summary[%q] = %q, want %q", key, got, want)
+		}
+	}
+}
+
 // The mock reservation capability is off unless an operator says otherwise.
 // That default is what keeps the only write path in the service opt-in.
 func TestReservationIsDisabledByDefault(t *testing.T) {

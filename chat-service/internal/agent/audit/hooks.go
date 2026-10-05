@@ -115,7 +115,21 @@ type ToolEvent struct {
 	Arguments     json.RawMessage
 	ResultSummary string
 	// Status is "ok" or "error".
-	Status    string
+	Status string
+	// Seq is the call's position within the run, from 1, in the order the model
+	// asked for the calls. It comes from the caller because the caller is the
+	// only thing that still knows that order once the calls are running at the
+	// same time, and it is what the read path orders by: rows are written as
+	// each call returns, so neither insert order nor a timestamp can recover
+	// the request order.
+	Seq int
+	// StartedAt is when the tool was actually invoked, which is not when this
+	// event was raised. It is recorded for the question Seq cannot answer —
+	// when each call began, and therefore whether the round overlapped at all.
+	//
+	// A zero value means the caller did not observe a start; the record then
+	// derives one from the end and the duration.
+	StartedAt time.Time
 	LatencyMS int64
 }
 
@@ -132,7 +146,9 @@ func (h *Hooks) ToolCall(ctx context.Context, ev ToolEvent) {
 		Arguments:     RedactArguments(ev.Name, ev.Arguments),
 		ResultSummary: truncateRunes(ev.ResultSummary, maxSummaryChars),
 		Status:        ev.Status,
+		Seq:           ev.Seq,
 		LatencyMS:     ev.LatencyMS,
+		StartedAt:     ev.StartedAt,
 		CreatedAt:     time.Now().UTC(),
 	}
 	writeCtx, cancel := auditCtx(ctx)

@@ -109,6 +109,7 @@ func runRunRepositoryContract(t *testing.T, runs store.RunRepository) {
 			ToolName:  "search_restaurants",
 			Arguments: json.RawMessage(`{"query":"italian"}`),
 			Status:    "ok",
+			Seq:       1,
 			LatencyMS: 12,
 			CreatedAt: startedAt.Add(10 * time.Millisecond),
 		}
@@ -128,6 +129,54 @@ func runRunRepositoryContract(t *testing.T, runs store.RunRepository) {
 		empty.RunID = "  "
 		if err := runs.RecordToolCall(ctx, empty); errs.CodeOf(err) != errs.CodeInvalidArgument {
 			t.Fatalf("RecordToolCall without run_id: want invalid_argument, got %v", err)
+		}
+		// A position is required for the same reason: the read path orders by
+		// it, and a row without one would sort somewhere arbitrary. PostgreSQL
+		// refuses it through the table's check constraint, so the in-memory
+		// adapter has to refuse it too or the two are not interchangeable.
+		unpositioned := record
+		unpositioned.CallID = "call-unpositioned"
+		unpositioned.Seq = 0
+		if err := runs.RecordToolCall(ctx, unpositioned); errs.CodeOf(err) != errs.CodeInvalidArgument {
+			t.Fatalf("RecordToolCall without seq: want invalid_argument, got %v", err)
+		}
+	})
+
+	// The start column is required, so a caller that did not observe the start
+	// cannot leave it unset. It can still say when the call finished and how
+	// long it took, and the two adapters have to derive the same answer from
+	// that — a store that stored a zero time instead would return a row no
+	// other adapter could produce.
+	t.Run("an_unobserved_start_is_derived_from_the_end", func(t *testing.T) {
+		if err := runs.Start(ctx, run.AgentRun{
+			TraceID: "trace-derived", ThreadID: "thread-derived", RunID: "run-derived",
+			Status: run.StatusRunning, StartedAt: startedAt,
+		}); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		finishedAt := startedAt.Add(time.Minute)
+		if err := runs.RecordToolCall(ctx, run.ToolCallRecord{
+			CallID:    "derived-call",
+			RunID:     "run-derived",
+			ToolName:  "search_restaurants",
+			Status:    "ok",
+			Seq:       1,
+			LatencyMS: 40,
+			CreatedAt: finishedAt,
+		}); err != nil {
+			t.Fatalf("RecordToolCall: %v", err)
+		}
+		got, err := runs.ListToolCalls(ctx, "run-derived")
+		if err != nil {
+			t.Fatalf("ListToolCalls: %v", err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("ListToolCalls returned %d rows, want 1", len(got))
+		}
+		want := finishedAt.Add(-40 * time.Millisecond)
+		if !got[0].StartedAt.Equal(want) {
+			t.Fatalf("started_at = %s, want the end less the duration (%s)",
+				got[0].StartedAt, want)
 		}
 	})
 
@@ -157,14 +206,42 @@ func runRunRepositoryContract(t *testing.T, runs store.RunRepository) {
 				t.Fatalf("Finish: %v", err)
 			}
 		}
-		// Two tool calls on the middle run, written out of chronological order
-		// so the read has to sort them.
+		// Two tool calls from one round, written in the order they finished
+		// rather than the order they were asked for: read-call-a was second and
+		// took longer than read-call-b, so it lands second. That is what a
+		// round of concurrent reads produces, and it is the case the read path
+		// has to undo — a store that ordered by insertion would hand the caller
+		// the tool chain backwards.
+		//
+		// The two are given the same started_at on purpose. It is what the
+		// runtime actually produces: the calls of a round are launched
+		// microseconds apart and the column is a wall clock stored at
+		// microsecond resolution, so the readings tie far more often than not.
+		// A fixture that spaced them out would let a store that ordered by
+		// start time pass here and be wrong in production, which is precisely
+		// how the timestamp ordering this replaces was retired.
+		roundStart := startedAt.Add(time.Minute)
 		for _, item := range []struct {
 			callID    string
+			seq       int
+			startedAt time.Time
+			latencyMS int64
 			createdAt time.Time
 		}{
-			{"read-call-b", startedAt.Add(time.Minute).Add(20 * time.Millisecond)},
-			{"read-call-a", startedAt.Add(time.Minute).Add(10 * time.Millisecond)},
+			{
+				callID:    "read-call-b",
+				seq:       2,
+				startedAt: roundStart,
+				latencyMS: 5,
+				createdAt: roundStart.Add(5 * time.Millisecond),
+			},
+			{
+				callID:    "read-call-a",
+				seq:       1,
+				startedAt: roundStart,
+				latencyMS: 90,
+				createdAt: roundStart.Add(90 * time.Millisecond),
+			},
 		} {
 			if err := runs.RecordToolCall(ctx, run.ToolCallRecord{
 				CallID:        item.callID,
@@ -173,7 +250,9 @@ func runRunRepositoryContract(t *testing.T, runs store.RunRepository) {
 				Arguments:     json.RawMessage(`{"query":"ramen"}`),
 				ResultSummary: "3 candidates",
 				Status:        "ok",
-				LatencyMS:     7,
+				Seq:           item.seq,
+				LatencyMS:     item.latencyMS,
+				StartedAt:     item.startedAt,
 				CreatedAt:     item.createdAt,
 			}); err != nil {
 				t.Fatalf("RecordToolCall: %v", err)
@@ -254,11 +333,38 @@ func runRunRepositoryContract(t *testing.T, runs store.RunRepository) {
 			t.Fatalf("ListToolCalls returned %d, want 2", len(calls))
 		}
 		if calls[0].CallID != "read-call-a" || calls[1].CallID != "read-call-b" {
-			t.Fatalf("tool calls out of order: %s, %s", calls[0].CallID, calls[1].CallID)
+			t.Fatalf("tool calls not in invocation order: %s, %s",
+				calls[0].CallID, calls[1].CallID)
+		}
+		if calls[0].Seq != 1 || calls[1].Seq != 2 {
+			t.Fatalf("seq did not round trip: %d, %d", calls[0].Seq, calls[1].Seq)
 		}
 		if calls[0].ToolName != "search_restaurants" || calls[0].Status != "ok" ||
-			calls[0].LatencyMS != 7 || calls[0].ResultSummary != "3 candidates" {
+			calls[0].LatencyMS != 90 || calls[0].ResultSummary != "3 candidates" {
 			t.Fatalf("tool call round trip lost fields: %+v", calls[0])
+		}
+		// The order above is seq's doing and nothing else's, and this is what
+		// says so. Both rows began at the same instant, so a store that ordered
+		// by started_at would have to fall back on a tiebreak to decide, and a
+		// store that ordered by insertion would put read-call-b first. Pinning
+		// the tie is also what stops the fixture from drifting into one where a
+		// start-time sort happens to be right.
+		if !calls[0].StartedAt.Equal(calls[1].StartedAt) {
+			t.Fatalf("fixture no longer ties on start time (%s vs %s): "+
+				"the case that justifies ordering by seq is gone",
+				calls[0].StartedAt, calls[1].StartedAt)
+		}
+		if !calls[1].CreatedAt.Before(calls[0].CreatedAt) {
+			t.Fatalf("the first call finished at %s, not before the second at %s: "+
+				"insertion order no longer differs from invocation order, "+
+				"so the read order proves nothing",
+				calls[1].CreatedAt, calls[0].CreatedAt)
+		}
+		if !calls[0].StartedAt.Equal(roundStart) {
+			t.Fatalf("started_at = %s, want %s", calls[0].StartedAt, roundStart)
+		}
+		if !calls[0].CreatedAt.Equal(roundStart.Add(90 * time.Millisecond)) {
+			t.Fatalf("created_at = %s, want the completion instant", calls[0].CreatedAt)
 		}
 		// Compared as parsed JSON: a jsonb column does not preserve the exact
 		// spelling (key order, spaces), and the contract is about the value
@@ -390,6 +496,15 @@ func runRunRepositoryContract(t *testing.T, runs store.RunRepository) {
 			Status: run.NodeOK, StartedAt: startedAt,
 		}); errs.CodeOf(err) != errs.CodeInvalidArgument {
 			t.Fatalf("RecordNode without run_id: want invalid_argument, got %v", err)
+		}
+		// A span without a position would sort somewhere arbitrary in the very
+		// read this table exists for. PostgreSQL refuses it through the check
+		// constraint, so the in-memory adapter has to refuse it too.
+		if err := runs.RecordNode(ctx, run.RunNode{
+			NodeID: "node-unpositioned", RunID: "run-nodes", TraceID: "trace-nodes",
+			Node: "plan", Seq: 0, Status: run.NodeOK, StartedAt: startedAt,
+		}); errs.CodeOf(err) != errs.CodeInvalidArgument {
+			t.Fatalf("RecordNode without seq: want invalid_argument, got %v", err)
 		}
 	})
 }

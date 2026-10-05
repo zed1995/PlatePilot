@@ -10,6 +10,10 @@
 //     followed by a message.end, and the turn has to end there rather than in
 //     `done`, because the thread really is waiting and the whole point of the
 //     badge next to it is that the server agrees.
+//  3. message.delta is provisional for the whole run. The server streams text as
+//     it is generated and validates citations afterwards, so a run's text is not
+//     final until message.end; a message.replace supersedes everything streamed
+//     before it. Nothing here may be written to a store mid-run.
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { sendMessage, type StreamEvent } from '../api/chat'
 import { collectCitationIds } from '../lib/answer'
@@ -89,6 +93,13 @@ export function reduce(state: TurnState, event: StreamEvent): TurnState {
       }
     case 'message.delta':
       return { ...state, text: state.text + event.delta }
+    case 'message.replace':
+      // A replacement is a whole body, not a correction: everything this run
+      // rendered is replaced rather than amended. The server only sends one
+      // when the first generation tripped the citation check, so the deltas
+      // that arrived before it were provisional text the user should never
+      // keep.
+      return { ...state, text: event.text }
     case 'tool.start':
       return {
         ...state,

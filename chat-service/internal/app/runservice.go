@@ -154,8 +154,9 @@ func toRunNodeView(row run.RunNode) httpapi.RunNodeView {
 // re-deriving a "safe" version here would mean two definitions of safe, of
 // which only the one at the write side is ever tested against real payloads.
 func toToolCallView(call run.ToolCallRecord) httpapi.ToolCallView {
-	return httpapi.ToolCallView{
+	view := httpapi.ToolCallView{
 		CallID:        call.CallID,
+		Seq:           call.Seq,
 		ToolName:      call.ToolName,
 		Status:        call.Status,
 		LatencyMS:     call.LatencyMS,
@@ -163,4 +164,11 @@ func toToolCallView(call run.ToolCallRecord) httpapi.ToolCallView {
 		Arguments:     call.Arguments,
 		CreatedAt:     call.CreatedAt,
 	}
+	// Pointer, like the node spans: the field is omitted rather than sent as a
+	// zero time when a store hands back a record without one.
+	if !call.StartedAt.IsZero() {
+		started := call.StartedAt.UTC()
+		view.StartedAt = &started
+	}
+	return view
 }

@@ -79,13 +79,25 @@ type RunView struct {
 // raw model payload: the read path returns what was stored rather than widening
 // it, because a read endpoint that reconstructed the original arguments would
 // undo the redaction exactly where nobody is looking for it.
+//
+// StartedAt is sent next to CreatedAt because they are two different instants.
+// Read-only calls in one round run concurrently, so a call that started first
+// can finish last: the list is returned in invocation order and CreatedAt is
+// when the call actually ended, and an overlap that a reader could not see
+// would make the concurrency look like a bug in the ordering.
 type ToolCallView struct {
-	CallID        string          `json:"call_id"`
+	CallID string `json:"call_id"`
+	// Seq is sent for the reason RunNodeView.Seq is: it is what the list is
+	// ordered by, and the order it encodes — the order the model asked for the
+	// calls — cannot be recovered from either timestamp once a round runs its
+	// calls at the same time.
+	Seq           int             `json:"seq"`
 	ToolName      string          `json:"tool_name"`
 	Status        string          `json:"status"`
 	LatencyMS     int64           `json:"latency_ms,omitempty"`
 	ResultSummary string          `json:"result_summary,omitempty"`
 	Arguments     json.RawMessage `json:"arguments,omitempty"`
+	StartedAt     *time.Time      `json:"started_at,omitempty"`
 	CreatedAt     time.Time       `json:"created_at"`
 }
 

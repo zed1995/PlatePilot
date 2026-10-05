@@ -106,6 +106,36 @@ cases:
       final_state: "idle"
 
   # ---------------------------------------------------------------------
+  # Grounding. This is the only path that streams, so it is the only case
+  # where the two answer paths — `PLATEPILOT_ANSWER_STREAMING` off and on —
+  # do different work. The suite grades every case under both settings; this
+  # is the one that would notice if they came apart.
+  #
+  # The `say` step is read twice, and that is deliberate rather than a
+  # duplication: a plan turn ends by saying something with no tool calls
+  # attached, and the composer then writes the answer. Here both sentences
+  # are the same one, which is what a scripted provider can assert — that the
+  # text the model "planned" and the text the composer validated agree.
+  # ---------------------------------------------------------------------
+  - id: ground_answer_cites_the_evidence_it_was_given
+    user_input: "Joe's Pizza 安静吗？"
+    script:
+      - call: resolve_restaurant
+        args: {"name": "Joe's Pizza"}
+      - call: get_restaurant_evidence
+        args: {"restaurant_ids": [7], "query": "这家安静吗"}
+      - say: "Joe's Pizza 以安静著称[^701]。\n评论里也提到晚上很安静[^702]。\nFOLLOWUPS: [\"能订位吗?\"]"
+    expect:
+      # The evidence fake tags its documents with the restaurant they are
+      # about (id*100+n), so the citation ids below are a scope check rather
+      # than a count: they can only be met by Joe's Pizza's own documents.
+      tools_invoked: [resolve_restaurant, get_restaurant_evidence]
+      tools_forbidden: [request_reservation, save_memory]
+      confirmation_required: false
+      final_state: "idle"
+      answer_contains: ["Joe's Pizza", "[^701]", "[^702]"]
+
+  # ---------------------------------------------------------------------
   # Confirmation safety. A write the user has not approved must not run,
   # whether or not the model asked for it.
   # ---------------------------------------------------------------------

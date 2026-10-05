@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react'
 
 import type { CandidateView } from '../../api/types'
-import { CandidateCards, dedupeByPosition } from './candidate-cards'
+import { CandidateCards, dedupeByPosition, formatSnapshotDate } from './candidate-cards'
 
 const rows: CandidateView[] = [
   { position: 1, restaurant_id: 11, name: 'Tabetomo', score: 0.91 },
@@ -36,4 +36,39 @@ test('the ordinal is the server’s position, and it is visible', () => {
 test('no candidates renders nothing rather than an empty card', () => {
   const { container } = render(<CandidateCards candidates={[]} />)
   expect(container).toBeEmptyDOMElement()
+})
+
+// A ranking whose reasons and observation date are hidden is an ordering the
+// reader has to take on faith. Both are shown on the card.
+test('a row shows why it ranked and how old its data is', () => {
+  render(
+    <CandidateCards
+      candidates={[
+        {
+          position: 1,
+          restaurant_id: 11,
+          name: 'Tabetomo',
+          score: 0.91,
+          reasons: ['评论推断：安静（ambience）', '硬条件命中：菜系=ramen'],
+          snapshot_at: '2021-09-01T12:00:00Z',
+        },
+      ]}
+    />,
+  )
+
+  expect(screen.getByText(/命中理由：评论推断：安静（ambience）；硬条件命中：菜系=ramen/)).toBeInTheDocument()
+  expect(screen.getByText('数据时间 2021-09-01')).toBeInTheDocument()
+})
+
+// The field is absent when the store never recorded a snapshot, and an absent
+// field must not be rendered as the zero timestamp.
+test('a row without a snapshot shows no data time', () => {
+  render(<CandidateCards candidates={[{ position: 1, restaurant_id: 11, name: 'Tabetomo' }]} />)
+
+  expect(screen.queryByText(/数据时间/)).not.toBeInTheDocument()
+})
+
+test('formatSnapshotDate falls back to the raw value when it cannot be parsed', () => {
+  expect(formatSnapshotDate('2021-09-01T12:00:00Z')).toBe('2021-09-01')
+  expect(formatSnapshotDate('not-a-date')).toBe('not-a-date')
 })

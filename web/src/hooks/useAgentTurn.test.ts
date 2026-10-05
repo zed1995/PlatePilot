@@ -119,6 +119,30 @@ describe('reduce', () => {
     expect(state.memories[0].content).toBe('不吃辣，也不吃香菜')
   })
 
+  it('replaces the whole run body when the server corrects the answer', () => {
+    // Deltas are provisional: the server streams text before it has validated
+    // the citations, and a violation is repaired by regenerating the answer.
+    // Appending the correction would render the answer twice.
+    const state = run([
+      delta('结论：这家很安静[^999]。'),
+      { type: 'message.replace', text: '结论：这家很安静[^1]。' },
+      { type: 'citation', evidence_ids: [1] },
+    ])
+    expect(state.text).toBe('结论：这家很安静[^1]。')
+    expect(state.citations).toEqual([1])
+  })
+
+  it('keeps the streamed text when no replacement arrives', () => {
+    const state = run([delta('半句'), delta('，还有半句')])
+    expect(state.text).toBe('半句，还有半句')
+  })
+
+  it('does not carry a replacement into the next turn', () => {
+    const dirty = run([{ type: 'message.replace', text: '上一轮的校准正文' }])
+    const fresh = run([{ type: 'message.start', run_id: 'r2', thread_id: 't1' }], dirty)
+    expect(fresh.text).toBe('')
+  })
+
   it('ignores an event it does not recognise', () => {
     // Node-level trace is planned for M6; a client that throws here would break
     // the whole turn the day the server starts emitting it.

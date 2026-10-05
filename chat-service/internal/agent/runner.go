@@ -34,10 +34,21 @@ const (
 type Config struct {
 	// MaxToolRounds bounds how many tool-execution rounds one turn may run.
 	MaxToolRounds int
-	// ModelName optionally overrides the provider's default model.
+	// ModelName optionally overrides the provider's default model for the
+	// planning rounds — the model that decides what to do next.
 	ModelName string
+	// AnswerModel optionally overrides the provider's default model for
+	// composing the final answer. Empty means "the same as ModelName": the two
+	// jobs may share a model, and a caller that names only one should not have
+	// to name it twice.
+	AnswerModel string
 	// MaxClarifications bounds consecutive disambiguation rounds per thread.
 	MaxClarifications int
+	// AnswerStreaming publishes the composed answer token by token instead of
+	// in one piece. The zero value is off, so a caller that has not thought
+	// about it gets the older, single-delta behaviour; the application turns it
+	// on from configuration.
+	AnswerStreaming bool
 }
 
 // Deps are the assembled capabilities a runner needs.
@@ -95,16 +106,21 @@ func NewRunner(cfg Config, deps Deps) (*Runner, error) {
 	}
 	composer := deps.Composer
 	if composer == nil {
-		composer = answer.NewComposer(answer.Deps{Chat: deps.Chat, Model: cfg.ModelName})
+		answerModel := cfg.AnswerModel
+		if answerModel == "" {
+			answerModel = cfg.ModelName
+		}
+		composer = answer.NewComposer(answer.Deps{Chat: deps.Chat, Model: answerModel})
 	}
 
 	r := &Runner{
-		cfg:         cfg,
-		deps:        deps,
-		planModel:   planModel,
-		composer:    composer,
-		hasTools:    len(toolInfos) > 0,
-		toolSupport: deps.ToolCalling != nil && deps.ToolCalling.SupportsTools(),
+		cfg:          cfg,
+		deps:         deps,
+		planModel:    planModel,
+		composer:     composer,
+		streamAnswer: cfg.AnswerStreaming,
+		hasTools:     len(toolInfos) > 0,
+		toolSupport:  deps.ToolCalling != nil && deps.ToolCalling.SupportsTools(),
 	}
 	if err := r.compile(); err != nil {
 		return nil, err
@@ -118,6 +134,9 @@ type Runner struct {
 	deps      Deps
 	planModel model.ToolCallingChatModel
 	composer  *answer.Composer
+	// streamAnswer mirrors cfg.AnswerStreaming, resolved once so the answer
+	// node reads a field instead of re-deriving the decision every turn.
+	streamAnswer bool
 
 	runnable    compose.Runnable[TurnInput, *TurnResult]
 	hasTools    bool
@@ -141,21 +160,85 @@ func (e *emitter) send(ctx context.Context, ev Event) {
 	}
 }
 
-// Run executes one turn. It blocks until the turn finishes; the returned
-// channel streams run events and is always closed before Run returns. A nil
-// result pairs with an error event describing why the turn failed.
+// Run executes one turn to completion and then hands back everything it
+// published. The returned channel streams run events and is always closed before
+// Run returns, which is what makes it a batch interface: every frame is
+// available at the end, none of them before. A nil result pairs with an error
+// event describing why the turn failed.
+//
+// A caller that renders the answer as it is written — the SSE handler — cannot
+// use this one; it wants RunLive.
 func (r *Runner) Run(ctx context.Context, in TurnInput) (*TurnResult, <-chan Event) {
 	em := newEmitter()
-	events := em.ch
+	result, _ := r.invoke(ctx, em, in)
+	close(em.ch)
+	return result, em.ch
+}
 
+// RunLive executes one turn and hands each event to onEvent as the graph
+// produces it, returning when the turn is over.
+//
+// The two entry points exist because they answer different questions. Run
+// answers "what did the turn produce"; RunLive answers "and when did each part
+// of it happen". Only the second can serve a streaming transport: a delta
+// delivered after the turn has finished is not a first token, it is the whole
+// answer in pieces, and that is exactly the difference streaming is supposed to
+// make.
+//
+// Draining concurrently with the graph is also what keeps the emitter's buffer
+// from becoming a wall. The channel holds eventBuffer frames; a turn that
+// publishes more than that while nobody reads would block on the next send
+// until the client's context expired, so a long answer could not be delivered
+// at all.
+//
+// An error from onEvent stops the turn — the client is gone, and the run is
+// cancelled the way a closed connection should cancel it — and is returned
+// after the stream has drained. The turn's own failure is not returned: it has
+// already been published as an error event, which is the form the transport
+// needs and the form every other caller reads.
+func (r *Runner) RunLive(
+	ctx context.Context, in TurnInput, onEvent func(Event) error,
+) (*TurnResult, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	em := newEmitter()
+	finished := make(chan *TurnResult, 1)
+	go func() {
+		defer close(em.ch)
+		result, _ := r.invoke(ctx, em, in)
+		finished <- result
+	}()
+
+	var forwardErr error
+	for ev := range em.ch {
+		if forwardErr != nil {
+			// Keep draining rather than returning early: the graph must never
+			// block on a buffer nobody is reading, and it stops on its own once
+			// the cancelled context reaches it.
+			continue
+		}
+		if err := onEvent(ev); err != nil {
+			forwardErr = err
+			cancel()
+		}
+	}
+	return <-finished, forwardErr
+}
+
+// invoke runs the graph, publishing into em. The channel is not closed here:
+// who closes it is what distinguishes Run from RunLive.
+func (r *Runner) invoke(ctx context.Context, em *emitter, in TurnInput) (*TurnResult, error) {
 	if in.UserInput == "" {
-		r.fail(ctx, em, in, runMeta{}, errs.New(errs.CodeInvalidArgument, "user input must not be empty"))
-		return nil, events
+		err := errs.New(errs.CodeInvalidArgument, "user input must not be empty")
+		r.fail(ctx, em, in, runMeta{}, err)
+		return nil, err
 	}
 	if r.hasTools && !r.toolSupport {
-		r.fail(ctx, em, in, runMeta{}, errs.New(errs.CodeInvalidArgument,
-			"tools are registered but the configured chat provider does not support tool calling"))
-		return nil, events
+		err := errs.New(errs.CodeInvalidArgument,
+			"tools are registered but the configured chat provider does not support tool calling")
+		r.fail(ctx, em, in, runMeta{}, err)
+		return nil, err
 	}
 
 	traceID := in.TraceID
@@ -183,7 +266,7 @@ func (r *Runner) Run(ctx context.Context, in TurnInput) (*TurnResult, <-chan Eve
 			ThreadID: meta.threadID, StartedAt: meta.startedAt,
 		}, err)
 		r.fail(runCtx, em, in, meta, err)
-		return nil, events
+		return nil, err
 	}
 	em.send(runCtx, Event{
 		Type:         EventEnd,
@@ -193,13 +276,14 @@ func (r *Runner) Run(ctx context.Context, in TurnInput) (*TurnResult, <-chan Eve
 		Usage:        &result.Usage,
 		Warnings:     result.Warnings,
 	})
-	close(events)
-	return result, events
+	return result, nil
 }
 
-// fail emits the terminal error event and closes the event channel. A
-// background context is used for the final send so cancellation of the run
-// context cannot suppress the error the consumer is draining the channel for.
+// fail emits the terminal error event. It does not close the event channel:
+// closing is the entry point's business, because who closes it — and therefore
+// when a consumer stops waiting — is the one thing that differs between Run and
+// RunLive. A background context is used for the send so cancellation of the run
+// context cannot suppress the error the consumer is draining for.
 func (r *Runner) fail(_ context.Context, em *emitter, in TurnInput, meta runMeta, err error) {
 	code := errs.CodeOf(err)
 	ev := Event{
@@ -212,7 +296,6 @@ func (r *Runner) fail(_ context.Context, em *emitter, in TurnInput, meta runMeta
 		ev.RunID = meta.runID
 	}
 	em.send(context.Background(), ev)
-	close(em.ch)
 }
 
 // runMeta is the per-run identity minted in Run and read by the graph nodes.

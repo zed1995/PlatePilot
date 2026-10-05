@@ -48,10 +48,12 @@ type threadListBody struct {
 
 type candidateListBody struct {
 	Candidates []struct {
-		Position     int     `json:"position"`
-		RestaurantID int64   `json:"restaurant_id"`
-		Name         string  `json:"name"`
-		Score        float64 `json:"score"`
+		Position     int       `json:"position"`
+		RestaurantID int64     `json:"restaurant_id"`
+		Name         string    `json:"name"`
+		Score        float64   `json:"score"`
+		Reasons      []string  `json:"reasons"`
+		SnapshotAt   time.Time `json:"snapshot_at"`
 	} `json:"candidates"`
 }
 
@@ -216,6 +218,47 @@ func TestListCandidatesCarriesTheSnapshotInPositionOrder(t *testing.T) {
 	}
 	if body.Candidates[1].Position != 2 || body.Candidates[1].Name != "B Ramen" {
 		t.Fatalf("second candidate = %+v", body.Candidates[1])
+	}
+}
+
+// A ranking is not checkable without its reasons and its observation date. The
+// reasons say why a restaurant ranked where it did; the snapshot time says how
+// old the data behind it is. Without them the list reads as an unexplained and
+// timeless ordering.
+func TestListCandidatesCarriesReasonsAndTheSnapshotTime(t *testing.T) {
+	fake := newFakeChatService()
+	base := startChatServer(t, fake)
+
+	_, raw := chatRequest(t, http.MethodGet, base+"/v1/conversations/thread-9/candidates", nil, nil)
+	var body candidateListBody
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(body.Candidates) != 2 {
+		t.Fatalf("candidates = %d, want 2: %s", len(body.Candidates), raw)
+	}
+	first := body.Candidates[0]
+	if len(first.Reasons) != 1 || first.Reasons[0] != "评论推断：安静（ambience）" {
+		t.Fatalf("first candidate reasons = %v", first.Reasons)
+	}
+	if !first.SnapshotAt.Equal(candidateSnapshotAt) {
+		t.Fatalf("snapshot_at = %v, want %v", first.SnapshotAt, candidateSnapshotAt)
+	}
+}
+
+// A candidate whose snapshot the store never recorded must not come back dated
+// year 1. An absent field is the honest answer; a zero timestamp is a date the
+// data never had, and a client would render it.
+func TestListCandidatesOmitsAnUnknownSnapshotTime(t *testing.T) {
+	fake := newFakeChatService()
+	base := startChatServer(t, fake)
+
+	_, raw := chatRequest(t, http.MethodGet, base+"/v1/conversations/thread-no-snapshot/candidates", nil, nil)
+	if strings.Contains(string(raw), "snapshot_at") {
+		t.Fatalf("an unrecorded snapshot must be omitted, not sent as the zero time: %s", raw)
+	}
+	if !strings.Contains(string(raw), `"restaurant_id":11`) {
+		t.Fatalf("the row itself must still be returned: %s", raw)
 	}
 }
 

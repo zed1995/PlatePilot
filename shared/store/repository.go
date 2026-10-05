@@ -174,6 +174,24 @@ type MemoryRepository interface {
 	List(ctx context.Context, userID string) ([]memory.Memory, error)
 	Upsert(ctx context.Context, mem memory.Memory) error
 	Delete(ctx context.Context, userID, memoryID string) error
+
+	// Search returns up to limit of a user's live memories whose content
+	// matches query, best match first.
+	//
+	// It exists because List answers the wrong question once a user has enough
+	// memories to fill the injection window: "which are the newest" is not
+	// "which are about what was just asked", and the second is the only one
+	// that can be answered without spending the whole window on rows this turn
+	// has nothing to do with.
+	//
+	// Matching is lexical — a memory matches when its content contains any
+	// whitespace-separated term of the query, case-insensitively — because the
+	// write path stores no embedding to match against. Ordering is by how many
+	// terms matched, then by recency, then by id, so the result is total and
+	// two adapters agree. An empty query matches nothing: the caller has
+	// nothing to retrieve against and gets an empty result rather than a
+	// silently unfiltered listing.
+	Search(ctx context.Context, userID, query string, limit int) ([]memory.Memory, error)
 }
 
 // RunRepository records agent runs and tool call audits.

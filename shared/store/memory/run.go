@@ -50,10 +50,23 @@ func (r *RunRepository) Finish(_ context.Context, agentRun run.AgentRun) error {
 }
 
 // RecordToolCall appends a tool call audit record to its run.
+//
+// The start is normalised on the way in for the same reason the other stores
+// stamp their own timestamps: the column is required, and a caller that did not
+// observe the start should read back the same derived value it would get from
+// PostgreSQL rather than a zero time that no other adapter can store.
 func (r *RunRepository) RecordToolCall(_ context.Context, call run.ToolCallRecord) error {
 	if strings.TrimSpace(call.RunID) == "" {
 		return errs.New(errs.CodeInvalidArgument, "run_id is required")
 	}
+	// The read path orders by this column, so a row without a position sorts
+	// silently into the wrong place. PostgreSQL refuses it through the table's
+	// check constraint; refusing it here is what keeps the two adapters
+	// interchangeable rather than merely close.
+	if call.Seq <= 0 {
+		return errs.New(errs.CodeInvalidArgument, "seq must be positive")
+	}
+	call.StartedAt = call.Start()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, ok := r.runs[call.RunID]; !ok {
@@ -70,6 +83,12 @@ func (r *RunRepository) RecordNode(_ context.Context, node run.RunNode) error {
 	}
 	if strings.TrimSpace(node.NodeID) == "" {
 		return errs.New(errs.CodeInvalidArgument, "node_id is required")
+	}
+	// Same rule as RecordToolCall, and for the same reason: the read path
+	// orders by this column, and PostgreSQL refuses a span without a position
+	// through the table's check constraint.
+	if node.Seq <= 0 {
+		return errs.New(errs.CodeInvalidArgument, "seq must be positive")
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -151,6 +170,13 @@ func (r *RunRepository) ListRuns(_ context.Context, threadID string, limit int, 
 
 // ListToolCalls returns one run's tool calls in invocation order. An unknown
 // run yields an empty slice, not an error.
+//
+// Insert order is completion order — a parallel round writes each row when its
+// call returns — so the sort is what makes the read answer the question the
+// caller asked, which is what the model asked for in the first place. seq is
+// the key rather than started_at for the reason the column exists: the calls of
+// one round start microseconds apart, and a sort on a wall clock would leave
+// the order to the tiebreak.
 func (r *RunRepository) ListToolCalls(_ context.Context, runID string) ([]run.ToolCallRecord, error) {
 	if strings.TrimSpace(runID) == "" {
 		return nil, errs.New(errs.CodeInvalidArgument, "run_id is required")
@@ -160,12 +186,7 @@ func (r *RunRepository) ListToolCalls(_ context.Context, runID string) ([]run.To
 	calls := r.toolCalls[runID]
 	out := make([]run.ToolCallRecord, len(calls))
 	copy(out, calls)
-	sort.SliceStable(out, func(i, j int) bool {
-		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
-			return out[i].CreatedAt.Before(out[j].CreatedAt)
-		}
-		return out[i].CallID < out[j].CallID
-	})
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Seq < out[j].Seq })
 	return out, nil
 }
 

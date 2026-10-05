@@ -41,7 +41,8 @@ scores tool selection, confirmation-gate safety, duplicate-booking safety and
 end-to-end success (`make eval-agent`). Fixed requests replay identically and
 two model configurations diff case by case. `make perf` measures live search
 latency (p50 129 ms / p95 158 ms, of which the embedding round trip is ~53%)
-and the agent runtime's own overhead (p50 0.33 ms per turn, offline). The web
+and the agent runtime's own overhead (p50 0.34 ms per turn, offline, with
+time-to-first-answer-text reported under both answer paths). The web
 console ships the agent verification surface (`/agent`) with trace and
 candidate panels, and the mock inventory is viewable and resettable
 (`/inventory`, `GET/POST /admin/v1/restaurants/:id/inventory[/reset]`).
@@ -217,6 +218,13 @@ revisit.
 - **Chinese text search is trigram-based.** `pg_trgm` handles Chinese *fuzzy*
   matching but is not a Chinese tokenizer. Adequate for name/address matching;
   revisit if the corpus grows Chinese-language descriptive content.
+- **Memory search scans one user's live rows.** `user_memories_content_trgm`
+  exists and is usable, but the search also filters `user_id`, which 0006 already
+  indexes, so PostgreSQL narrows by user first and evaluates the patterns as a
+  filter — still a sequential scan at 50k memories for a single user. Correct at
+  the documented volume (<1k memories/user); the trigger to revisit is a
+  per-user count where scanning all of it per turn stops being free, and the
+  thing to change then is the injection policy, not the index.
 - **Identity is a request header, not authentication.** `/v1` trusts whatever
   `X-User-ID` the caller sends, and `/admin/v1` is gated only by a loopback
   check — there are no credentials anywhere. This is deliberate for a local,
@@ -571,11 +579,28 @@ make -C chat-service perf         # live: needs pg-up + ollama serve
 
 `eval-agent` scores the agent fixture suite over four gates — tool-selection
 accuracy, confirmation-gate safety, duplicate-booking safety, end-to-end
-success — all required at 1.0, and replays every fixed request twice to assert
-bit-identical behaviour, then diffs two model configurations case by case. The
+success — all required at 1.0. Every case is graded **twice**, once per answer
+path, because a streamed turn publishes text before the citation check has run
+and the gates have to hold in the configuration where a violation could reach
+the user. The suite then replays every fixed request twice to assert
+bit-identical behaviour, and diffs two model configurations case by case. The
 fixtures are plain YAML (scripted provider calls, runtime-property assertions),
-so adding a case is a data edit. `perf` prints search p50/p95 with the
-embedding share called out, plus the agent runtime's own per-turn overhead.
+so adding a case is a data edit.
+
+`perf` prints search p50/p95 with the embedding share called out, plus the agent
+runtime's own per-turn overhead split into **time to first answer text** and
+**whole-turn latency**, under both answer paths:
+
+| Grounded turn (offline, `PLATEPILOT_PERF=1`) | first text | whole turn |
+|---|---|---|
+| one-shot answer | p50 122.4 ms | p50 123.0 ms |
+| streamed answer | p50 65.2 ms | p50 130.9 ms |
+
+Those numbers are the runtime's own, measured against a scripted provider paced
+at a fixed 20 ms per chunk: they say what the agent spends, not what a model
+would take. The comparison is the point — streaming does the same work and
+publishes it about one line earlier, and the whole-turn cost rises slightly
+because the answer is validated against a stream rather than in one piece.
 
 ## Conversational agent (M4–M5)
 
@@ -586,7 +611,7 @@ surface composes them into an agent: one endpoint drives a whole turn.
 POST /v1/conversations                     # open a thread
 POST /v1/conversations/:id/messages        # one agent turn, streamed over SSE
 POST /v1/conversations/:id/confirm         # answer a pending confirmation
-GET  /v1/conversations/:id/candidates      # the turn's search candidates
+GET  /v1/conversations/:id/candidates      # the turn's search candidates (position, score, reasons, snapshot_at)
 GET  /v1/conversations/:id/runs            # per-turn run records
 GET  /v1/runs/:run_id/nodes                # graph-node spans with latency
 GET  /v1/traces/:trace_id                  # trace-id lookup for support
@@ -612,6 +637,25 @@ Behaviour worth knowing:
 - **Soft degradation.** A missing chat provider fails startup (the model is
   primary from M4); a missing embedding provider degrades retrieval to the
   structured and keyword channels and says so in the trace.
+- **Long-term memories are retrieved, not replayed.** Constraints go in whole —
+  they are hard requirements, and a search that happened not to surface one
+  would otherwise silently drop it. Preferences and facts are chosen by matching
+  the user's current message against their content, so the injection window is
+  spent on the memories this turn is about. A search that fails or matches
+  nothing falls back to most-confident-first, which means retrieval can only
+  narrow the window, never empty it.
+- **One round's read-only tool calls run concurrently; a write stops the round.**
+  A model that asks for several independent lookups in one message is saying it
+  does not need them in order, so up to three of them run at once. Nothing above
+  the tool loop can tell: the transcript, the turn state and the next round's
+  context are exactly what sequential execution would have produced. A call that
+  changes something outside the conversation never runs alongside anything and
+  ends the round — it is parked on the thread for approval, and the calls after
+  it are dropped rather than run against a state the write has not established.
+  On the audit trail this is visible as: `tool.finish` frames arriving out of
+  call order, rows written as each call returns, and `seq` on each row — the
+  request order a reader gets, since neither timestamp can carry it once the
+  calls start together.
 - **Mock inventory.** Reservation slots are demo state. The console can view
   and reset it (`GET/POST /admin/v1/restaurants/:id/inventory[/reset]?date=`)
   so a demo can be replayed from the top; the reset is the one write behind
@@ -621,6 +665,52 @@ The web console (`web/`, `npm run dev`) exposes this as two surfaces: the
 ops pages read the database through `/admin/v1`, and the verification pages —
 `/agent` for scripted conversation runs with trace and candidate panels,
 `/inventory` for the mock inventory — are the ones that act.
+
+### The turn's event stream
+
+`POST /v1/conversations/:id/messages` answers with Server-Sent Events. The
+event set is closed: a client that meets an unknown name may ignore it, but the
+server never emits one the contract does not define.
+
+| Event | Payload | Meaning |
+|---|---|---|
+| `message.start` | `run_id`, `thread_id` | A turn opened. Everything before it belongs to the previous one. |
+| `message.delta` | `delta` | Answer text, **provisional for the whole run**. |
+| `message.replace` | `text` | Discard this run's text and keep this body instead. |
+| `tool.start` | `call_id`, `tool` | A tool invocation began. |
+| `tool.finish` | `call_id`, `status`, `latency_ms` | The invocation with that `call_id` ended. |
+| `citation` | `evidence_ids` | The validated evidence IDs of the answer. |
+| `state.awaiting_input` | `state`, `pending_action`, `missing_slots` | The thread parked a question; the next request is the user's. |
+| `confirmation.required` | `state`, `pending_action`, `summary` | The thread parked a write; answer it on the confirm route. |
+| `memory.saved` | `memory_id`, `memory_type`, `content`, `refreshed` | The turn wrote one long-term memory. |
+| `message.end` | `finish_reason`, `usage`, `warnings` | The turn finished. Only now is the text final. |
+| `error` | `code`, `message` | The turn failed; `code` is an `errs.Code`. |
+
+**Text is provisional until `message.end`.** The answer is composed with
+citation closure enforced in code: a first generation that cites an evidence ID
+this turn does not have is regenerated, but under streaming it has already
+reached the client by then. So `message.delta` frames accumulate into a
+*rendering*, `message.replace` supersedes everything accumulated in the run, and
+nothing should be written to a local store before `message.end`. A client that
+renders only the last complete text it holds is always correct.
+
+Streaming is on by default and can be switched off with
+`PLATEPILOT_ANSWER_STREAMING=false`: the answer then arrives as a single
+`message.delta` and `message.replace` is never used. That is the fallback for a
+client that does not understand the replacement event, not a different answer —
+the same text is validated either way. A provider that cannot open a stream at
+all degrades to a one-shot completion automatically and records a warning on
+`message.end`.
+
+Frames are forwarded **as the graph produces them**, not collected and replayed
+at the end. That is a property of the two runner entry points rather than of the
+handler: `Runner.Run` executes a turn to completion and hands back the whole
+transcript, which is what the offline harnesses want, while `Runner.RunLive`
+drives the graph on its own goroutine and calls back per frame, which is what
+the SSE handler uses. Only the second can deliver a first token, and it is also
+what keeps the emitter's 128-frame buffer from becoming a ceiling on how long an
+answer may be.
+
 
 ## Layout
 

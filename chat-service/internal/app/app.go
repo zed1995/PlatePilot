@@ -101,7 +101,7 @@ func New(cfg config.Config, logger *slog.Logger, deps Deps, version string) (*Ap
 	// to refuse the turn.
 	extractor := slots.New(slots.Deps{
 		Structured: deps.Structured,
-		Model:      cfg.Chat.Model,
+		Model:      cfg.Chat.ExtractModel,
 		Config: slots.Config{
 			MaxClarifications:    cfg.Agent.MaxClarifications,
 			ResolveMinSimilarity: cfg.Agent.ResolveMinSimilarity,
@@ -227,24 +227,34 @@ func New(cfg config.Config, logger *slog.Logger, deps Deps, version string) (*Ap
 		if deps.Runs != nil {
 			agentDeps.Auditor = audit.New(deps.Runs, logger, audit.Options{
 				ModelProvider: cfg.Chat.Provider,
-				ModelName:     cfg.Chat.Model,
+				// The run row carries one model name and a turn may use three.
+				// It records the planning model: that is the one whose decisions
+				// the row's node spans describe. The other two are in the startup
+				// summary, and with no per-node overrides all three are equal, so
+				// nothing changes for a deployment that does not use them.
+				ModelName: cfg.Chat.PlanModel,
 			})
 		} else {
 			logger.Warn("run audit repository not configured; agent turns run without audit trail")
 		}
 		runner, err := agent.NewRunner(agent.Config{
 			MaxToolRounds:     cfg.Agent.MaxToolRounds,
-			ModelName:         cfg.Chat.Model,
+			ModelName:         cfg.Chat.PlanModel,
+			AnswerModel:       cfg.Chat.AnswerModel,
 			MaxClarifications: cfg.Agent.MaxClarifications,
+			AnswerStreaming:   cfg.Agent.AnswerStreaming,
 		}, agentDeps)
 		if err != nil {
 			return nil, fmt.Errorf("build agent runner: %w", err)
 		}
 		app.agent = runner
 		logger.Info("agent runner assembled",
-			slog.String("model", cfg.Chat.Model),
+			slog.String("plan_model", cfg.Chat.PlanModel),
+			slog.String("answer_model", cfg.Chat.AnswerModel),
+			slog.String("extract_model", cfg.Chat.ExtractModel),
 			slog.Int("max_tool_rounds", cfg.Agent.MaxToolRounds),
 			slog.Int("max_clarifications", cfg.Agent.MaxClarifications),
+			slog.Bool("answer_streaming", cfg.Agent.AnswerStreaming),
 			slog.Duration("tool_timeout", cfg.Agent.ToolTimeout))
 	}
 

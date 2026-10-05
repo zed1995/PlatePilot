@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"strconv"
 	"strings"
 
 	"github.com/zed1995/platepilot/shared/domain/errs"
@@ -123,4 +124,88 @@ func (r *MemoryRepository) Delete(ctx context.Context, userID, memoryID string) 
 		return errs.Newf(errs.CodeNotFound, "memory %q not found for user %q", memoryID, userID)
 	}
 	return nil
+}
+
+// Search returns up to limit live memories whose content contains any term of
+// query, best match first.
+//
+// The statement is assembled per call because the number of terms varies, and
+// every term goes in as a placeholder: the pattern is escaped so a memory
+// containing a literal percent is matched as a percent rather than as a
+// wildcard, and nothing the user typed is ever concatenated into SQL.
+//
+// The score repeats the WHERE clause term by term rather than being computed
+// from it. A CASE per term is what makes "matched two terms" rank above
+// "matched one" instead of every hit scoring the same, and cheap enough at this
+// scale — the rows being counted are the handful the WHERE already selected.
+//
+// ORDER BY ends in memory_id for the same reason List does: truncation must not
+// depend on which order the heap happened to return equal rows in, or the same
+// query over the same data could return different memories on two runs.
+func (r *MemoryRepository) Search(
+	ctx context.Context, userID, query string, limit int,
+) ([]domainmemory.Memory, error) {
+	if strings.TrimSpace(userID) == "" {
+		return nil, errs.New(errs.CodeInvalidArgument, "user_id is required")
+	}
+	if limit <= 0 {
+		return nil, errs.New(errs.CodeInvalidArgument, "limit must be positive")
+	}
+	terms := store.MemoryQueryTerms(query)
+	if len(terms) == 0 {
+		return nil, nil
+	}
+
+	args := []any{userID}
+	clauses := make([]string, 0, len(terms))
+	scores := make([]string, 0, len(terms))
+	for _, term := range terms {
+		args = append(args, "%"+escapeLike(term)+"%")
+		placeholder := "$" + strconv.Itoa(len(args))
+		clauses = append(clauses, "content ILIKE "+placeholder+` ESCAPE '\'`)
+		scores = append(scores, "CASE WHEN content ILIKE "+placeholder+` ESCAPE '\' THEN 1 ELSE 0 END`)
+	}
+	args = append(args, limit)
+
+	ctx, cancel := r.client.withTimeout(ctx)
+	defer cancel()
+
+	rows, err := r.client.pool.Query(ctx, `
+		SELECT memory_id, user_id, memory_type, content, source, confidence,
+		       embedding::text, created_at, updated_at,
+		       (`+strings.Join(scores, " + ")+`) AS matched_terms
+		FROM user_memories
+		WHERE user_id = $1
+		  AND deleted_at IS NULL
+		  AND (`+strings.Join(clauses, " OR ")+`)
+		ORDER BY matched_terms DESC, updated_at DESC, created_at DESC, memory_id ASC
+		LIMIT $`+strconv.Itoa(len(args)),
+		args...)
+	if err != nil {
+		return nil, operationError("postgres: search memories", err)
+	}
+	defer rows.Close()
+
+	out := make([]domainmemory.Memory, 0)
+	for rows.Next() {
+		var (
+			mem       domainmemory.Memory
+			embedding *string
+			matched   int
+		)
+		if err := rows.Scan(&mem.ID, &mem.UserID, &mem.Type, &mem.Content,
+			&mem.Source, &mem.Confidence, &embedding,
+			&mem.CreatedAt, &mem.UpdatedAt, &matched); err != nil {
+			return nil, operationError("postgres: scan memory match", err)
+		}
+		mem.Embedding, err = parseVectorLiteral(embedding)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, mem)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, operationError("postgres: iterate memory matches", err)
+	}
+	return out, nil
 }

@@ -79,6 +79,38 @@ func TestToStreamEventLeavesTheConfirmationSummaryEmptyOnAnAnswer(t *testing.T) 
 	}
 }
 
+// The replacement body has to survive the agent-to-transport hop, and it has to
+// land in its own field rather than in Delta: a client that could not tell an
+// increment from a replacement would append the corrected answer to the text it
+// is meant to replace.
+func TestToStreamEventCarriesTheReplacementText(t *testing.T) {
+	out := toStreamEvent(agent.Event{
+		Type:     agent.EventAnswerReplace,
+		RunID:    "r1",
+		ThreadID: "t1",
+		Text:     "校准后的完整正文[^10]",
+	})
+
+	if out.Type != httpapi.StreamReplace {
+		t.Fatalf("type = %q, want %q", out.Type, httpapi.StreamReplace)
+	}
+	if out.ReplaceText != "校准后的完整正文[^10]" {
+		t.Fatalf("replace text = %q", out.ReplaceText)
+	}
+	if out.Delta != "" {
+		t.Fatalf("a replacement must not travel as an increment: delta = %q", out.Delta)
+	}
+}
+
+// A plain delta must not acquire a replacement body on the way out, for the
+// same reason in reverse.
+func TestToStreamEventLeavesTheReplacementEmptyOnADelta(t *testing.T) {
+	out := toStreamEvent(agent.Event{Type: agent.EventDelta, ThreadID: "t1", Delta: "你好"})
+	if out.ReplaceText != "" {
+		t.Fatalf("a delta grew a replacement body: %q", out.ReplaceText)
+	}
+}
+
 // The error code has to survive the hop, because it is the only part of a
 // failed turn a client can act on: `conflict` means the thread was being
 // written by another request and the message is worth retrying, while

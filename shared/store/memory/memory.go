@@ -10,6 +10,7 @@ import (
 	"github.com/zed1995/platepilot/shared/domain/errs"
 	domainmemory "github.com/zed1995/platepilot/shared/domain/memory"
 	"github.com/zed1995/platepilot/shared/idgen"
+	"github.com/zed1995/platepilot/shared/store"
 )
 
 // MemoryRepository is an in-memory store.MemoryRepository. Deletes are soft so
@@ -108,4 +109,67 @@ func (r *MemoryRepository) Delete(_ context.Context, userID, memoryID string) er
 	record.UpdatedAt = now
 	records[memoryID] = record
 	return nil
+}
+
+// Search returns up to limit live memories whose content contains any term of
+// query, best match first.
+//
+// Matching is a case-insensitive substring test per term, which is what the
+// PostgreSQL adapter does with ILIKE over the same terms — the two are meant to
+// answer identically, and the contract suite drives both. Ranking is by how
+// many terms matched, then by List order (most recently updated first, with the
+// same deterministic tie-breakers), so a tie is broken the same way on every
+// call rather than by map iteration.
+//
+// An empty query, or one whose every term is too short to match on, returns
+// nothing rather than the whole list: "there was nothing to search for" and
+// "the search found everything" are different answers, and a caller given the
+// second cannot tell that it was really the first.
+func (r *MemoryRepository) Search(
+	ctx context.Context, userID, query string, limit int,
+) ([]domainmemory.Memory, error) {
+	if strings.TrimSpace(userID) == "" {
+		return nil, errs.New(errs.CodeInvalidArgument, "user_id is required")
+	}
+	if limit <= 0 {
+		return nil, errs.New(errs.CodeInvalidArgument, "limit must be positive")
+	}
+	terms := store.MemoryQueryTerms(query)
+	if len(terms) == 0 {
+		return nil, nil
+	}
+
+	listed, err := r.List(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	type scored struct {
+		mem   domainmemory.Memory
+		score int
+	}
+	hits := make([]scored, 0, len(listed))
+	for _, mem := range listed {
+		content := strings.ToLower(mem.Content)
+		score := 0
+		for _, term := range terms {
+			if strings.Contains(content, strings.ToLower(term)) {
+				score++
+			}
+		}
+		if score > 0 {
+			hits = append(hits, scored{mem: mem, score: score})
+		}
+	}
+	// Stable, so List's order survives inside one score band.
+	sort.SliceStable(hits, func(i, j int) bool { return hits[i].score > hits[j].score })
+	if len(hits) > limit {
+		hits = hits[:limit]
+	}
+
+	out := make([]domainmemory.Memory, 0, len(hits))
+	for _, hit := range hits {
+		out = append(out, hit.mem)
+	}
+	return out, nil
 }

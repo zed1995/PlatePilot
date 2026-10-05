@@ -79,6 +79,20 @@ type RunNode struct {
 
 // ToolCallRecord is the audit record for a single tool invocation. Arguments
 // must be stored redacted: never persist secrets or full contact details.
+//
+// Seq and StartedAt answer two different questions, and the split is not
+// bookkeeping. A round may run several read-only tools at once, so a call that
+// was asked for first can finish last: the rows are therefore written in
+// completion order — that is when each write happens, and holding them back to
+// sort them would mean buffering audit rows in memory to no end — and Seq is
+// what puts the tool chain back in the order the model asked for.
+//
+// Seq rather than StartedAt, because timestamps cannot carry that order: two
+// calls are launched microseconds apart and the column is a wall clock, so they
+// routinely share a microsecond and the read order would come down to a
+// tiebreak. This is the same reasoning run_nodes.seq records; what StartedAt is
+// for is the other question — when each call actually began, which is what
+// makes an overlap visible in the trail at all.
 type ToolCallRecord struct {
 	CallID        string          `json:"call_id"`
 	RunID         string          `json:"run_id"`
@@ -86,6 +100,29 @@ type ToolCallRecord struct {
 	Arguments     json.RawMessage `json:"arguments,omitempty"`
 	ResultSummary string          `json:"result_summary,omitempty"`
 	Status        string          `json:"status"`
-	LatencyMS     int64           `json:"latency_ms,omitempty"`
-	CreatedAt     time.Time       `json:"created_at"`
+	// Seq is the position of this call within its run, from 1, counted in the
+	// order the model asked for the calls. It is assigned by the caller that
+	// owns the round, because only it knows the request order once the calls
+	// are running at the same time.
+	Seq       int       `json:"seq"`
+	LatencyMS int64     `json:"latency_ms,omitempty"`
+	StartedAt time.Time `json:"started_at"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// Start returns the invocation time to store for a tool call.
+//
+// A caller that did not observe the start still knows the end and the duration,
+// and the start is recoverable from them — the same derivation the migration
+// uses for rows written before the column existed. It lives here rather than in
+// an adapter because both stores have to answer "what does an unset start mean"
+// the same way, or the two differ on rows that are otherwise identical.
+func (c ToolCallRecord) Start() time.Time {
+	if !c.StartedAt.IsZero() {
+		return c.StartedAt
+	}
+	if c.LatencyMS <= 0 {
+		return c.CreatedAt
+	}
+	return c.CreatedAt.Add(-time.Duration(c.LatencyMS) * time.Millisecond)
 }

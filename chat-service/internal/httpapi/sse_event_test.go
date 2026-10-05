@@ -14,6 +14,7 @@ func everyStreamEventType() []StreamEventType {
 	return []StreamEventType{
 		StreamStart,
 		StreamDelta,
+		StreamReplace,
 		StreamToolStart,
 		StreamToolFinish,
 		StreamCitation,
@@ -35,6 +36,31 @@ func TestEveryStreamEventTypeHasAPayload(t *testing.T) {
 		if _, err := (StreamEvent{Type: eventType}).payload(); err != nil {
 			t.Fatalf("event %q has no payload: %v", eventType, err)
 		}
+	}
+}
+
+// The replacement frame carries a whole answer body, not a diff. A client
+// cannot compute one from the other, because the corrected text is a fresh
+// generation rather than an edit of the first.
+func TestReplaceStreamEventCarriesTheWholeText(t *testing.T) {
+	data, err := (StreamEvent{
+		Type:        StreamReplace,
+		ReplaceText: "校准后的完整正文[^10]",
+	}).payload()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("payload is not valid JSON: %v (%s)", err, data)
+	}
+	if got := decoded["text"]; got != "校准后的完整正文[^10]" {
+		t.Fatalf("text = %v", got)
+	}
+	// A replacement is not an increment: carrying the same bytes in `delta`
+	// would make the two indistinguishable to a client that keys off the field.
+	if _, present := decoded["delta"]; present {
+		t.Fatalf("a replace frame must not carry a delta field: %s", data)
 	}
 }
 

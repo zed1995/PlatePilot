@@ -102,6 +102,14 @@ func (r *RunRepository) RecordToolCall(ctx context.Context, call run.ToolCallRec
 	if strings.TrimSpace(call.RunID) == "" {
 		return errs.New(errs.CodeInvalidArgument, "run_id is required")
 	}
+	// Position zero is not "unset" here the way it is for a duration: the read
+	// path orders by this column, so a row without a position sorts silently
+	// into the wrong place. The table's check constraint refuses it too; this
+	// is here so the in-memory adapter refuses it with the same code rather
+	// than accepting a row PostgreSQL would not store.
+	if call.Seq <= 0 {
+		return errs.New(errs.CodeInvalidArgument, "seq must be positive")
+	}
 	ctx, cancel := r.client.withTimeout(ctx)
 	defer cancel()
 
@@ -112,10 +120,10 @@ func (r *RunRepository) RecordToolCall(ctx context.Context, call run.ToolCallRec
 	_, err := r.client.pool.Exec(ctx, `
 		INSERT INTO tool_calls (
 			call_id, run_id, tool_name, arguments,
-			result_summary, status, latency_ms, created_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+			result_summary, status, seq, latency_ms, started_at, created_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
 		call.CallID, call.RunID, call.ToolName, arguments,
-		call.ResultSummary, call.Status, call.LatencyMS, call.CreatedAt)
+		call.ResultSummary, call.Status, call.Seq, call.LatencyMS, call.Start(), call.CreatedAt)
 	if err != nil {
 		// A tool call cannot exist without its run. The driver reports this
 		// as a foreign-key violation; map it onto the same not_found code the
@@ -141,6 +149,12 @@ func (r *RunRepository) RecordNode(ctx context.Context, node run.RunNode) error 
 	}
 	if strings.TrimSpace(node.NodeID) == "" {
 		return errs.New(errs.CodeInvalidArgument, "node_id is required")
+	}
+	// The table's check constraint refuses a span without a position, because
+	// the read path orders by it. Refusing it here as well is what keeps the
+	// in-memory adapter from accepting a row PostgreSQL would not store.
+	if node.Seq <= 0 {
+		return errs.New(errs.CodeInvalidArgument, "seq must be positive")
 	}
 	ctx, cancel := r.client.withTimeout(ctx)
 	defer cancel()
@@ -315,6 +329,14 @@ func (r *RunRepository) ListRuns(ctx context.Context, threadID string, limit int
 
 // ListToolCalls returns one run's tool calls in invocation order. An unknown
 // run yields an empty slice, not an error.
+//
+// The order is the caller's request order, which is what seq records. Neither
+// timestamp can stand in for it any more: rows arrive in completion order
+// because a round may run several read-only tools at once, and while started_at
+// does say when each call began, two calls of one round are launched
+// microseconds apart and a wall clock stored at microsecond resolution
+// routinely cannot separate them. seq is assigned in request order by the
+// caller that owns the round, so it needs no tiebreak and no clock.
 func (r *RunRepository) ListToolCalls(ctx context.Context, runID string) ([]run.ToolCallRecord, error) {
 	if strings.TrimSpace(runID) == "" {
 		return nil, errs.New(errs.CodeInvalidArgument, "run_id is required")
@@ -324,10 +346,10 @@ func (r *RunRepository) ListToolCalls(ctx context.Context, runID string) ([]run.
 
 	rows, err := r.client.pool.Query(ctx, `
 		SELECT call_id, run_id, tool_name, arguments, result_summary,
-		       status, latency_ms, created_at
+		       status, seq, latency_ms, started_at, created_at
 		FROM tool_calls
 		WHERE run_id = $1
-		ORDER BY created_at ASC, call_id ASC`, runID)
+		ORDER BY seq ASC`, runID)
 	if err != nil {
 		return nil, operationError("postgres: list tool calls", err)
 	}
@@ -340,7 +362,8 @@ func (r *RunRepository) ListToolCalls(ctx context.Context, runID string) ([]run.
 			arguments []byte
 		)
 		if err := rows.Scan(&record.CallID, &record.RunID, &record.ToolName, &arguments,
-			&record.ResultSummary, &record.Status, &record.LatencyMS, &record.CreatedAt); err != nil {
+			&record.ResultSummary, &record.Status, &record.Seq, &record.LatencyMS,
+			&record.StartedAt, &record.CreatedAt); err != nil {
 			return nil, operationError("postgres: scan tool call", err)
 		}
 		if len(arguments) > 0 {

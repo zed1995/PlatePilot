@@ -68,10 +68,14 @@ func TestAgentRuntimeIndexStrategy(t *testing.T) {
 			runID = "seed-run-1"
 		}
 		if err := runs.RecordToolCall(ctx, run.ToolCallRecord{
-			CallID:    fmt.Sprintf("seed-call-%d", i),
-			RunID:     runID,
-			ToolName:  "search_restaurants",
-			Status:    "ok",
+			CallID:   fmt.Sprintf("seed-call-%d", i),
+			RunID:    runID,
+			ToolName: "search_restaurants",
+			Status:   "ok",
+			// Positions are unique within a run, which is what the
+			// (run_id, seq) index requires. The seed loop's index is unique
+			// across all runs, so it is unique within any one of them.
+			Seq:       i + 1,
 			CreatedAt: base.Add(time.Duration(i) * time.Millisecond),
 		}); err != nil {
 			t.Fatalf("RecordToolCall %d: %v", i, err)
@@ -93,9 +97,9 @@ func TestAgentRuntimeIndexStrategy(t *testing.T) {
 		SELECT call_id, tool_name
 		FROM tool_calls
 		WHERE run_id = $1
-		ORDER BY created_at
+		ORDER BY seq
 		LIMIT 50`, "seed-run-1")
-	assertPlanCoversIndex(t, toolPlan, "tool_calls", "tool_calls_run_created")
+	assertPlanCoversIndex(t, toolPlan, "tool_calls", "tool_calls_run_seq")
 }
 
 // assertPlanCoversIndex accepts both a btree "Index Scan using" and a bitmap
