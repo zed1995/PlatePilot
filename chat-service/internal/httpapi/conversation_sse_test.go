@@ -329,6 +329,10 @@ func startChatServer(t *testing.T, svc ChatService) string {
 	go func() { _ = h.Run() }()
 	waitForPort(t, addr)
 	t.Cleanup(func() {
+		// http.DefaultClient keeps idle keep-alive connections in its pool, and
+		// Hertz's graceful shutdown counts them as active, so it would block
+		// until the deadline below. Close them first so Shutdown returns promptly.
+		http.DefaultClient.CloseIdleConnections()
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		_ = h.Shutdown(ctx)
