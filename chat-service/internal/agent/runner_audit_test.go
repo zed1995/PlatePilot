@@ -134,6 +134,21 @@ func (r *capturingRunRepo) ListNodes(_ context.Context, runID string) ([]run.Run
 	return out, nil
 }
 
+// DeleteByThread is part of the port because conversation deletion needs it;
+// this fake holds no conversation, so nothing here calls it.
+func (r *capturingRunRepo) DeleteByThread(_ context.Context, threadID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	kept := make([]run.AgentRun, 0, len(r.finishes))
+	for _, record := range r.finishes {
+		if record.ThreadID != threadID {
+			kept = append(kept, record)
+		}
+	}
+	r.finishes = kept
+	return nil
+}
+
 func (r *capturingRunRepo) snapshotNodes() []run.RunNode {
 	r.mu.Lock()
 	defer r.mu.Unlock()

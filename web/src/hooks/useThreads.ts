@@ -8,7 +8,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { chatApi } from '../api/chat'
-import type { CandidateView, MessageView, RunView, Thread } from '../api/types'
+import { ApiError } from '../api/client'
+import type { CandidateView, MessageView, RunView, Thread, ThreadListResponse } from '../api/types'
 
 export const threadKeys = {
   list: ['threads'] as const,
@@ -95,9 +96,65 @@ export function useCreateThread() {
     onSuccess: (thread: Thread) => {
       // The new thread is written into the list cache before the refetch lands
       // so the sidebar never shows a gap between "created" and "listed".
-      client.setQueryData<Thread[]>(threadKeys.list, (current) =>
-        current ? [thread, ...current.filter((t) => t.thread_id !== thread.thread_id)] : [thread],
-      )
+      //
+      // What goes into the cache is the response envelope, not the list: the
+      // query's `select` is what turns `{conversations}` into the rows the page
+      // reads, so writing a bare array here would leave that projection
+      // reading `.conversations` off an array — the sidebar would keep showing
+      // the old list until something refetched the shape it expects.
+      //
+      // When nothing has been fetched yet the write is skipped rather than
+      // fabricating a response: an invented empty cache entry would answer
+      // "no conversations" to a query that is still in flight.
+      const current = client.getQueryData<ThreadListResponse>(threadKeys.list)
+      if (current) {
+        client.setQueryData<ThreadListResponse>(threadKeys.list, {
+          conversations: [
+            thread,
+            ...current.conversations.filter((t) => t.thread_id !== thread.thread_id),
+          ],
+        })
+      }
+      void client.invalidateQueries({ queryKey: threadKeys.list })
+    },
+  })
+}
+
+// useDeleteThread removes a conversation and everything scoped to it.
+//
+// The row leaves the cache on success rather than waiting for the refetch: the
+// server has already answered 204, and a sidebar that keeps listing a thread
+// the user just deleted reads as a failed delete. The invalidation behind it is
+// the correction, not the update.
+//
+// The thread-scoped caches are dropped outright instead of invalidated. They
+// belong to an id the server no longer knows, so refetching them would be a
+// guaranteed 404 whose only effect is to flash an error for a conversation the
+// user deliberately removed.
+export function useDeleteThread() {
+  const client = useQueryClient()
+  return useMutation({
+    mutationFn: async (threadId: string) => {
+      try {
+        await chatApi.deleteThread(threadId)
+      } catch (err) {
+        // A thread the server no longer has is the state the caller asked for.
+        // Absorbing the 404 keeps a stale tab from showing an error — and keeps
+        // the row — for a conversation that is in fact already gone.
+        if (!(err instanceof ApiError && err.status === 404)) throw err
+      }
+    },
+    onSuccess: (_result, threadId) => {
+      const current = client.getQueryData<ThreadListResponse>(threadKeys.list)
+      if (current) {
+        client.setQueryData<ThreadListResponse>(threadKeys.list, {
+          conversations: current.conversations.filter((t) => t.thread_id !== threadId),
+        })
+      }
+      client.removeQueries({ queryKey: threadKeys.detail(threadId) })
+      client.removeQueries({ queryKey: threadKeys.messages(threadId) })
+      client.removeQueries({ queryKey: threadKeys.candidates(threadId) })
+      client.removeQueries({ queryKey: threadKeys.runs(threadId) })
       void client.invalidateQueries({ queryKey: threadKeys.list })
     },
   })

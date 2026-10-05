@@ -127,6 +127,12 @@ func (f *fakeRunRepo) ListNodes(_ context.Context, runID string) ([]run.RunNode,
 	return out, nil
 }
 
+// DeleteByThread belongs to the port for conversation deletion; the audit hooks
+// never delete, so this only has to exist for the interface to be satisfied.
+func (f *fakeRunRepo) DeleteByThread(_ context.Context, _ string) error {
+	return nil
+}
+
 func (f *fakeRunRepo) snapshot() ([]run.AgentRun, []run.AgentRun, []run.ToolCallRecord) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -167,6 +167,7 @@ M5 把七条纵向切片做完了，但**它现在只能通过 curl 和 SQL 验�
 | --- | --- | --- | --- |
 | POST | `/v1/conversations` | `{title?}`（≤200 rune） | 201 `{thread_id,user_id,title,current_state,created_at,updated_at,checkpoint?}` |
 | GET | `/v1/conversations/:id` | — | 同上；`checkpoint` 含 `state / pending_action / missing_slots / evidence_ids / selected_restaurant_id / version` |
+| DELETE | `/v1/conversations/:id` | 需 `X-User-ID` | 204；不是本人或不存在都是 404（附加于 E.9） |
 | GET | `/v1/conversations/:id/messages` | `?limit=1..100&before_id=` | `{messages:[{message_id,role,content,evidence_ids,seq,created_at}]}`，按 seq 升序 |
 | POST | `/v1/conversations/:id/messages` | `{content}`（1–4000 rune） | **SSE 流**；线程不存在是 JSON 404，不是流内错误 |
 | POST | `/v1/conversations/:id/confirm` | `{decision:"confirm"\|"cancel"}` | `{thread_id,decision,pending_action,state,output,summary,replayed,message}` |
@@ -180,9 +181,15 @@ M5 把七条纵向切片做完了，但**它现在只能通过 curl 和 SQL 验�
 | POST | `/v1/restaurants/:id/evidence` | 可选 body | 同上，路径 id 优先 |
 | POST | `/v1/restaurants/interpret` | `{text}` | `{intent,query,hard_filters,soft_conditions,named_restaurants,missing_slots,need_clarification,source,extract_latency_ms,warnings}` |
 
-身份：`X-User-ID` 明文头。记忆三个端点**强制要求**（缺失直接 400）；
-对话端点允许匿名（匿名时跳过记忆注入）。`GET /v1/conversations/:id` **不校验归属**——
+身份：`X-User-ID` 明文头。记忆三个端点与 `GET /v1/conversations` **强制要求**（缺失直接 400）；
+其余对话端点允许匿名（匿名时跳过记忆注入）。`GET /v1/conversations/:id` **不校验归属**——
 知道 `thread_id` 就能读，这在 M6 鉴权落地前是已知状态，页面不要把它当"私有会话"来承诺。
+
+`DELETE /v1/conversations/:id`（E.9 追加）是唯一的例外：它**要求** `X-User-ID`，且按用户
+限定，删别人的线程返回 404 而不是 403（403 等于确认这个 id 存在）。删除是**彻底的**：
+消息、checkpoint、候选快照由外键级联删除，该线程的 `agent_runs`（连带 `tool_calls` /
+`run_nodes`）由 `chat-service` 在同一请求里清掉；**预约记录不动**——那是真实的占位与
+座位计数，不该因为聊天记录被整理而消失。重复删除是 404。
 
 #### 2.1.2 SSE 事件（10 种，封闭集合）
 
@@ -877,3 +884,51 @@ D1/D2/D3 均按推荐执行（W-01 纳入；`/agent` 独立路由与分组；不
 本记录里的验证全部是**离线**的：前端测试 mock 掉 `fetch`，Go 测试用内存适配器与既有 postgres 夹具。
 §1.3 第 1–6 条里"真实模型 + 真库 + 真 SSE"的那一遍需要按附录 B 手工走一次
 （起库 → `make migrate` → 起服务 → `npm run dev`），本文档交付时未执行。
+
+### E.9 会话删除与新建会话的即时可见（2026-10-05，计划外修复）
+
+两个验收时暴露的问题，都不在原计划里，因此按 `AGENTS.md` §8 记在这里。
+
+**1. 新建会话不刷新列表就不出现（前端缓存写入形状错误）。**
+
+`useCreateThread` 的 `onSuccess` 把新线程写进 `['threads']` 缓存时用的是「页面读到的
+行数组」形状，而缓存的真实内容是响应信封 `{conversations:[...]}`——`select` 才是把信封
+投影成数组的那一步。于是回调里 `current.filter` 在信封对象上求值抛错，异常发生在
+`invalidateQueries` **之前**，`mutateAsync` 连带 reject，被 `handleCreate` 的空 `catch`
+吞掉：线程已在服务端创建，但既不进侧边栏也不被选中，只有整页刷新（重新执行查询）才出现。
+修法是按信封形状 `setQueryData`，并在缓存尚未就绪时跳过写入（凭空造一个空信封会给
+仍在飞行的查询一个「没有会话」的答案）。回归测试见 `web/src/pages/AgentConsole.test.tsx`
+的 `a new conversation joins the sidebar and becomes the open one`——它把首次列表返回与
+创建后的列表返回分开，所以「不刷新就出现」这句话是可证的，而不是被 mock 顺带满足的。
+
+**2. 会话无法删除（后端没有这个能力，前端也没有入口）。**
+
+后端：`DELETE /v1/conversations/:id` → 204。
+
+- 端口新增两个方法：`ConversationRepository.Delete(ctx, userID, threadID)` 与
+  `RunRepository.DeleteByThread(ctx, threadID)`；`memory`、`postgres` 两份实现，
+  `shared/store/contract` 各加一条用例（`delete_removes_the_thread_and_only_the_callers`、
+  `delete_by_thread_removes_only_that_threads_runs`）。
+- 归属校验**写在存储层的谓词里**（`WHERE thread_id=$1 AND user_id=$2`），不是先读后判：
+  删除是整个面上唯一由调用方指定破坏目标的方法。影响 0 行即 404，与 `Get` 对未知 id 的
+  回答一致，也就不会变成探测 id 是否存在的接口。
+- 子表（messages / checkpoints / candidates）由既有外键 `ON DELETE CASCADE` 带走；
+  `agent_runs` 没有指向 `conversations` 的外键，因此由 `chatService` 在删完会话后
+  显式调用 `DeleteByThread`——这也是把 `RunRepository` 注入 `chatService` 的唯一理由
+  （`app.RunService` 已有的反向依赖同理：它持有 conversation 仓储只为了判断线程是否存在）。
+- 顺序是「先删会话、再删 run」：会话那一步携带归属校验，失败即整体中止，不会碰任何 run。
+  run 清理失败会被返回而不是吞掉——那些行指向一个读路径已经不接受的线程。
+- **预约（`reservations`）不删**：它是真实的占位与座位计数，删掉会让 `reservation_slots`
+  的 booked 计数与记录对不上，而「整理聊天记录」不该有这种副作用。
+- 前端：`chatApi.deleteThread` → `useDeleteThread`（404 视同成功，因为「已经没了」正是
+  调用方要的结果）；侧边栏每行一个删除图标 + 确认弹窗（`ui/dialog`，与记忆面板一致），
+  文案点名要删的那条会话；删掉的若正是当前打开的那条，清空选中态并落到剩下的最新一条。
+  `GET /v1/conversations/:id` 仍然不校验归属这条现状**没有改变**，不要在 UI 上承诺私有性。
+
+**验证**：`shared` 与 `chat-service` 全部测试通过；`store/postgres` 的新用例对真实库
+（`make test-postgres`）通过，级联假设是实测而非推断。前端 `tsc --noEmit` 无输出、
+`npm test` 20 个文件 107 个用例全绿。另起真服务（真实库、`HTTP_ADDR=127.0.0.1:18080`）
+走了一遍 curl：无身份 400、他人线程 404 且行仍在、本人 204 空响应、删后 GET 404 且
+列表为空、重复删除 404；并在删除前用 SQL 给该线程插入了 message / checkpoint /
+candidate / agent_run 各一行，DELETE 之后六张相关表（含 `tool_calls` 的父表
+`agent_runs`）该线程的行全部为 0。

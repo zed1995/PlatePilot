@@ -267,6 +267,7 @@ func New(cfg config.Config, logger *slog.Logger, deps Deps, version string) (*Ap
 			Runner:        app.agent,
 			Conversations: deps.Conversations,
 			Memories:      deps.Memories,
+			Runs:          deps.Runs,
 			Confirmation:  confirmation,
 			Summarize:     summarize,
 			MemoryWrite:   memoryWrite,

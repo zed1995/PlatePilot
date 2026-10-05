@@ -137,6 +137,34 @@ func (r *ConversationRepository) ListConversations(
 	return eligible, nil
 }
 
+// Delete removes one thread and the rows that exist only because of it.
+//
+// The owner check happens under the same lock as the removal, so a thread
+// belonging to somebody else is not_found rather than deleted half-way through
+// an ownership test made against a stale read.
+func (r *ConversationRepository) Delete(_ context.Context, userID, threadID string) error {
+	if strings.TrimSpace(userID) == "" {
+		return errs.New(errs.CodeInvalidArgument, "user_id is required")
+	}
+	if strings.TrimSpace(threadID) == "" {
+		return errs.New(errs.CodeInvalidArgument, "thread_id is required")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	conv, ok := r.conversations[threadID]
+	if !ok || conv.UserID != userID {
+		return errs.Newf(errs.CodeNotFound, "conversation %q not found", threadID)
+	}
+	// The children are dropped by hand because there is no schema here to
+	// cascade for us; leaving them would let a later thread reuse an id and
+	// inherit a transcript it never had.
+	delete(r.conversations, threadID)
+	delete(r.checkpoints, threadID)
+	delete(r.messages, threadID)
+	delete(r.candidates, threadID)
+	return nil
+}
+
 // Get returns thread metadata or a not_found error.
 func (r *ConversationRepository) Get(_ context.Context, threadID string) (conversation.Conversation, error) {
 	r.mu.RLock()

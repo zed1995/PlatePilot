@@ -35,6 +35,13 @@ type fakeChatService struct {
 	deleted   []string
 	listCalls []listCall
 
+	// Conversation deletion keeps its own bookkeeping: the memory list already
+	// uses `deleted` for "user/id" strings, and letting the two share one slice
+	// would make a handler test that asserts on one of them pass because of the
+	// other.
+	deletedThreads     []string
+	deleteThreadCalls  []deleteThreadCall
+
 	sendEvents      []StreamEvent
 	sendErr         error
 	blockOnCancel   bool
@@ -60,6 +67,15 @@ type listThreadCall struct {
 	limit    int
 	beforeID string
 	called   int
+}
+
+// deleteThreadCall is the same idea for the delete route: it records who the
+// handler said was asking, so a request that arrived without an identity — or
+// with one the handler forgot to forward — is visible as a field rather than as
+// a 404 the test has to interpret.
+type deleteThreadCall struct {
+	userID   string
+	threadID string
 }
 
 var errListThreads = errs.New(errs.CodeInvalidArgument, "list threads refuses an empty user id")
@@ -223,6 +239,23 @@ func (f *fakeChatService) ListMemories(_ context.Context, userID string) (Memory
 		})
 	}
 	return MemoryPage{Memories: views}, nil
+}
+
+// DeleteThread carries the real ownership rule rather than a scripted answer:
+// the one thing a handler test cannot check for itself is whether the route
+// forwards the caller's identity, and a fake that removed whatever id it was
+// given would let a handler that dropped the user id pass.
+func (f *fakeChatService) DeleteThread(_ context.Context, userID, threadID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.deleteThreadCalls = append(f.deleteThreadCalls, deleteThreadCall{userID: userID, threadID: threadID})
+	conv, ok := f.convs[threadID]
+	if !ok || conv.UserID != userID {
+		return errs.Newf(errs.CodeNotFound, "thread %q not found", threadID)
+	}
+	delete(f.convs, threadID)
+	f.deletedThreads = append(f.deletedThreads, threadID)
+	return nil
 }
 
 func (f *fakeChatService) DeleteMemory(_ context.Context, userID, memoryID string) error {

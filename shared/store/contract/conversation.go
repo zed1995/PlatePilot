@@ -201,6 +201,94 @@ func runConversationRepositoryContract(t *testing.T, conversations store.Convers
 		}
 	})
 
+	// Deleting a thread has two jobs and both are worth pinning. It has to take
+	// the rows that only exist because the thread does — a transcript whose
+	// thread is gone is unreachable and still occupying the store — and it has
+	// to refuse an id it does not own, because the delete is the one method
+	// whose caller picks the target and a permissive one destroys somebody
+	// else's conversation. A repeat is not_found rather than a quiet success:
+	// "removed" is a claim about a row that was there.
+	t.Run("delete_removes_the_thread_and_only_the_callers", func(t *testing.T) {
+		seed := func(threadID, userID string) {
+			if err := conversations.Upsert(ctx, conversation.Conversation{
+				ThreadID: threadID, UserID: userID,
+				CurrentState: conversation.StateIdle,
+				CreatedAt:    now, UpdatedAt: now, LastMessageAt: now,
+			}); err != nil {
+				t.Fatalf("seed %s: %v", threadID, err)
+			}
+		}
+		seed("c-del-mine", "user-del")
+		seed("c-del-theirs", "user-del-other")
+
+		if err := conversations.SaveCheckpoint(ctx, conversation.Checkpoint{
+			ThreadID: "c-del-mine", Version: 1,
+			State: conversation.StateAwaitingConfirmation, CreatedAt: now,
+		}); err != nil {
+			t.Fatalf("SaveCheckpoint: %v", err)
+		}
+		if err := conversations.AppendMessage(ctx, conversation.Message{
+			ThreadID: "c-del-mine", Role: conversation.RoleUser,
+			Content: "第一句", CreatedAt: now,
+		}); err != nil {
+			t.Fatalf("AppendMessage: %v", err)
+		}
+		if err := conversations.ReplaceCandidates(ctx, "c-del-mine", []conversation.Candidate{
+			{Position: 1, RestaurantID: 11, Name: "A"},
+		}); err != nil {
+			t.Fatalf("ReplaceCandidates: %v", err)
+		}
+
+		// Somebody else's id is not_found, and the row survives untouched: the
+		// answer must not be a removal the caller was not entitled to.
+		if err := conversations.Delete(ctx, "user-del", "c-del-theirs"); !errors.Is(err, errs.ErrNotFound) {
+			t.Fatalf("deleting another user's thread: want ErrNotFound, got %v", err)
+		}
+		if _, err := conversations.Get(ctx, "c-del-theirs"); err != nil {
+			t.Fatalf("another user's thread was removed: %v", err)
+		}
+
+		if err := conversations.Delete(ctx, "user-del", "c-del-mine"); err != nil {
+			t.Fatalf("Delete: %v", err)
+		}
+		if _, err := conversations.Get(ctx, "c-del-mine"); !errors.Is(err, errs.ErrNotFound) {
+			t.Fatalf("deleted thread still resolves: %v", err)
+		}
+		if _, err := conversations.LoadCheckpoint(ctx, "c-del-mine"); !errors.Is(err, errs.ErrNotFound) {
+			t.Fatalf("checkpoint outlived its thread: %v", err)
+		}
+		messages, err := conversations.ListMessages(ctx, "c-del-mine", 0, "")
+		if err != nil {
+			t.Fatalf("ListMessages after delete: %v", err)
+		}
+		if len(messages) != 0 {
+			t.Fatalf("transcript outlived its thread: %+v", messages)
+		}
+		candidates, err := conversations.ListCandidates(ctx, "c-del-mine")
+		if err != nil {
+			t.Fatalf("ListCandidates after delete: %v", err)
+		}
+		if len(candidates) != 0 {
+			t.Fatalf("candidate snapshot outlived its thread: %+v", candidates)
+		}
+
+		// The owner's list no longer carries it.
+		remaining, err := conversations.ListConversations(ctx, "user-del", 0, "")
+		if err != nil {
+			t.Fatalf("ListConversations after delete: %v", err)
+		}
+		if len(remaining) != 0 {
+			t.Fatalf("deleted thread is still listed: %+v", remaining)
+		}
+
+		if err := conversations.Delete(ctx, "user-del", "c-del-mine"); !errors.Is(err, errs.ErrNotFound) {
+			t.Fatalf("repeated delete: want ErrNotFound, got %v", err)
+		}
+		if err := conversations.Delete(ctx, "", "c-del-mine"); errs.CodeOf(err) != errs.CodeInvalidArgument {
+			t.Fatalf("delete without a user id: want invalid_argument, got %v", err)
+		}
+	})
+
 	t.Run("messages_append_paginate_isolate", func(t *testing.T) {
 		threadID := "c-thread-msgs"
 		if err := conversations.Upsert(ctx, conversation.Conversation{

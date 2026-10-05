@@ -254,6 +254,14 @@ revisit.
   single-user demo (the admin rationale is in `docs/platepilot-admin-prd.md`
   §5.3–5.4), and it is the first thing to replace before any multi-user or
   hosted deployment.
+- **Deleting a conversation leaves its reservations behind.** `DELETE
+  /v1/conversations/:id` removes the thread, its transcript, its checkpoint, its
+  candidate snapshot and its run audit, but not the `reservations` rows it
+  produced: those are holds and bookings against real seat counts, and removing
+  them would leave `reservation_slots.booked` describing seats nobody holds.
+  The residue is reachable from the inventory console, which is where a booking
+  belongs. The trigger to revisit is a deployment where a conversation is the
+  owner of a booking — that needs a cancel path, not a cascade.
 - **One Postgres instance is a single point of failure.** Acceptable for a
   local-first MVP; it is the explicit trade for zero per-month cost.
 - **The full corpus lives on local disk** (2.9 GB, of which `reviews` is 2.7 GB).

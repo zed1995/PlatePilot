@@ -154,6 +154,22 @@ type ConversationRepository interface {
 	// non-positive limit means the default page size.
 	ListConversations(ctx context.Context, userID string, limit int, beforeID string) ([]conversation.Conversation, error)
 
+	// Delete removes one thread and the rows that exist only because of it —
+	// its transcript, its checkpoints and its candidate snapshot.
+	//
+	// The user id is part of the predicate rather than a check afterwards, for
+	// the same reason the list's is: this is the one method whose caller picks
+	// the target, and a delete that honoured any thread id would let one
+	// placeholder identity destroy another's conversation. A thread that does
+	// not exist, or belongs to somebody else, is not_found — the answer Get
+	// gives, so the delete cannot be used to probe which ids exist.
+	//
+	// Deleting is total rather than soft: a half-removed thread would keep
+	// serving a transcript nobody can reach. A repeated delete is not_found
+	// rather than a silent success, because "removed" is a claim about a row
+	// that was there.
+	Delete(ctx context.Context, userID, threadID string) error
+
 	// ReplaceCandidates swaps a thread's candidate snapshot for the given set.
 	//
 	// It replaces rather than appends because position is the whole point: a
@@ -237,6 +253,16 @@ type RunRepository interface {
 	// ListNodes returns one run's node spans in execution order. As with
 	// ListToolCalls, an unknown run is not an error and yields an empty slice.
 	ListNodes(ctx context.Context, runID string) ([]run.RunNode, error)
+
+	// DeleteByThread removes every run recorded for a thread, and with them the
+	// tool calls and node spans those runs own.
+	//
+	// It exists for conversation deletion. A run is the execution history of
+	// one thread, so once the thread is gone every read path refuses the id and
+	// its rows become unreachable — a leak rather than an audit trail. A thread
+	// with no runs is not an error: the caller is deleting a conversation and
+	// this is its cleanup, not a lookup.
+	DeleteByThread(ctx context.Context, threadID string) error
 }
 
 // ReservationRepository persists mock reservation slots, holds, and bookings.

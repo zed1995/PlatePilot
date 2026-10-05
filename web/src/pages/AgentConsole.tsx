@@ -18,6 +18,7 @@ import { useAgentTurn, unresolvedCitations, type TurnState } from '../hooks/useA
 import {
   useCandidates,
   useCreateThread,
+  useDeleteThread,
   useMessages,
   useRun,
   useRuns,
@@ -98,6 +99,7 @@ export default function AgentConsole() {
 
   const threads = useThreads()
   const createThread = useCreateThread()
+  const deleteThread = useDeleteThread()
   const thread = useThread(activeId)
   const messages = useMessages(activeId)
   const runs = useRuns(activeId)
@@ -194,6 +196,26 @@ export default function AgentConsole() {
     }
   }, [createThread, resetTurn])
 
+  const handleDelete = useCallback(
+    (threadId: string) => {
+      deleteThread.mutate(threadId, {
+        onSuccess: () => {
+          // Only the deleted thread's turn matters. Resetting it when another
+          // thread is open would throw away a running answer the user is
+          // watching, for a deletion that had nothing to do with it.
+          if (threadId !== activeId) return
+          resetTurn()
+          // Clearing the selection rather than picking a replacement by hand:
+          // the effect above already lands on the newest thread, and it reads
+          // the list the cache now holds — which no longer contains this one.
+          // An empty list leaves it null, and the pane says so.
+          setActiveId(null)
+        },
+      })
+    },
+    [activeId, deleteThread, resetTurn],
+  )
+
   const commitIdentity = useCallback(
     (next: string) => {
       const applied = next.trim() || 'demo-user'
@@ -256,6 +278,9 @@ export default function AgentConsole() {
             loading={threads.isLoading}
             error={threads.error}
             onRetry={() => void threads.refetch()}
+            onDelete={handleDelete}
+            deleting={deleteThread.isPending}
+            deleteError={deleteThread.error}
           />
         </aside>
 

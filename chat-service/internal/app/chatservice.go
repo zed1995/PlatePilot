@@ -23,6 +23,11 @@ type chatService struct {
 	runner        *agent.Runner
 	conversations store.ConversationRepository
 	memories      store.MemoryRepository
+	// runs is the audit half of a conversation. It is optional, and it is held
+	// here rather than behind the conversation store because deleting a thread
+	// has to take its runs with it while neither port gains knowledge of the
+	// other's tables: this adapter is the only place that knows both.
+	runs store.RunRepository
 
 	// confirm decides the pending write a turn parked. It is nil in a
 	// deployment with no confirmed-write capability — the reservation mock
@@ -55,6 +60,7 @@ type chatServiceDeps struct {
 	Runner        *agent.Runner
 	Conversations store.ConversationRepository
 	Memories      store.MemoryRepository
+	Runs          store.RunRepository
 	Confirmation  *hitl.Service
 	Summarize     ApprovalSummarizer
 	MemoryWrite   *memorywrite.Service
@@ -68,6 +74,7 @@ func newChatService(deps chatServiceDeps) *chatService {
 		runner:        deps.Runner,
 		conversations: deps.Conversations,
 		memories:      deps.Memories,
+		runs:          deps.Runs,
 		confirm:       deps.Confirmation,
 		summarize:     deps.Summarize,
 		memoryWrite:   deps.MemoryWrite,
@@ -119,6 +126,28 @@ func (s *chatService) GetThread(ctx context.Context, threadID string) (httpapi.T
 		return httpapi.ThreadDetail{}, err
 	}
 	return detail, nil
+}
+
+// DeleteThread removes a conversation and the run audit it produced.
+//
+// The conversation store goes first because it is the operation that carries
+// the ownership check: it refuses a thread belonging to somebody else, so
+// nothing is touched — including no run — before the caller is known to own
+// what they named. The run cleanup then follows, and a failure of that second
+// step is reported rather than swallowed: the audit rows it leaves behind point
+// at a thread the read paths no longer accept, so a quiet success there would
+// be a claim about a store that is in fact still holding them.
+//
+// A deployment with no run store has nothing to clean, and the delete still
+// succeeds: the conversation is what the caller asked to remove.
+func (s *chatService) DeleteThread(ctx context.Context, userID, threadID string) error {
+	if err := s.conversations.Delete(ctx, userID, threadID); err != nil {
+		return err
+	}
+	if s.runs == nil {
+		return nil
+	}
+	return s.runs.DeleteByThread(ctx, threadID)
 }
 
 func (s *chatService) ListMessages(

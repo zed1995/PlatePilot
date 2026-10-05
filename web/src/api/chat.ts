@@ -241,6 +241,10 @@ export const chatApi = {
   listThreads: (params: ThreadsParams = {}) =>
     get<ThreadListResponse>(`/v1/conversations${query(params)}`),
   getThread: (threadId: string) => get<Thread>(`/v1/conversations/${encodeURIComponent(threadId)}`),
+  // Deletion answers 204 with no body, which is why `request` returns early on
+  // that status rather than trying to parse one.
+  deleteThread: (threadId: string) =>
+    request<void>({ method: 'DELETE', path: `/v1/conversations/${encodeURIComponent(threadId)}` }),
 
   listMessages: (threadId: string, params: MessagesParams = {}) =>
     get<MessageListResponse>(

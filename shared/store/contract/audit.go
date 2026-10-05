@@ -395,6 +395,95 @@ func runRunRepositoryContract(t *testing.T, runs store.RunRepository) {
 		}
 	})
 
+	// Deleting a thread's runs is the cleanup half of deleting a conversation.
+	// Two things have to hold: the runs go along with their tool calls and
+	// spans, and no other thread's audit is touched — a sweep keyed on the
+	// wrong column would quietly erase the history of every conversation the
+	// user ever had, and nothing downstream would notice until someone needed
+	// to explain a past answer.
+	t.Run("delete_by_thread_removes_only_that_threads_runs", func(t *testing.T) {
+		seed := func(threadID, runID string) {
+			if err := runs.Start(ctx, run.AgentRun{
+				TraceID: "trace-" + runID, ThreadID: threadID, RunID: runID,
+				Status: run.StatusRunning, StartedAt: startedAt,
+			}); err != nil {
+				t.Fatalf("Start %s: %v", runID, err)
+			}
+			if err := runs.RecordToolCall(ctx, run.ToolCallRecord{
+				CallID: "call-" + runID, RunID: runID, ToolName: "search_restaurants",
+				Status: "ok", Seq: 1, LatencyMS: 5,
+				StartedAt: startedAt, CreatedAt: startedAt.Add(5 * time.Millisecond),
+			}); err != nil {
+				t.Fatalf("RecordToolCall %s: %v", runID, err)
+			}
+			if err := runs.RecordNode(ctx, run.RunNode{
+				NodeID: "node-" + runID, RunID: runID, TraceID: "trace-" + runID,
+				Node: "plan", Seq: 1, Status: run.NodeOK, StartedAt: startedAt,
+			}); err != nil {
+				t.Fatalf("RecordNode %s: %v", runID, err)
+			}
+		}
+		seed("thread-del", "run-del-1")
+		seed("thread-del", "run-del-2")
+		seed("thread-del-keep", "run-keep")
+
+		// A thread with no runs is the common case in a fresh deployment, and
+		// it must not be reported as a failure: there was nothing to clean.
+		if err := runs.DeleteByThread(ctx, "thread-nothing-recorded"); err != nil {
+			t.Fatalf("DeleteByThread on a thread with no runs: %v", err)
+		}
+
+		if err := runs.DeleteByThread(ctx, "thread-del"); err != nil {
+			t.Fatalf("DeleteByThread: %v", err)
+		}
+		gone, err := runs.ListRuns(ctx, "thread-del", 0, "")
+		if err != nil {
+			t.Fatalf("ListRuns after delete: %v", err)
+		}
+		if len(gone) != 0 {
+			t.Fatalf("runs outlived their thread: %+v", gone)
+		}
+		for _, runID := range []string{"run-del-1", "run-del-2"} {
+			if _, err := runs.GetRun(ctx, runID); !errors.Is(err, errs.ErrNotFound) {
+				t.Fatalf("GetRun(%s) after delete: want ErrNotFound, got %v", runID, err)
+			}
+			calls, err := runs.ListToolCalls(ctx, runID)
+			if err != nil {
+				t.Fatalf("ListToolCalls(%s): %v", runID, err)
+			}
+			if len(calls) != 0 {
+				t.Fatalf("tool calls of %s outlived the run: %+v", runID, calls)
+			}
+			nodes, err := runs.ListNodes(ctx, runID)
+			if err != nil {
+				t.Fatalf("ListNodes(%s): %v", runID, err)
+			}
+			if len(nodes) != 0 {
+				t.Fatalf("node spans of %s outlived the run: %+v", runID, nodes)
+			}
+		}
+		// The trace lookup is the one read that is not thread-scoped, so it is
+		// where a half-deleted run would still be found.
+		if _, err := runs.GetRunByTrace(ctx, "trace-run-del-1"); !errors.Is(err, errs.ErrNotFound) {
+			t.Fatalf("deleted run still resolves by trace: %v", err)
+		}
+
+		kept, err := runs.ListRuns(ctx, "thread-del-keep", 0, "")
+		if err != nil {
+			t.Fatalf("ListRuns (other thread): %v", err)
+		}
+		if len(kept) != 1 || kept[0].RunID != "run-keep" {
+			t.Fatalf("another thread's audit was swept up: %+v", kept)
+		}
+		if _, err := runs.ListToolCalls(ctx, "run-keep"); err != nil {
+			t.Fatalf("ListToolCalls (other thread): %v", err)
+		}
+
+		if err := runs.DeleteByThread(ctx, "  "); errs.CodeOf(err) != errs.CodeInvalidArgument {
+			t.Fatalf("DeleteByThread without a thread id: want invalid_argument, got %v", err)
+		}
+	})
+
 	t.Run("node_spans_order_and_round_trip", func(t *testing.T) {
 		if err := runs.Start(ctx, run.AgentRun{
 			TraceID: "trace-nodes", ThreadID: "thread-nodes", RunID: "run-nodes",

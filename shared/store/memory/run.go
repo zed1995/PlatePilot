@@ -99,6 +99,30 @@ func (r *RunRepository) RecordNode(_ context.Context, node run.RunNode) error {
 	return nil
 }
 
+// DeleteByThread removes every run of a thread along with its tool calls and
+// node spans.
+//
+// The three maps are keyed by run id, so the thread has to be established from
+// the run row before its children can be found. Nothing is returned for a
+// thread that has no runs: this is the cleanup half of deleting a conversation,
+// not a lookup whose miss means something.
+func (r *RunRepository) DeleteByThread(_ context.Context, threadID string) error {
+	if strings.TrimSpace(threadID) == "" {
+		return errs.New(errs.CodeInvalidArgument, "thread_id is required")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for runID, agentRun := range r.runs {
+		if agentRun.ThreadID != threadID {
+			continue
+		}
+		delete(r.runs, runID)
+		delete(r.toolCalls, runID)
+		delete(r.nodes, runID)
+	}
+	return nil
+}
+
 // GetRun returns one run or a not_found error.
 func (r *RunRepository) GetRun(_ context.Context, runID string) (run.AgentRun, error) {
 	r.mu.RLock()

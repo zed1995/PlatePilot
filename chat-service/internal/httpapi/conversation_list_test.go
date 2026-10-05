@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -276,6 +277,110 @@ func TestListCandidatesAnswersWithAnEmptyArrayWhenThereIsNoSnapshot(t *testing.T
 				t.Fatalf("empty snapshot is not an array: %s", raw)
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DELETE /v1/conversations/:id
+// ---------------------------------------------------------------------------
+
+// A delete answers 204 and the thread is gone from the caller's list — the two
+// halves of the same claim, because a 204 that left the row in place would look
+// identical from the client until the next reload.
+func TestDeleteThreadRemovesItFromTheCallersList(t *testing.T) {
+	fake := newFakeChatService()
+	seedThreads(fake)
+	base := startChatServer(t, fake)
+
+	resp, raw := chatRequest(t, http.MethodDelete, base+"/v1/conversations/thread-a-1", nil,
+		map[string]string{"X-User-ID": "user-a"})
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status = %d, body %s", resp.StatusCode, raw)
+	}
+	if len(raw) != 0 {
+		t.Fatalf("204 carried a body: %q", raw)
+	}
+
+	_, listed := chatRequest(t, http.MethodGet, base+"/v1/conversations", nil,
+		map[string]string{"X-User-ID": "user-a"})
+	var body threadListBody
+	if err := json.Unmarshal(listed, &body); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(body.Conversations) != 1 || body.Conversations[0].ThreadID != "thread-a-2" {
+		t.Fatalf("list after delete = %+v, want only the surviving thread", body.Conversations)
+	}
+}
+
+// The header is the whole authorization model this surface has, so it is
+// required rather than optional: a delete that ran without one would remove
+// whatever thread id it was handed, from whoever happened to own it.
+func TestDeleteThreadRefusesAnAnonymousCaller(t *testing.T) {
+	fake := newFakeChatService()
+	seedThreads(fake)
+	base := startChatServer(t, fake)
+
+	resp, raw := chatRequest(t, http.MethodDelete, base+"/v1/conversations/thread-a-1", nil, nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, body %s", resp.StatusCode, raw)
+	}
+	if len(fake.deleteThreadCalls) != 0 {
+		t.Fatalf("an unscoped delete reached the service: %+v", fake.deleteThreadCalls)
+	}
+	if _, err := fake.GetThread(context.Background(), "thread-a-1"); err != nil {
+		t.Fatalf("the thread was removed by a request that should not have run: %v", err)
+	}
+}
+
+// Somebody else's thread is not_found and stays put. A 403 would tell the
+// caller the id exists, which is the one thing an unauthenticated surface must
+// not answer.
+func TestDeleteThreadDoesNotRemoveAnotherUsersThread(t *testing.T) {
+	fake := newFakeChatService()
+	seedThreads(fake)
+	base := startChatServer(t, fake)
+
+	resp, raw := chatRequest(t, http.MethodDelete, base+"/v1/conversations/thread-a-1", nil,
+		map[string]string{"X-User-ID": "user-b"})
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, body %s", resp.StatusCode, raw)
+	}
+	if _, err := fake.GetThread(context.Background(), "thread-a-1"); err != nil {
+		t.Fatalf("another user's thread was removed: %v", err)
+	}
+}
+
+// The identity reaches the service rather than being dropped on the way: a
+// handler that forwarded only the thread id would delete anybody's thread, and
+// this is the assertion that fails when it does.
+func TestDeleteThreadForwardsTheCallersIdentity(t *testing.T) {
+	fake := newFakeChatService()
+	seedThreads(fake)
+	base := startChatServer(t, fake)
+
+	chatRequest(t, http.MethodDelete, base+"/v1/conversations/thread-a-2", nil,
+		map[string]string{"X-User-ID": "user-a"})
+
+	if len(fake.deleteThreadCalls) != 1 {
+		t.Fatalf("delete reached the service %d times, want 1", len(fake.deleteThreadCalls))
+	}
+	call := fake.deleteThreadCalls[0]
+	if call.userID != "user-a" || call.threadID != "thread-a-2" {
+		t.Fatalf("service saw %+v, want user-a deleting thread-a-2", call)
+	}
+}
+
+// A thread that was never there is not_found, matching the read routes: an id
+// the caller mistyped must not read as "already deleted".
+func TestDeleteThreadReportsAnUnknownThread(t *testing.T) {
+	fake := newFakeChatService()
+	seedThreads(fake)
+	base := startChatServer(t, fake)
+
+	resp, raw := chatRequest(t, http.MethodDelete, base+"/v1/conversations/thread-nobody-has", nil,
+		map[string]string{"X-User-ID": "user-a"})
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, body %s", resp.StatusCode, raw)
 	}
 }
 

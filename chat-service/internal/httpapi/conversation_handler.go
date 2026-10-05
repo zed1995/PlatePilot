@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -45,6 +46,16 @@ type ChatService interface {
 	ListThreads(ctx context.Context, userID string, limit int, beforeID string) (ThreadPage, error)
 	GetThread(ctx context.Context, threadID string) (ThreadDetail, error)
 	ListMessages(ctx context.Context, threadID string, limit int, beforeID string) (MessagePage, error)
+	// DeleteThread removes one of the caller's threads, and with it everything
+	// stored against it: the transcript, the checkpoint, the candidate
+	// snapshot, and the run audit the thread produced.
+	//
+	// It takes the user id rather than only the thread id because this is the
+	// one method on this surface that destroys data on the caller's say-so.
+	// Owning nothing would make any guessed thread id deletable; scoping it
+	// makes a thread belonging to somebody else not_found, which is also the
+	// answer an id that never existed gets.
+	DeleteThread(ctx context.Context, userID, threadID string) error
 	// ListCandidates returns the thread's current candidate snapshot. It exists
 	// beside ListMessages rather than inside GetThread because the snapshot is
 	// the answer to a different question — "what is 第二家?" — and a thread that
@@ -301,6 +312,10 @@ func registerChatRoutes(h *server.Hertz, svc ChatService) {
 	v1.GET("/conversations", ListThreadsHandler(svc))
 	v1.POST("/conversations", CreateThreadHandler(svc))
 	v1.GET("/conversations/:id", GetThreadHandler(svc))
+	// Deleting sits beside the read for the same reason the read does: the
+	// thread id in the path is the whole request, and a delete that needs a
+	// body to say what to remove is a delete somebody will get wrong once.
+	v1.DELETE("/conversations/:id", DeleteThreadHandler(svc))
 	v1.GET("/conversations/:id/messages", ListMessagesHandler(svc))
 	v1.POST("/conversations/:id/messages", SendMessageHandler(svc))
 	v1.GET("/conversations/:id/candidates", ListCandidatesHandler(svc))
@@ -380,6 +395,37 @@ func GetThreadHandler(svc ChatService) app.HandlerFunc {
 			return
 		}
 		c.JSON(200, toThreadResponse(detail))
+	}
+}
+
+// DeleteThreadHandler answers DELETE /v1/conversations/:id with 204.
+//
+// The identity header is required, and it is the authorization as well: the
+// service scopes the removal by user id, so a thread belonging to somebody else
+// surfaces not_found rather than being removed — the same answer a thread that
+// never existed gets, which is deliberate, because a distinct refusal would
+// confirm to anyone who guessed an id that it exists.
+//
+// Nothing is returned on success. The row the caller named is gone, and there
+// is no representation of an absent conversation to send back.
+func DeleteThreadHandler(svc ChatService) app.HandlerFunc {
+	return func(ctx context.Context, c *app.RequestContext) {
+		userID := userIDFromContext(ctx)
+		if userID == "" {
+			WriteAndAbort(ctx, c, errs.New(errs.CodeInvalidArgument,
+				HeaderUserID+" header is required to delete a conversation"))
+			return
+		}
+		threadID := c.Param("id")
+		if threadID == "" {
+			WriteAndAbort(ctx, c, errs.New(errs.CodeInvalidArgument, "conversation id is required"))
+			return
+		}
+		if err := svc.DeleteThread(ctx, userID, threadID); err != nil {
+			httperr.Write(ctx, c, err)
+			return
+		}
+		c.Status(http.StatusNoContent)
 	}
 }
 

@@ -5,6 +5,7 @@ import { MemoryRouter } from 'react-router-dom'
 
 import type { StreamEvent } from '../api/chat'
 import { chatApi } from '../api/chat'
+import type { Thread } from '../api/types'
 import App from '../App'
 import AgentConsole, { withoutEchoedTurn } from './AgentConsole'
 
@@ -19,7 +20,10 @@ const harness = vi.hoisted(() => ({
   sent: [] as { threadId: string; content: string }[],
 }))
 
-const thread = {
+// Annotated rather than inferred: the fixtures below are handed to typed mock
+// implementations, and a bare object literal widens `current_state` to string,
+// which is not a ThreadState.
+const thread: Thread = {
   thread_id: 'thread-1',
   title: '验收',
   current_state: 'idle',
@@ -86,6 +90,7 @@ vi.mock('../api/chat', () => ({
   setUserId: vi.fn(),
   chatApi: {
     createThread: vi.fn(async () => thread),
+    deleteThread: vi.fn(async () => undefined),
     listThreads: vi.fn(async () => ({ conversations: [thread] })),
     getThread: vi.fn(async () => thread),
     listMessages: vi.fn(async () => history),
@@ -154,6 +159,14 @@ function stream(index = 0) {
 beforeEach(() => {
   harness.streams.length = 0
   harness.sent.length = 0
+  vi.clearAllMocks()
+  // Re-established rather than cleared: `mockClear` would leave whatever the
+  // previous test installed as the implementation, so a per-test `once` chain
+  // would leak into the next one. The two thread mutations are the ones tests
+  // script, because the list they change is the whole assertion.
+  vi.mocked(chatApi.createThread).mockImplementation(async () => thread)
+  vi.mocked(chatApi.deleteThread).mockImplementation(async () => undefined)
+  vi.mocked(chatApi.listThreads).mockImplementation(async () => ({ conversations: [thread] }))
 })
 
 test('history renders in seq order with footnotes the server called citable', async () => {
@@ -167,6 +180,67 @@ test('history renders in seq order with footnotes the server called citable', as
   // would render as a dead marker instead of opening an empty drawer.
   const marker = screen.getByRole('button', { name: '1' })
   expect(marker).toBeEnabled()
+})
+
+// A created thread shows up in the sidebar on its own.
+//
+// The regression this pins is subtle: the mutation wrote the list into the
+// query cache in the shape of the page's rows rather than the shape of the
+// response, and the write threw before the invalidation behind it ran — so the
+// new conversation existed on the server, was selected by nothing, and only
+// appeared after a reload. The refetch here returns the server's list, which
+// does contain the new thread, so what is asserted is that no reload is needed
+// and that the console moved onto it.
+test('a new conversation joins the sidebar and becomes the open one', async () => {
+  const user = userEvent.setup()
+  const created = { ...thread, thread_id: 'thread-2', title: '第二个会话' }
+  vi.mocked(chatApi.createThread).mockResolvedValueOnce(created)
+  // The first read is the console before anything was created, the second is
+  // the server's answer once it exists. The split matters: a mock that returned
+  // the new thread from the start would put it in the sidebar by itself and the
+  // test would pass without the create path doing anything.
+  vi.mocked(chatApi.listThreads)
+    .mockResolvedValueOnce({ conversations: [thread] })
+    .mockImplementation(async () => ({ conversations: [created, thread] }))
+  renderConsole()
+
+  await screen.findByText('验收')
+  await user.click(screen.getByRole('button', { name: /新建/ }))
+
+  expect(await screen.findByText('第二个会话')).toBeInTheDocument()
+  await waitFor(() => expect(chatApi.getThread).toHaveBeenCalledWith('thread-2'))
+})
+
+// Deleting is owner-scoped on the server and total on the client: the row
+// leaves the list, and the console does not sit on an id it just removed.
+test('deleting the open conversation takes it off the sidebar and off the screen', async () => {
+  const user = userEvent.setup()
+  const older = {
+    ...thread,
+    thread_id: 'thread-2',
+    title: '更早的会话',
+    updated_at: '2026-10-03T00:00:00Z',
+  }
+  vi.mocked(chatApi.listThreads)
+    .mockResolvedValueOnce({ conversations: [thread, older] })
+    .mockImplementation(async () => ({ conversations: [older] }))
+  renderConsole()
+
+  // The console lands on the newest thread, which is the one about to go.
+  await screen.findByText('验收')
+  await user.click(screen.getByRole('button', { name: '删除会话 验收' }))
+
+  // The confirmation names the row rather than asking about "this
+  // conversation": the user cannot see which row the modal was opened from.
+  const dialog = await screen.findByRole('dialog')
+  expect(within(dialog).getByText(/验收/)).toBeInTheDocument()
+  await user.click(within(dialog).getByRole('button', { name: '删除' }))
+
+  await waitFor(() => expect(chatApi.deleteThread).toHaveBeenCalledWith('thread-1'))
+  await waitFor(() => expect(screen.queryByText('验收')).not.toBeInTheDocument())
+  // Falling back to what is left is what keeps the pane from rendering a
+  // transcript query for a thread the server no longer knows.
+  await waitFor(() => expect(chatApi.getThread).toHaveBeenCalledWith('thread-2'))
 })
 
 test('sending disables the input, streams text, and re-enables at the end', async () => {

@@ -226,6 +226,27 @@ func (r *RunRepository) ListNodes(ctx context.Context, runID string) ([]run.RunN
 	return out, nil
 }
 
+// DeleteByThread removes every run recorded for a thread.
+//
+// tool_calls and run_nodes both carry a cascading foreign key onto agent_runs,
+// so one statement takes the whole audit of the thread and the database is what
+// guarantees nothing is left pointing at a run that no longer exists. A thread
+// with no runs is not an error: this is the cleanup half of deleting a
+// conversation, and a miss here means there was nothing to clean.
+func (r *RunRepository) DeleteByThread(ctx context.Context, threadID string) error {
+	if strings.TrimSpace(threadID) == "" {
+		return errs.New(errs.CodeInvalidArgument, "thread_id is required")
+	}
+	ctx, cancel := r.client.withTimeout(ctx)
+	defer cancel()
+
+	if _, err := r.client.pool.Exec(ctx,
+		`DELETE FROM agent_runs WHERE thread_id = $1`, threadID); err != nil {
+		return operationError("postgres: delete runs for thread", err)
+	}
+	return nil
+}
+
 // runColumns is the projection every read of agent_runs shares.
 const runColumns = `
 	run_id, trace_id, thread_id, status, model_provider, model_name,

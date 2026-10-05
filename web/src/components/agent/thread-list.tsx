@@ -6,10 +6,22 @@
 // otherwise see. `awaiting_clarification` and `awaiting_confirmation` are both
 // waiting states but they ask for different things — an answer versus a
 // decision — so they get different tones rather than one "waiting" badge.
-import { Loader2, Plus } from 'lucide-react'
+//
+// Deleting lives here rather than on the conversation view because the row is
+// the object being removed: the user points at a conversation in the list, and
+// the confirmation has to keep naming that one after a stray click.
+import { useState } from 'react'
+import { Loader2, Plus, Trash2 } from 'lucide-react'
 
 import type { Thread, ThreadState } from '../../api/types'
 import { Button } from '../ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '../ui/dialog'
 import { ErrorState } from '../error-state'
 import { StatusTag, type StatusTone } from '../status-tag'
 import { cn } from '../../lib/utils'
@@ -51,6 +63,11 @@ export interface ThreadListProps {
   loading?: boolean
   error?: unknown
   onRetry?: () => void
+  // onDelete is absent in a deployment that cannot delete — the row then has no
+  // trash affordance at all, rather than one that is present and inert.
+  onDelete?: (threadId: string) => void
+  deleting?: boolean
+  deleteError?: unknown
 }
 
 export function ThreadList({
@@ -62,7 +79,14 @@ export function ThreadList({
   loading = false,
   error,
   onRetry,
+  onDelete,
+  deleting = false,
+  deleteError,
 }: ThreadListProps) {
+  // The row awaiting confirmation is held here rather than in the page: it is
+  // which-row state, and only this component knows the row the user clicked.
+  const [pendingDelete, setPendingDelete] = useState<Thread | null>(null)
+
   return (
     <div className="flex h-full flex-col rounded-xl border border-[var(--border-subtle)] bg-surface backdrop-blur-xl">
       <div className="flex items-center justify-between gap-2 border-b border-[var(--border-subtle)] px-3 py-2.5">
@@ -92,19 +116,22 @@ export function ThreadList({
           <ul className="m-0 list-none space-y-1 p-0">
             {threads.map((thread) => {
               const active = thread.thread_id === activeId
+              const label = thread.title || '未命名会话'
               return (
-                <li key={thread.thread_id}>
+                <li key={thread.thread_id} className="group relative">
                   <button
                     type="button"
                     onClick={() => onSelect(thread.thread_id)}
                     className={cn(
-                      'flex w-full flex-col gap-1 rounded-lg px-2.5 py-2 text-left transition-colors',
+                      'flex w-full flex-col gap-1 rounded-lg py-2 pl-2.5 text-left transition-colors',
+                      // The row reserves the width of the trash button whether
+                      // or not it can be seen, so revealing it on hover does not
+                      // reflow the title under the pointer.
+                      onDelete ? 'pr-9' : 'pr-2.5',
                       active ? 'bg-black/[0.06]' : 'hover:bg-black/[0.03]',
                     )}
                   >
-                    <span className="truncate text-[13px] font-medium text-ink">
-                      {thread.title || '未命名会话'}
-                    </span>
+                    <span className="truncate text-[13px] font-medium text-ink">{label}</span>
                     <span className="flex items-center gap-1.5">
                       <span title={String(thread.current_state)}>
                         <StatusTag tone={threadStateTone(thread.current_state)}>
@@ -116,12 +143,67 @@ export function ThreadList({
                       </span>
                     </span>
                   </button>
+                  {onDelete && (
+                    // A sibling of the select button rather than a child of it:
+                    // a button inside a button is invalid, and the browser picks
+                    // one of the two clicks to honour.
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      aria-label={`删除会话 ${label}`}
+                      title="删除会话"
+                      onClick={() => setPendingDelete(thread)}
+                      className="absolute right-1 top-1/2 h-7 w-7 -translate-y-1/2 text-ink-tertiary opacity-0 transition-opacity hover:text-error focus-visible:opacity-100 group-hover:opacity-100"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  )}
                 </li>
               )
             })}
           </ul>
         )}
       </div>
+
+      {deleteError ? (
+        <p className="m-0 border-t border-[var(--border-subtle)] px-3 py-2 text-[11px] text-error">
+          删除失败：
+          {deleteError instanceof Error ? deleteError.message : String(deleteError)}
+        </p>
+      ) : null}
+
+      {/* Deleting is not undoable, so it goes through a dialog rather than a
+          second click on the same icon. The dialog closes on confirm: the row
+          it names is about to disappear, and keeping a modal open in front of
+          the list it just changed hides the feedback the user is owed. */}
+      <Dialog open={pendingDelete !== null} onOpenChange={(open) => !open && setPendingDelete(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>删除这个会话？</DialogTitle>
+            <DialogDescription>
+              「{pendingDelete?.title || '未命名会话'}」的对话记录、候选结果、工具链与审计记录会一并删除，删除后不可恢复。
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" size="sm" onClick={() => setPendingDelete(null)}>
+              取消
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              disabled={deleting}
+              onClick={() => {
+                if (!pendingDelete) return
+                onDelete?.(pendingDelete.thread_id)
+                setPendingDelete(null)
+              }}
+            >
+              {deleting && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+              删除
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

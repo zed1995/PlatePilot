@@ -294,6 +294,41 @@ func (r *ConversationRepository) AppendMessage(ctx context.Context, msg conversa
 	return nil
 }
 
+// Delete removes one thread and the rows that exist only because of it.
+//
+// Those rows go with it through their own foreign keys — conversation_messages,
+// conversation_checkpoints and conversation_candidates are all declared ON
+// DELETE CASCADE — so the removal is one statement and the database is what
+// makes it total. The user id sits in the predicate for the reason the list's
+// does: it is the only ownership this surface has, so an id belonging to
+// somebody else must not be deletable by whoever guessed it.
+//
+// Zero rows affected is not_found rather than success. A repeated delete, and a
+// delete of a thread that never existed, are then answered the same way GET
+// answers for the same id — which is also what keeps the endpoint from
+// confirming the existence of a thread the caller does not own.
+func (r *ConversationRepository) Delete(ctx context.Context, userID, threadID string) error {
+	if strings.TrimSpace(userID) == "" {
+		return errs.New(errs.CodeInvalidArgument, "user_id is required")
+	}
+	if strings.TrimSpace(threadID) == "" {
+		return errs.New(errs.CodeInvalidArgument, "thread_id is required")
+	}
+	ctx, cancel := r.client.withTimeout(ctx)
+	defer cancel()
+
+	tag, err := r.client.pool.Exec(ctx,
+		`DELETE FROM conversations WHERE thread_id = $1 AND user_id = $2`,
+		threadID, userID)
+	if err != nil {
+		return operationError("postgres: delete conversation", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return errs.Newf(errs.CodeNotFound, "conversation %q not found", threadID)
+	}
+	return nil
+}
+
 // ListConversations returns one user's threads, newest first.
 //
 // The user id is a predicate in the statement rather than a check afterwards
