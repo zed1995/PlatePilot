@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
 	chatport "github.com/zed1995/platepilot/shared/chat"
@@ -81,6 +82,11 @@ type Deps struct {
 	Conversations store.ConversationRepository
 	// Memories, when set, injects the user's long-term memories at ingress.
 	Memories store.MemoryRepository
+	// Logger receives the runner's own diagnostics. A failed run has to leave a
+	// server-side log line: the audit table keeps only a category and a
+	// truncated message, and the log is where an operator looks first to see
+	// why a turn died. When nil it falls back to slog.Default().
+	Logger *slog.Logger
 }
 
 // NewRunner assembles and compiles the turn graph.
@@ -96,6 +102,9 @@ func NewRunner(cfg Config, deps Deps) (*Runner, error) {
 	}
 	if cfg.MaxClarifications <= 0 {
 		cfg.MaxClarifications = defaultMaxClarifications
+	}
+	if deps.Logger == nil {
+		deps.Logger = slog.Default()
 	}
 	baseModel, err := einomodel.New(einomodel.Deps{
 		Chat:        deps.Chat,
@@ -125,6 +134,7 @@ func NewRunner(cfg Config, deps Deps) (*Runner, error) {
 	r := &Runner{
 		cfg:          cfg,
 		deps:         deps,
+		logger:       deps.Logger,
 		planModel:    planModel,
 		composer:     composer,
 		streamAnswer: cfg.AnswerStreaming,
@@ -143,6 +153,9 @@ type Runner struct {
 	deps      Deps
 	planModel model.ToolCallingChatModel
 	composer  *answer.Composer
+	// logger is deps.Logger resolved once at construction, so it can never be
+	// nil on a failure path that has no chance to check.
+	logger *slog.Logger
 	// streamAnswer mirrors cfg.AnswerStreaming, resolved once so the answer
 	// node reads a field instead of re-deriving the decision every turn.
 	streamAnswer bool
@@ -282,6 +295,15 @@ func (r *Runner) invoke(ctx context.Context, em *emitter, in TurnInput) (*TurnRe
 
 	result, err := r.runnable.Invoke(runCtx, in)
 	if err != nil {
+		// The audit row is bounded and categorical; this is the uncut failure
+		// an operator reads first, with the identifiers needed to find the run.
+		r.logger.Error("agent run failed",
+			slog.String("run_id", meta.runID),
+			slog.String("thread_id", meta.threadID),
+			slog.String("trace_id", meta.traceID),
+			slog.String("code", string(errs.CodeOf(err))),
+			slog.String("error", err.Error()),
+		)
 		r.deps.Auditor.Fail(runCtx, audit.Meta{
 			RunID: meta.runID, TraceID: meta.traceID,
 			ThreadID: meta.threadID, StartedAt: meta.startedAt,

@@ -32,6 +32,13 @@ type AgentRun struct {
 	RetrievalCount int        `json:"retrieval_count,omitempty"`
 	ToolCallCount  int        `json:"tool_call_count,omitempty"`
 	ErrorCode      string     `json:"error_code,omitempty"`
+	// ErrorMessage carries the upstream text behind a failure, because
+	// error_code only classifies it. A misconfigured model id, a quota refusal,
+	// and a region block can all arrive as the same code, and the specifics —
+	// which model, which endpoint, what the provider actually said — live only
+	// in this text. It is written for a failed run and never read on the answer
+	// path.
+	ErrorMessage string `json:"error_message,omitempty"`
 }
 
 // NodeStatus is the outcome of one graph node.

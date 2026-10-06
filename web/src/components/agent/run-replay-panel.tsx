@@ -106,6 +106,9 @@ export function RunReplayPanel({
                 {run.latency_ms !== undefined && <span>{formatDuration(run.latency_ms)}</span>}
                 {run.tool_call_count !== undefined && <span>工具 {run.tool_call_count} 次</span>}
               </span>
+              {run.error_message && (
+                <span className="text-[11px] text-error">失败原因：{run.error_message}</span>
+              )}
             </button>
           </li>
         ))}

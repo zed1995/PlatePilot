@@ -120,6 +120,7 @@ func toRunView(row run.AgentRun) httpapi.RunView {
 		TokenOutput:   row.TokenOutput,
 		ToolCallCount: row.ToolCallCount,
 		ErrorCode:     row.ErrorCode,
+		ErrorMessage:  row.ErrorMessage,
 	}
 }
 

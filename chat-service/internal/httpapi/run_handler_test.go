@@ -231,6 +231,7 @@ func TestGetTraceResolvesTheRunAndItsTimeline(t *testing.T) {
 		runs: []RunView{{
 			RunID: "run-1", TraceID: "trace-abc", Status: "failed",
 			StartedAt: startedAt(), ErrorCode: "provider_timeout",
+			ErrorMessage: "upstream returned 504 for model test-model",
 		}},
 		nodes: []RunNodeView{
 			{NodeID: "n1", Node: "ingress", Seq: 1, Status: "ok"},
@@ -244,10 +245,11 @@ func TestGetTraceResolvesTheRunAndItsTimeline(t *testing.T) {
 		t.Fatalf("status = %d, want 200 (body %s)", w.Code, w.Body.String())
 	}
 	var body struct {
-		RunID     string        `json:"run_id"`
-		TraceID   string        `json:"trace_id"`
-		ErrorCode string        `json:"error_code"`
-		Nodes     []RunNodeView `json:"nodes"`
+		RunID        string        `json:"run_id"`
+		TraceID      string        `json:"trace_id"`
+		ErrorCode    string        `json:"error_code"`
+		ErrorMessage string        `json:"error_message"`
+		Nodes        []RunNodeView `json:"nodes"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode body %q: %v", w.Body.String(), err)
@@ -257,6 +259,11 @@ func TestGetTraceResolvesTheRunAndItsTimeline(t *testing.T) {
 	}
 	if body.ErrorCode != "provider_timeout" {
 		t.Fatalf("error code = %q", body.ErrorCode)
+	}
+	// The message is what says which model failed, so it has to survive the
+	// read rather than being flattened into the code alone.
+	if body.ErrorMessage != "upstream returned 504 for model test-model" {
+		t.Fatalf("error message = %q", body.ErrorMessage)
 	}
 	if len(body.Nodes) != 2 || body.Nodes[1].Node != "plan" {
 		t.Fatalf("trace must carry the timeline, got %+v", body.Nodes)

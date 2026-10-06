@@ -474,6 +474,9 @@ export interface RunView {
   token_output?: number
   tool_call_count?: number
   error_code?: string
+  // error_message is the upstream text behind a failure. error_code alone
+  // classifies it; the message is what names the model and endpoint that broke.
+  error_message?: string
 }
 
 export interface ToolCallView {

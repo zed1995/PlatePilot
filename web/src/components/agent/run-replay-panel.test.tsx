@@ -91,3 +91,24 @@ test('a failed run list read shows the error state', () => {
   expect(screen.getByText('run 列表加载失败')).toBeInTheDocument()
   expect(screen.getByText('boom')).toBeInTheDocument()
 })
+
+// The run row carries the upstream message beside the code, because the code
+// only classifies a failure: the text is what names the model that broke.
+test('a failed run shows its error message', () => {
+  const failed: RunView = {
+    ...run,
+    status: 'failed',
+    error_code: 'provider_unavailable',
+    error_message: 'No endpoints found for stealth/space-bunny-alpha',
+  }
+  render(<RunReplayPanel runs={[failed]} selectedRunId={null} onSelect={vi.fn()} />)
+
+  expect(
+    screen.getByText('失败原因：No endpoints found for stealth/space-bunny-alpha'),
+  ).toBeInTheDocument()
+})
+
+test('a run without an error message shows none', () => {
+  render(<RunReplayPanel runs={[run]} selectedRunId={null} onSelect={vi.fn()} />)
+  expect(screen.queryByText(/失败原因/)).not.toBeInTheDocument()
+})

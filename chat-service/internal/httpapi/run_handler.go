@@ -71,6 +71,10 @@ type RunView struct {
 	TokenOutput   int        `json:"token_output,omitempty"`
 	ToolCallCount int        `json:"tool_call_count,omitempty"`
 	ErrorCode     string     `json:"error_code,omitempty"`
+	// ErrorMessage is the upstream text behind a failure, sent beside the code
+	// because the code only classifies it: which model and endpoint failed is
+	// what a reader acts on, and it exists nowhere else in the row.
+	ErrorMessage string `json:"error_message,omitempty"`
 }
 
 // ToolCallView is one tool invocation on the wire.

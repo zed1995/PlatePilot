@@ -59,8 +59,20 @@ func runRunRepositoryContract(t *testing.T, runs store.RunRepository) {
 		}
 		agentRun.Status = run.StatusFailed
 		agentRun.ErrorCode = "provider_timeout"
+		agentRun.ErrorMessage = "upstream returned 504 for model test-model"
 		if err := runs.Finish(ctx, agentRun); err != nil {
 			t.Fatalf("Finish failed status: %v", err)
+		}
+		// The code classifies the failure; the message is what a reader acts on.
+		// Both have to survive the round trip, or a failed run is again only
+		// "something went wrong".
+		got, err := runs.GetRun(ctx, "run-failed")
+		if err != nil {
+			t.Fatalf("GetRun: %v", err)
+		}
+		if got.ErrorCode != "provider_timeout" ||
+			got.ErrorMessage != "upstream returned 504 for model test-model" {
+			t.Fatalf("failure diagnostics did not round trip: %+v", got)
 		}
 	})
 

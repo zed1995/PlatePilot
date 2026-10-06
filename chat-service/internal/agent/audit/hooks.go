@@ -25,6 +25,11 @@ const (
 	maxArgumentChars = 256
 	// maxSummaryChars bounds the stored tool result summary.
 	maxSummaryChars = 512
+	// maxMessageChars bounds the stored failure message. An upstream error can
+	// be very long — a gateway sometimes hands back an HTML page — and the audit
+	// row is a diagnostic, not an archive, so the text is truncated rather than
+	// written whole.
+	maxMessageChars = 512
 	// auditWriteTimeout bounds one audit write. It runs detached from the
 	// request context: a canceled turn must still leave a terminal run row.
 	auditWriteTimeout = 5 * time.Second
@@ -266,6 +271,10 @@ func (h *Hooks) Fail(ctx context.Context, meta Meta, err error) {
 		FinishedAt: &finishedAt,
 		LatencyMS:  time.Since(meta.StartedAt).Milliseconds(),
 		ErrorCode:  string(errs.CodeOf(err)),
+		// The code says what kind of failure it was; the message is the part
+		// that names the model and the endpoint, which is what an operator
+		// needs to fix a misconfigured provider or a delisted model.
+		ErrorMessage: truncateRunes(err.Error(), maxMessageChars),
 	})
 }
 

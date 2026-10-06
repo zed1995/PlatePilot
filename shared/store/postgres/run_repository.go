@@ -55,7 +55,8 @@ func (r *RunRepository) Start(ctx context.Context, agentRun run.AgentRun) error 
 			token_output   = 0,
 			retrieval_count = 0,
 			tool_call_count = 0,
-			error_code     = ''`,
+			error_code     = '',
+			error_message  = ''`,
 		agentRun.RunID, agentRun.TraceID, agentRun.ThreadID, string(agentRun.Status),
 		agentRun.ModelProvider, agentRun.ModelName, agentRun.StartedAt)
 	if err != nil {
@@ -80,13 +81,15 @@ func (r *RunRepository) Finish(ctx context.Context, agentRun run.AgentRun) error
 			token_output    = $8,
 			retrieval_count = $9,
 			tool_call_count = $10,
-			error_code      = $11
+			error_code      = $11,
+			error_message   = $12
 		WHERE run_id = $1`,
 		agentRun.RunID, string(agentRun.Status),
 		agentRun.ModelProvider, agentRun.ModelName,
 		agentRun.FinishedAt, agentRun.LatencyMS,
 		agentRun.TokenInput, agentRun.TokenOutput,
-		agentRun.RetrievalCount, agentRun.ToolCallCount, agentRun.ErrorCode)
+		agentRun.RetrievalCount, agentRun.ToolCallCount, agentRun.ErrorCode,
+		agentRun.ErrorMessage)
 	if err != nil {
 		return operationError("postgres: finish agent run", err)
 	}
@@ -251,7 +254,7 @@ func (r *RunRepository) DeleteByThread(ctx context.Context, threadID string) err
 const runColumns = `
 	run_id, trace_id, thread_id, status, model_provider, model_name,
 	started_at, finished_at, latency_ms, token_input, token_output,
-	retrieval_count, tool_call_count, error_code`
+	retrieval_count, tool_call_count, error_code, error_message`
 
 // scanRun reads one agent_runs row from a scanner.
 func scanRun(scan func(dest ...any) error) (run.AgentRun, error) {
@@ -259,7 +262,8 @@ func scanRun(scan func(dest ...any) error) (run.AgentRun, error) {
 	if err := scan(&agentRun.RunID, &agentRun.TraceID, &agentRun.ThreadID, &agentRun.Status,
 		&agentRun.ModelProvider, &agentRun.ModelName, &agentRun.StartedAt, &agentRun.FinishedAt,
 		&agentRun.LatencyMS, &agentRun.TokenInput, &agentRun.TokenOutput,
-		&agentRun.RetrievalCount, &agentRun.ToolCallCount, &agentRun.ErrorCode); err != nil {
+		&agentRun.RetrievalCount, &agentRun.ToolCallCount, &agentRun.ErrorCode,
+		&agentRun.ErrorMessage); err != nil {
 		return run.AgentRun{}, err
 	}
 	return agentRun, nil
