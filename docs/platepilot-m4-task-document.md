@@ -951,3 +951,64 @@ payload 字段，以及「非 JSON 帧被跳过但不终止本轮」。
 
 **事件契约变更表**：`docs/platepilot-agent-optimization-plan.md` 的「附录 A」已同步
 `thinking.delta` 与 `phase.progress` 两行（2026-10-06）。
+
+### E.5 一次真实故障：200 体里的 error 信封被读成「没有 choices」（2026-10-06）
+
+**现象**：Agent 验证台一轮对话直接失败，没有进入任何 phase 的后续步骤：
+
+```
+[NodeRunError] provider_unavailable: openai: model "nvidia/nemotron-3-ultra-550b-a55b:free" returned no choices
+node path: [plan]
+```
+
+**排查**：用同样的 base URL 与模型直接发一次非流式请求，OpenRouter 返回的是 **HTTP 200**，
+body 是一个 error 信封、根本没有 `choices`：
+
+```json
+{"id":"gen-...","error":{"message":"Upstream error from Nvidia: Service temporarily overloaded",
+ "code":503,"metadata":{"error_type":"provider_overloaded"}}}
+```
+
+`attempt` 只按状态行分类，因此把「路由到的上游过载」当成协议异常处理：真正原因被丢掉，
+`retryable` 还被判成 `false`，第一次尝试失败就结束——整轮对话死在 `plan`。这也是为什么
+同一个模型偶尔能用：过载是间歇的，而这条路径恰恰是唯一不重试的那条。
+
+**修复**（`shared/chat/openai`）：
+
+| 改动 | 位置 |
+| --- | --- |
+| `completionResponse` 新增 `Error *apiErrorBody`（200 体里的 error 信封，用指针区分「没有」与「空」） | `types.go` |
+| `attempt` 先认 error 信封：把上游 message 连同模型名一起报出；是否重试由信封里的 code 决定（429/408/5xx 重试，其余 4xx 不重试，缺 code 视为可重试） | `client.go` |
+| 「只有空 `choices`」也改为可重试——过载路由就是这样丢响应的，重试才是恢复手段 | `client.go` |
+| 抽出 `retryableStatus` / `codeAsInt`，`classifyError` 复用同一判定 | `client.go` |
+
+**流式路径**（`answer` 阶段的同一故障）：`decodeFrame` 本来就能报出真实原因
+（实测 `openai: stream error: Upstream error from Nvidia: ...`），但 `Client.Stream`
+的注释里写着「pre-flight 失败一律不重试」（理由是失败的请求在计费层可能不幂等），
+所以同一个过载在流式上依然会打断回答。经确认改为**只在首个 chunk 之前重试**：
+
+| 改动 | 位置 |
+| --- | --- |
+| `Stream` 拆出 `openStream`（一次 HTTP + 分类），并按 `maxRetries` 退避重试 | `client.go` |
+| 打开流后**先读第一帧**再返回：此时失败说明还没有任何内容交给调用方，重试对调用方完全不可见；一旦第一帧已交付，后续失败即最终失败（否则会重复用户已经看到的文本） | `client.go` |
+| `sseStream.pending` 暂存这第一帧，`Recv` 先吐 pending 再继续扫 body | `stream.go` |
+| 非 200 的 pre-flight 也改为按 `retryableStatus` 重试（原先一律不重试的规则作废，理由写进 `openStream` 注释） | `client.go` |
+
+不会造成「静默空回答」的副作用：空流（第一个 `Recv` 直接 `io.EOF`）仍按合法空流交回调用方，
+不当作拨号失败去重连。
+
+**验证**：
+
+- `go test ./chat/openai/...` 全绿。unary 新增 3 个用例：200 + error 信封（断言报出上游原因与
+  模型名，且共 3 次尝试）／200 + 4xx error 信封（只 1 次尝试）／空 `choices`（3 次尝试）。
+- 流式新增 3 个用例：首帧前失败 → 第二次尝试成功且 `calls=2`；首帧前一直失败 → 报出上游原因
+  且 `calls=3`；**首帧之后**失败 → 报错不重试且 `calls=1`（同时保留已下发的文本）。
+- 真实模型冒烟（`PLATEPILOT_TEST_CHAT=1`）：`TestSmokeComplete`、`TestSmokeToolCalls` 稳定通过；
+  `TestSmokeStream` **改动前**命中上游过载、约 0.45s 单次失败；**改动后**同一个用例跑出两种结果——
+  一次三项全过，一次在上游持续过载时于 ~4.5s 后仍失败（1s+2s 两次退避 = 确实重试了 3 次，
+  报出的仍是上游真实原因）。也就是说重试能把**间歇性**过载救回来，救不回**整段时间都不可用**的
+  路由；这正是 `:free` 路由的常态，要稳定就得换非 free 的模型或调大 `CHAT_MAX_RETRIES`。
+- `go test ./...`（shared）、`go vet ./...`（shared）、`go test ./...`（chat-service）均绿。
+
+**要记住的代价**：`:free` 路由（这里是 `nvidia/nemotron-3-ultra-550b-a55b:free`）的上游过载会反复
+出现，重试救回单轮的方式是**把首字节延迟加上 1s、2s…**。要稳定就换成非 free 的模型。
