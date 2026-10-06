@@ -43,7 +43,7 @@ export function MessageList({
     if (!streaming) return
     const node = scroller.current
     if (node) node.scrollTop = node.scrollHeight
-  }, [streaming, turn.text, turn.tools.length, turn.phases.length])
+  }, [streaming, turn.text, turn.thinking.length, turn.tools.length, turn.phases.length])
 
   const hasTurn = Boolean(prompt) || Boolean(turn.text) || turn.tools.length > 0
 
@@ -68,6 +68,14 @@ export function MessageList({
           so a deployment that turned AGENT_PHASE_EVENTS off gets exactly
           the same render as before this change. */}
       {streaming && <StepTimeline phases={turn.phases} />}
+
+      {/* The model's reasoning is shown on its own channel, never merged into
+          the answer. On a reasoning model it is the only output for the long
+          stretch before the first answer token, and a silent spinner of a
+          minute is exactly what it exists to replace. It is open while the
+          model is still thinking and folds once the answer starts, so a
+          finished turn reads as the answer rather than the scratch work. */}
+      {turn.thinking && <ThinkingTrace text={turn.thinking} live={streaming && !turn.text} />}
 
       {hasTurn && (
         <Bubble
@@ -101,6 +109,27 @@ export function MessageList({
         <p className="m-0 px-1 text-[12px] text-ink-tertiary">已停止本轮回答。</p>
       )}
     </div>
+  )
+}
+
+// ThinkingTrace renders the model's reasoning. It is deliberately a
+// <details> so a long chain of thought cannot push the answer off screen: it
+// is open while the model is still thinking and folds once the answer starts.
+// The key forces a remount when that flips, because `open` is only a default
+// the browser honours on mount.
+function ThinkingTrace({ text, live }: { text: string; live: boolean }) {
+  return (
+    <details
+      key={live ? 'live' : 'settled'}
+      open={live}
+      data-testid="thinking-trace"
+      className="rounded-xl border border-[var(--border-subtle)] bg-black/[0.02] px-3 py-2 text-[12px] text-ink-tertiary"
+    >
+      <summary className="cursor-pointer select-none text-ink-secondary">
+        {live ? '思考中…' : '思考过程'}
+      </summary>
+      <div className="mt-1.5 whitespace-pre-wrap leading-[1.6]">{text}</div>
+    </details>
   )
 }
 

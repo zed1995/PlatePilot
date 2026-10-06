@@ -24,9 +24,15 @@ const heartbeatInterval = 15 * time.Second
 type StreamEventType string
 
 const (
-	StreamStart         StreamEventType = "message.start"
-	StreamDelta         StreamEventType = "message.delta"
-	StreamReplace       StreamEventType = "message.replace"
+	StreamStart   StreamEventType = "message.start"
+	StreamDelta   StreamEventType = "message.delta"
+	StreamReplace StreamEventType = "message.replace"
+	// StreamThinking is one increment of the model's own reasoning. It is a
+	// distinct event from StreamDelta because reasoning is not answer text: the
+	// client renders it as "thinking" and must never append it to the answer.
+	// On a reasoning model it is the only output during the long stretch before
+	// the first answer token.
+	StreamThinking      StreamEventType = "thinking.delta"
 	StreamToolStart     StreamEventType = "tool.start"
 	StreamToolFinish    StreamEventType = "tool.finish"
 	StreamCitation      StreamEventType = "citation"
@@ -317,6 +323,11 @@ func (ev StreamEvent) payload() ([]byte, error) {
 	case StreamStart:
 		return json.Marshal(sseStartData{RunID: ev.RunID, ThreadID: ev.ThreadID})
 	case StreamDelta:
+		return json.Marshal(sseDeltaData{Delta: ev.Delta})
+	case StreamThinking:
+		// Same increment shape as a delta, on a channel of its own: the event
+		// name is what tells the client whether to append to the answer or to
+		// the thinking trace.
 		return json.Marshal(sseDeltaData{Delta: ev.Delta})
 	case StreamReplace:
 		return json.Marshal(sseReplaceData{Text: ev.ReplaceText})

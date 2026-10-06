@@ -15,6 +15,7 @@ func everyStreamEventType() []StreamEventType {
 		StreamStart,
 		StreamDelta,
 		StreamReplace,
+		StreamThinking,
 		StreamToolStart,
 		StreamToolFinish,
 		StreamCitation,
@@ -66,6 +67,24 @@ func TestReplaceStreamEventCarriesTheWholeText(t *testing.T) {
 	// would make the two indistinguishable to a client that keys off the field.
 	if _, present := decoded["delta"]; present {
 		t.Fatalf("a replace frame must not carry a delta field: %s", data)
+	}
+}
+
+// A thinking frame carries an increment on its own channel, under the same
+// `delta` key a message frame uses: the event name is the only thing that tells
+// the client whether to append to the answer or to the thinking trace, so the
+// payload must not invent a second shape for the same kind of increment.
+func TestThinkingStreamEventCarriesADelta(t *testing.T) {
+	data, err := (StreamEvent{Type: StreamThinking, Delta: "让我想想"}).payload()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("payload is not valid JSON: %v (%s)", err, data)
+	}
+	if decoded["delta"] != "让我想想" {
+		t.Fatalf("delta = %v", decoded["delta"])
 	}
 }
 

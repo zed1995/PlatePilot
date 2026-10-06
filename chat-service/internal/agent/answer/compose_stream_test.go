@@ -21,7 +21,10 @@ import (
 // separate queue, which is what the corrective retry and the degraded fallback
 // both reach for.
 type streamChat struct {
-	chunks    []string
+	chunks []string
+	// reasoning is served as reasoning-only chunks before chunks, so a test can
+	// prove the thinking channel reaches the caller separately from the answer.
+	reasoning []string
 	streamErr error
 	// recvErr, once the stream has produced errAfter chunks, is returned
 	// instead of continuing. It reproduces a connection that dies mid-answer.
@@ -65,10 +68,16 @@ func (c *countingStream) Recv() (domainchat.ChatChunk, error) {
 	if c.chat.recvErr != nil && c.chat.reads >= c.chat.errAfter {
 		return domainchat.ChatChunk{}, c.chat.recvErr
 	}
-	if c.chat.reads >= len(c.chat.chunks) {
+	if c.chat.reads < len(c.chat.reasoning) {
+		reasoning := c.chat.reasoning[c.chat.reads]
+		c.chat.reads++
+		return domainchat.ChatChunk{Reasoning: reasoning}, nil
+	}
+	index := c.chat.reads - len(c.chat.reasoning)
+	if index >= len(c.chat.chunks) {
 		return domainchat.ChatChunk{}, io.EOF
 	}
-	delta := c.chat.chunks[c.chat.reads]
+	delta := c.chat.chunks[index]
 	c.chat.reads++
 	return domainchat.ChatChunk{Delta: delta}, nil
 }
@@ -102,7 +111,7 @@ func TestComposeStreamConcatenatesToTheValidatedAnswer(t *testing.T) {
 	ans, err := c.ComposeStream(context.Background(), Input{
 		Question: "哪家好？",
 		Evidence: adequateEvidence(),
-	}, sink)
+	}, StreamHandlers{Delta: sink})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +152,7 @@ func TestComposeStreamNeverPublishesTheFollowUpsTail(t *testing.T) {
 	ans, err := c.ComposeStream(context.Background(), Input{
 		Question: "q",
 		Evidence: adequateEvidence(),
-	}, sink)
+	}, StreamHandlers{Delta: sink})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,6 +173,90 @@ func TestComposeStreamNeverPublishesTheFollowUpsTail(t *testing.T) {
 	}
 }
 
+// A paragraph with no newline must still stream. Holding back the whole last
+// line meant a one-paragraph answer published nothing until it was finished —
+// the "everything appeared at once after two minutes" symptom.
+func TestComposeStreamPublishesParagraphTextBeforeItEnds(t *testing.T) {
+	chat := &streamChat{chunks: []string{
+		"这是一段",
+		"没有任何换行的",
+		"长回答[^10]，后面还会继续。",
+	}}
+	c := NewComposer(Deps{Chat: chat, Model: "m"})
+	sink, deltas := collectingSink()
+
+	ans, err := c.ComposeStream(context.Background(), Input{
+		Question: "q",
+		Evidence: adequateEvidence(),
+	}, StreamHandlers{Delta: sink})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(*deltas) < 3 {
+		t.Fatalf("a paragraph must stream incrementally, got %d delta(s): %q", len(*deltas), *deltas)
+	}
+	if got := strings.Join(*deltas, ""); got != ans.Text {
+		t.Fatalf("streamed %q, validated %q", got, ans.Text)
+	}
+}
+
+// Reasoning travels on its own channel: it reaches the caller in order, and it
+// never leaks into the answer the user keeps.
+func TestComposeStreamPublishesReasoningSeparatelyFromTheAnswer(t *testing.T) {
+	chat := &streamChat{
+		reasoning: []string{"先看证据", "，再下结论"},
+		chunks:    []string{"结论：A 更好[^10]"},
+	}
+	c := NewComposer(Deps{Chat: chat, Model: "m"})
+	sink, deltas := collectingSink()
+	thoughts := &[]string{}
+
+	ans, err := c.ComposeStream(context.Background(), Input{
+		Question: "q",
+		Evidence: adequateEvidence(),
+	}, StreamHandlers{
+		Delta: sink,
+		Thinking: func(reasoning string) error {
+			*thoughts = append(*thoughts, reasoning)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(*thoughts, ""); got != "先看证据，再下结论" {
+		t.Fatalf("thinking = %q", got)
+	}
+	for _, delta := range *deltas {
+		for _, forbidden := range []string{"先看证据", "再下结论"} {
+			if strings.Contains(delta, forbidden) {
+				t.Fatalf("reasoning %q leaked into the answer text: %q", forbidden, delta)
+			}
+		}
+	}
+	if strings.Join(*deltas, "") != ans.Text {
+		t.Fatalf("answer stream drifted from the validated text")
+	}
+}
+
+// A provider that renders the answer without a thinking channel must still
+// work: a nil Thinking handler simply hides the reasoning.
+func TestComposeStreamToleratesMissingThinkingHandler(t *testing.T) {
+	chat := &streamChat{reasoning: []string{"thinking"}, chunks: []string{"答案[^10]"}}
+	c := NewComposer(Deps{Chat: chat, Model: "m"})
+	sink, deltas := collectingSink()
+
+	if _, err := c.ComposeStream(context.Background(), Input{
+		Question: "q",
+		Evidence: adequateEvidence(),
+	}, StreamHandlers{Delta: sink}); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(*deltas, ""); !strings.Contains(got, "答案") {
+		t.Fatalf("answer = %q", got)
+	}
+}
+
 // The adequacy caveat is generated locally, so it can and must precede the
 // model's first token. Emitting it afterwards would make the caveat appear
 // above text the user had already read.
@@ -174,7 +267,7 @@ func TestComposeStreamEmitsTheAdequacyCaveatFirst(t *testing.T) {
 
 	items := []evidence.Evidence{ev(10)}
 	ans, err := c.ComposeStream(context.Background(),
-		Input{Question: "这家怎么样？", Evidence: items}, sink)
+		Input{Question: "这家怎么样？", Evidence: items}, StreamHandlers{Delta: sink})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +300,7 @@ func TestComposeStreamStopsReadingOnAnOutOfRangeCitation(t *testing.T) {
 	ans, err := c.ComposeStream(context.Background(), Input{
 		Question: "q",
 		Evidence: adequateEvidence(),
-	}, sink)
+	}, StreamHandlers{Delta: sink})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +337,7 @@ func TestComposeStreamFailsAfterASecondViolation(t *testing.T) {
 	_, err := c.ComposeStream(context.Background(), Input{
 		Question: "q",
 		Evidence: []evidence.Evidence{ev(10)},
-	}, sink)
+	}, StreamHandlers{Delta: sink})
 	if errs.CodeOf(err) != errs.CodeAgentCitationViolation {
 		t.Fatalf("err = %v, want agent_citation_violation", err)
 	}
@@ -263,7 +356,7 @@ func TestComposeStreamReportsAnUnopenableStreamBeforePublishing(t *testing.T) {
 	_, err := c.ComposeStream(context.Background(), Input{
 		Question: "q",
 		Evidence: adequateEvidence(),
-	}, sink)
+	}, StreamHandlers{Delta: sink})
 	if !errors.Is(err, ErrStreamUnavailable) {
 		t.Fatalf("err = %v, want ErrStreamUnavailable", err)
 	}
@@ -291,7 +384,7 @@ func TestComposeStreamRecoversFromAMidStreamFailure(t *testing.T) {
 	ans, err := c.ComposeStream(context.Background(), Input{
 		Question: "q",
 		Evidence: adequateEvidence(),
-	}, sink)
+	}, StreamHandlers{Delta: sink})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -314,7 +407,7 @@ func TestComposeStreamPublishesTheRefusalWithoutCallingTheModel(t *testing.T) {
 	c := NewComposer(Deps{Chat: chat, Model: "m"})
 	sink, deltas := collectingSink()
 
-	ans, err := c.ComposeStream(context.Background(), Input{Question: "哪家好？"}, sink)
+	ans, err := c.ComposeStream(context.Background(), Input{Question: "哪家好？"}, StreamHandlers{Delta: sink})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -333,7 +426,7 @@ func TestComposeStreamPublishesTheRefusalWithoutCallingTheModel(t *testing.T) {
 func TestComposeStreamRequiresAQuestion(t *testing.T) {
 	c := NewComposer(Deps{Chat: &streamChat{}})
 	sink, _ := collectingSink()
-	_, err := c.ComposeStream(context.Background(), Input{Evidence: []evidence.Evidence{ev(1)}}, sink)
+	_, err := c.ComposeStream(context.Background(), Input{Evidence: []evidence.Evidence{ev(1)}}, StreamHandlers{Delta: sink})
 	if errs.CodeOf(err) != errs.CodeInvalidArgument {
 		t.Fatalf("err = %v, want invalid_argument", err)
 	}
@@ -351,7 +444,7 @@ func TestComposeStreamAgreesWithComposeOnTheSameOutput(t *testing.T) {
 	fromStream, err := c.ComposeStream(context.Background(), Input{
 		Question: "q",
 		Evidence: adequateEvidence(),
-	}, sink)
+	}, StreamHandlers{Delta: sink})
 	if err != nil {
 		t.Fatal(err)
 	}

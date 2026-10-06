@@ -50,6 +50,22 @@ const (
 // returns what it has.
 type Sink func(delta string) error
 
+// ThinkingSink receives one incremental piece of the model's reasoning. It is a
+// separate channel from Sink because reasoning is not answer text: it is shown
+// as "thinking" and must never be concatenated into the answer the user keeps.
+// Returning an error stops the composition, matching Sink.
+type ThinkingSink func(reasoning string) error
+
+// StreamHandlers is the pair of incremental channels a streamed answer produces.
+//
+// They are separate named fields rather than two positional arguments because
+// Thinking is optional, and a nil-able positional argument is a position a
+// caller gets wrong. A nil Thinking simply hides the reasoning.
+type StreamHandlers struct {
+	Delta    Sink
+	Thinking ThinkingSink
+}
+
 // ErrStreamUnavailable reports that the provider refused to open a stream
 // before a single byte of text was produced. Nothing has been shown to the
 // user, so the caller may fall back to Compose and emit the whole answer at
@@ -185,14 +201,16 @@ func (c *Composer) Compose(ctx context.Context, in Input) (domainchat.Answer, er
 // Failure to open a stream is reported as ErrStreamUnavailable before any delta
 // is published, so the caller can fall back to Compose with nothing to retract.
 func (c *Composer) ComposeStream(
-	ctx context.Context, in Input, sink Sink,
+	ctx context.Context, in Input, handlers StreamHandlers,
 ) (domainchat.Answer, error) {
 	if strings.TrimSpace(in.Question) == "" {
 		return domainchat.Answer{}, errs.New(errs.CodeInvalidArgument,
 			"answer composer requires a question")
 	}
+	sink := handlers.Delta
 	if sink == nil {
 		sink = func(string) error { return nil }
+		handlers.Delta = sink
 	}
 	if len(in.Evidence) == 0 {
 		// The fixed refusal is published through the same channel as a generated
@@ -217,7 +235,7 @@ func (c *Composer) ComposeStream(
 		var raw string
 		var err error
 		if attempt == 1 {
-			raw, err = c.streamAttemptOrRecover(ctx, messages, lead, allowed, sink)
+			raw, err = c.streamAttemptOrRecover(ctx, messages, lead, allowed, handlers)
 			if errors.Is(err, ErrStreamUnavailable) {
 				return domainchat.Answer{}, err
 			}
@@ -262,9 +280,9 @@ func (c *Composer) streamAttemptOrRecover(
 	messages []domainchat.ChatMessage,
 	lead string,
 	allowed map[int64]struct{},
-	sink Sink,
+	handlers StreamHandlers,
 ) (string, error) {
-	raw, interrupted, err := c.streamAttempt(ctx, messages, lead, allowed, sink)
+	raw, interrupted, err := c.streamAttempt(ctx, messages, lead, allowed, handlers)
 	if err == nil || errors.Is(err, ErrStreamUnavailable) || !interrupted {
 		return raw, err
 	}
@@ -286,7 +304,7 @@ func (c *Composer) streamAttempt(
 	messages []domainchat.ChatMessage,
 	lead string,
 	allowed map[int64]struct{},
-	sink Sink,
+	handlers StreamHandlers,
 ) (raw string, interrupted bool, err error) {
 	streamCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -300,6 +318,8 @@ func (c *Composer) streamAttempt(
 		return "", false, fmt.Errorf("%w: %v", ErrStreamUnavailable, err)
 	}
 	defer func() { _ = stream.Close() }()
+
+	sink := handlers.Delta
 
 	// The adequacy caveat is a local prefix, so it is published before the
 	// model's first token. Emitting it later would make the answer jump: the
@@ -324,6 +344,18 @@ func (c *Composer) streamAttempt(
 				return buf.String(), false, flushErr
 			}
 			return buf.String(), true, recvErr
+		}
+		// Reasoning is published on its own channel as it arrives. It is not
+		// buffered like the answer body: there is no FOLLOWUPS tail to hide and
+		// no trimming to apply, and the whole point is to show bytes during the
+		// stretch where the model has not written any answer yet.
+		if chunk.Reasoning != "" && handlers.Thinking != nil {
+			if err := handlers.Thinking(chunk.Reasoning); err != nil {
+				return buf.String(), false, err
+			}
+		}
+		if chunk.Delta == "" {
+			continue
 		}
 		buf.WriteString(chunk.Delta)
 		// A complete out-of-range marker is grounds to stop paying for the rest
@@ -380,12 +412,20 @@ func correctionMessage(invalid []int64, allowed map[int64]struct{}) domainchat.C
 // concatenated deltas with the validated answer. Two things have to be held
 // back to make the concatenation exact:
 //
-//   - the last line, because it may still turn into the FOLLOWUPS tail, which
-//     must never reach the user; and
-//   - any trailing whitespace, because the one-shot path trims it.
+//   - the FOLLOWUPS tail, which must never reach the user, and any trailing
+//     fragment that could still grow into it; and
+//   - trailing whitespace, because the one-shot path trims it.
 //
-// Publishing on newline boundaries rather than chunk boundaries is what makes
-// this independent of how the provider splits its tokens.
+// Earlier this held back the whole last line, which meant an answer written as
+// one paragraph published nothing until it was finished — the exact "all at
+// once after two minutes" symptom. Holding back only the bytes that could
+// still become the marker keeps the equality while making a paragraph stream
+// token by token.
+//
+// Publishing on safe boundaries rather than chunk boundaries is what makes
+// this independent of how the provider splits its tokens: the retained suffix
+// is always ASCII marker bytes and the trimmed tail always ends on a rune, so
+// no delta ever arrives cut through a multi-byte character.
 type lineEmitter struct {
 	sink Sink
 	// buf is every byte received so far; out is everything already published.
@@ -405,19 +445,16 @@ func (e *lineEmitter) flush() error {
 }
 
 func (e *lineEmitter) emit(final bool) error {
-	raw := e.buf.String()
-	content := raw
-	if !final {
-		// Only text up to the last newline can be judged: the final line may
-		// still be completed by the tail.
-		if idx := strings.LastIndex(raw, "\n"); idx >= 0 {
-			content = raw[:idx+1]
-		} else {
-			content = ""
-		}
-	}
+	content := e.buf.String()
+	// A complete marker anywhere means everything from it on is the
+	// machine-readable tail, which is never shown.
 	if idx := strings.LastIndex(content, followUpsPrefix); idx >= 0 {
 		content = content[:idx]
+	} else if !final {
+		// Without the full marker, withhold a trailing fragment that could
+		// still complete into it: publishing "…FOLLO" and then seeing the
+		// marker arrive would have shown the user a line they must never see.
+		content = content[:len(content)-pendingMarkerSuffix(content)]
 	}
 	target := strings.TrimSpace(content)
 	if len(target) <= e.out.Len() {
@@ -426,6 +463,22 @@ func (e *lineEmitter) emit(final bool) error {
 	delta := target[e.out.Len():]
 	e.out.WriteString(delta)
 	return e.sink(delta)
+}
+
+// pendingMarkerSuffix returns the length of the longest suffix of s that is a
+// proper prefix of the FOLLOWUPS marker — the bytes that must not be published
+// yet because the next chunk could complete the marker.
+func pendingMarkerSuffix(s string) int {
+	longest := len(followUpsPrefix) - 1
+	if len(s) < longest {
+		longest = len(s)
+	}
+	for n := longest; n > 0; n-- {
+		if strings.HasSuffix(s, followUpsPrefix[:n]) {
+			return n
+		}
+	}
+	return 0
 }
 
 func mapKeysSorted(m map[int64]struct{}) []int64 {

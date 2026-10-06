@@ -210,6 +210,15 @@ const (
 	// a client that could not tell an increment from a replacement would append
 	// the corrected text to the text it is meant to replace.
 	EventAnswerReplace EventType = "message.replace"
+	// EventThinking is one increment of the model's own reasoning.
+	//
+	// It travels on a channel of its own rather than as a message.delta because
+	// reasoning is not answer text: a client must be able to show it as
+	// "thinking" without ever appending it to the answer the user keeps. On a
+	// reasoning model it is also the only output for the long stretch before
+	// the first answer token, and a blank wait of a minute is the symptom it
+	// exists to remove.
+	EventThinking EventType = "thinking.delta"
 	// EventToolStart marks the beginning of one tool invocation.
 	EventToolStart EventType = "tool.start"
 	// EventToolFinish marks the end of one tool invocation.
@@ -286,7 +295,9 @@ type Event struct {
 	LatencyMS int64
 	Error     string
 
-	// Text / citation events.
+	// Text / citation events. Delta is one increment of answer text, or — on a
+	// thinking.delta event — one increment of the model's reasoning; the two
+	// never share an event, so the channel is the discriminator.
 	Delta     string
 	Citations []int64
 	// Text is the whole replacement body carried by a message.replace event.

@@ -76,8 +76,15 @@ type ChatResponse struct {
 }
 
 // ChatChunk is one incremental delta of a streaming response.
+//
+// Reasoning is the model's own chain of thought on a reasoning model. It is
+// separate from Delta because it is not answer text: it must never be
+// concatenated into the answer, but a turn that shows nothing while the model
+// thinks for a minute is indistinguishable from a hung one, so the thinking
+// is surfaced on its own channel.
 type ChatChunk struct {
 	Delta        string          `json:"delta,omitempty"`
+	Reasoning    string          `json:"reasoning,omitempty"`
 	ToolCalls    []tool.ToolCall `json:"tool_calls,omitempty"`
 	FinishReason FinishReason    `json:"finish_reason,omitempty"`
 	Usage        *TokenUsage     `json:"usage,omitempty"`

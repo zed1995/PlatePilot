@@ -19,6 +19,26 @@ describe('reduce', () => {
     expect(state.text).toBe('布鲁克林的拉面')
   })
 
+  it('keeps reasoning on its own channel, never in the answer', () => {
+    // The two are different things: reasoning is a cue that the model is
+    // working, and appending it to the answer would put scratch work in the
+    // transcript the user keeps.
+    const state = run([
+      { type: 'thinking.delta', delta: '先看证据' },
+      { type: 'thinking.delta', delta: '，再下结论' },
+      delta('结论：A 更好'),
+    ])
+    expect(state.thinking).toBe('先看证据，再下结论')
+    expect(state.text).toBe('结论：A 更好')
+  })
+
+  it('clears the previous turn\'s reasoning on message.start', () => {
+    const previous = run([{ type: 'thinking.delta', delta: '上一轮的思考' }])
+    const state = reduce(previous, { type: 'message.start', run_id: 'r2', thread_id: 't1' })
+    expect(state.thinking).toBe('')
+    expect(state.text).toBe('')
+  })
+
   it('pairs tool.start and tool.finish by call_id, not by position', () => {
     // Two calls overlapping: the second one finishes first. Index pairing would
     // attach this result to the search.

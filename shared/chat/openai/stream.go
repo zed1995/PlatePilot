@@ -88,8 +88,10 @@ func (s *sseStream) Recv() (chat.ChatChunk, error) {
 			return chunk, nil
 		}
 		// Skip empty keepalive frames some providers send before the first
-		// real delta.
-		if chunk.Delta == "" && len(chunk.ToolCalls) == 0 &&
+		// real delta. A frame that carries only reasoning is not empty: it is
+		// the model thinking, and dropping it would make the whole thinking
+		// stretch invisible.
+		if chunk.Delta == "" && chunk.Reasoning == "" && len(chunk.ToolCalls) == 0 &&
 			chunk.FinishReason == "" && chunk.Usage == nil {
 			continue
 		}
@@ -138,6 +140,10 @@ func (s *sseStream) decodeFrame(data []byte) (chunk chat.ChatChunk, terminal boo
 	}
 	for _, choice := range frame.Choices {
 		chunk.Delta += choice.Delta.Content
+		// Reasoning is a channel of its own, not answer text: it is carried in
+		// a separate field so the caller can show "thinking" without ever
+		// splicing it into the answer the user keeps.
+		chunk.Reasoning += choice.Delta.Reasoning + choice.Delta.ReasoningContent
 		if choice.FinishReason != "" {
 			chunk.FinishReason = mapFinishReason(choice.FinishReason)
 			terminal = true

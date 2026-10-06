@@ -82,6 +82,10 @@ export interface TurnState {
   runId?: string
   threadId?: string
   text: string
+  // thinking is the model's own reasoning, accumulated on its own channel so
+  // it is never spliced into `text`. It is shown while the model has not
+  // produced answer text yet, which on a reasoning model can be a minute.
+  thinking: string
   tools: ToolCallItem[]
   citations: number[]
   confirmation?: Gate
@@ -103,6 +107,7 @@ export interface TurnState {
 export const initialTurnState: TurnState = {
   phase: 'idle',
   text: '',
+  thinking: '',
   tools: [],
   citations: [],
   memories: [],
@@ -126,6 +131,7 @@ export function reduce(state: TurnState, event: StreamEvent): TurnState {
         runId: event.run_id,
         threadId: event.thread_id,
         text: '',
+        thinking: '',
         tools: [],
         citations: [],
         confirmation: undefined,
@@ -139,6 +145,10 @@ export function reduce(state: TurnState, event: StreamEvent): TurnState {
       }
     case 'message.delta':
       return { ...state, text: state.text + event.delta }
+    case 'thinking.delta':
+      // Accumulated separately from the answer. It is a cue that the model is
+      // working, not part of what it is saying, so it must never reach `text`.
+      return { ...state, thinking: state.thinking + event.delta }
     case 'message.replace':
       // A replacement is a whole body, not a correction: everything this run
       // rendered is replaced rather than amended. The server only sends one

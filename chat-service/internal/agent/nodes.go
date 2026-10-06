@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	domainchat "github.com/zed1995/platepilot/shared/domain/chat"
@@ -788,7 +789,11 @@ func (r *Runner) answerNode(ctx context.Context, st *TurnState) (*TurnState, err
 // at the cost of having to retract it if the citation check later fails.
 func (r *Runner) answerFromEvidence(ctx context.Context, st *TurnState, in answer.Input) error {
 	if !r.streamAnswer {
+		stopProgress := startPhaseProgress(ctx, "正在生成回答")
 		composed, err := r.composer.Compose(ctx, in)
+		if stopProgress != nil {
+			close(stopProgress)
+		}
 		if err != nil {
 			return err
 		}
@@ -798,15 +803,48 @@ func (r *Runner) answerFromEvidence(ctx context.Context, st *TurnState, in answe
 	}
 
 	var provisional strings.Builder
-	composed, err := r.composer.ComposeStream(ctx, in, func(delta string) error {
-		provisional.WriteString(delta)
-		emitFromContext(ctx, Event{
-			Type:     EventDelta,
-			RunID:    st.RunID,
-			ThreadID: st.ThreadID,
-			Delta:    delta,
+	// A reasoning model can spend a minute thinking before it writes the first
+	// answer token, and the answer node has no heartbeat of its own. The
+	// ticker keeps the answer row counting so the turn is visibly alive; it is
+	// stopped the moment real output starts — the model's reasoning or the
+	// first answer delta — so the row gives way to the text instead of
+	// competing with it.
+	stopProgress := startPhaseProgress(ctx, "正在生成回答")
+	var stopOnce sync.Once
+	stopHeartbeat := func() {
+		stopOnce.Do(func() {
+			if stopProgress != nil {
+				close(stopProgress)
+			}
 		})
-		return nil
+	}
+	defer stopHeartbeat()
+
+	composed, err := r.composer.ComposeStream(ctx, in, answer.StreamHandlers{
+		Delta: func(delta string) error {
+			provisional.WriteString(delta)
+			stopHeartbeat()
+			emitFromContext(ctx, Event{
+				Type:     EventDelta,
+				RunID:    st.RunID,
+				ThreadID: st.ThreadID,
+				Delta:    delta,
+			})
+			return nil
+		},
+		// Thinking is forwarded on its own event so the client can render it as
+		// "thinking" without ever splicing it into the answer. It is also the
+		// proof of life that lets the countdown row stand down.
+		Thinking: func(reasoning string) error {
+			stopHeartbeat()
+			emitFromContext(ctx, Event{
+				Type:     EventThinking,
+				RunID:    st.RunID,
+				ThreadID: st.ThreadID,
+				Delta:    reasoning,
+			})
+			return nil
+		},
 	})
 	if errors.Is(err, answer.ErrStreamUnavailable) {
 		// The provider would not open a stream. Nothing has been shown to the

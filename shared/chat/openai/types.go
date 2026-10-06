@@ -169,6 +169,12 @@ type wireDelta struct {
 	Role      string              `json:"role,omitempty"`
 	Content   string              `json:"content,omitempty"`
 	ToolCalls []wireToolCallDelta `json:"tool_calls,omitempty"`
+	// Reasoning is the chain-of-thought delta some reasoning models stream
+	// before (or alongside) Content. ReasoningContent is the same idea under
+	// the name DeepSeek-style providers use; both are mapped so one adapter
+	// covers either dialect.
+	Reasoning        string `json:"reasoning,omitempty"`
+	ReasoningContent string `json:"reasoning_content,omitempty"`
 }
 
 // wireToolCallDelta carries one fragment of a tool call. The first fragment

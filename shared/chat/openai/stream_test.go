@@ -68,6 +68,44 @@ func TestStreamTextFrames(t *testing.T) {
 	}
 }
 
+// Reasoning is a channel of its own, not answer text. A reasoning-only frame
+// must survive the empty-frame skip and must never land in Delta — the answer
+// the user keeps is built from Delta alone.
+func TestStreamKeepsReasoningOutOfTheAnswer(t *testing.T) {
+	const frames = "data: {\"choices\":[{\"delta\":{\"reasoning\":\"We need answer\"}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\" in Chinese\"}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"content\":\"你好\"}}]}\n\n" +
+		"data: [DONE]\n\n"
+
+	c := newOfflineClient(t, roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return streamResponse(frames), nil
+	}))
+	stream, err := c.Stream(context.Background(), chat.ChatRequest{
+		Messages: []chat.ChatMessage{{Role: chat.RoleUser, Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	chunks, err := drain(t, stream)
+	if err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	var reasoning, answer string
+	for _, chunk := range chunks {
+		reasoning += chunk.Reasoning
+		answer += chunk.Delta
+	}
+	if reasoning != "We need answer in Chinese" {
+		t.Errorf("reasoning = %q", reasoning)
+	}
+	if answer != "你好" {
+		t.Errorf("answer = %q, want just the content delta", answer)
+	}
+	if len(chunks) != 3 {
+		t.Fatalf("chunks = %d, want 3 (two reasoning frames kept, not skipped)", len(chunks))
+	}
+}
+
 func TestStreamAccumulatesToolCallFragments(t *testing.T) {
 	// Fragments follow the OpenAI protocol: index 0 first gets id/name, then
 	// arguments arrive in pieces.
