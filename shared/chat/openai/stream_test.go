@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/zed1995/platepilot/shared/domain/chat"
@@ -165,9 +167,72 @@ func TestStreamRejectsMalformedFinalArguments(t *testing.T) {
 	}
 }
 
-func TestStreamSurfacesErrorFrame(t *testing.T) {
-	const frames = "data: {\"error\":{\"message\":\"upstream overloaded\",\"code\":503}}\n\n"
-	c := newOfflineClient(t, roundTripperFunc(func(*http.Request) (*http.Response, error) {
+// An overloaded route answers the SSE request with an error frame before the
+// first token. Nothing has reached the caller yet, so the dial is retried and
+// the caller only ever sees the successful attempt.
+func TestStreamRetriesBeforeFirstChunk(t *testing.T) {
+	var calls atomic.Int64
+	const good = "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n" +
+		"data: [DONE]\n\n"
+	c := newOfflineClient(t, countingTransport(&calls, func(r *http.Request) (*http.Response, error) {
+		// Every attempt must carry the full payload: the request is rebuilt per
+		// attempt precisely because its body is a one-shot reader.
+		body := decodeRequest(t, r)
+		if _, ok := body["messages"]; !ok {
+			t.Errorf("attempt %d sent a body without messages: %v", calls.Load(), body)
+		}
+		if body["stream"] != true {
+			t.Errorf("attempt %d: stream = %v, want true", calls.Load(), body["stream"])
+		}
+		if calls.Load() == 1 {
+			return streamResponse("data: {\"error\":{\"message\":\"upstream overloaded\",\"code\":503}}\n\n"), nil
+		}
+		return streamResponse(good), nil
+	}))
+	stream, err := c.Stream(context.Background(), chat.ChatRequest{
+		Messages: []chat.ChatMessage{{Role: chat.RoleUser, Content: "x"}},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	chunks, err := drain(t, stream)
+	if err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	if len(chunks) != 1 || chunks[0].Delta != "Hello" {
+		t.Fatalf("chunks = %+v, want the second attempt's text", chunks)
+	}
+	if calls.Load() != 2 {
+		t.Errorf("calls = %d, want 2", calls.Load())
+	}
+}
+
+func TestStreamErrorBeforeFirstChunkFailsAfterRetries(t *testing.T) {
+	var calls atomic.Int64
+	c := newOfflineClient(t, countingTransport(&calls, func(*http.Request) (*http.Response, error) {
+		return streamResponse("data: {\"error\":{\"message\":\"upstream overloaded\",\"code\":503}}\n\n"), nil
+	}))
+	_, err := c.Stream(context.Background(), chat.ChatRequest{
+		Messages: []chat.ChatMessage{{Role: chat.RoleUser, Content: "x"}},
+	})
+	if err == nil || errs.CodeOf(err) != errs.CodeProviderUnavailable {
+		t.Fatalf("want provider_unavailable, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "upstream overloaded") {
+		t.Errorf("error hides the upstream reason: %v", err)
+	}
+	if calls.Load() != 3 { // first + 2 retries
+		t.Errorf("calls = %d, want 3", calls.Load())
+	}
+}
+
+// Once a chunk is in the caller's hands a failure is final: replaying the turn
+// would duplicate text the user already has.
+func TestStreamErrorAfterFirstChunkIsNotRetried(t *testing.T) {
+	var calls atomic.Int64
+	const frames = "data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n\n" +
+		"data: {\"error\":{\"message\":\"upstream overloaded\",\"code\":503}}\n\n"
+	c := newOfflineClient(t, countingTransport(&calls, func(*http.Request) (*http.Response, error) {
 		return streamResponse(frames), nil
 	}))
 	stream, err := c.Stream(context.Background(), chat.ChatRequest{
@@ -176,8 +241,15 @@ func TestStreamSurfacesErrorFrame(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
-	if _, err := drain(t, stream); err == nil || errs.CodeOf(err) != errs.CodeProviderUnavailable {
+	chunks, err := drain(t, stream)
+	if err == nil || errs.CodeOf(err) != errs.CodeProviderUnavailable {
 		t.Fatalf("want provider_unavailable, got %v", err)
+	}
+	if len(chunks) != 1 || chunks[0].Delta != "Hel" {
+		t.Errorf("chunks = %+v, want the partial text", chunks)
+	}
+	if calls.Load() != 1 {
+		t.Errorf("calls = %d, want exactly 1", calls.Load())
 	}
 }
 

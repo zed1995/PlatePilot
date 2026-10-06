@@ -120,6 +120,10 @@ type completionResponse struct {
 	Model   string             `json:"model"`
 	Choices []completionChoice `json:"choices"`
 	Usage   completionUsage    `json:"usage"`
+	// Error is a failure the gateway reports with HTTP 200 and no choices
+	// (OpenRouter does this when the routed upstream is overloaded). It is a
+	// pointer so "absent" stays distinguishable from an empty envelope.
+	Error *apiErrorBody `json:"error,omitempty"`
 }
 
 type completionChoice struct {

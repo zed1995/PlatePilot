@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -270,31 +271,89 @@ func (c *Client) CompleteStructured(ctx context.Context, req chat.StructuredRequ
 
 // Stream opens a streaming completion. The returned stream must be closed by
 // the caller.
+//
+// The dial is retried while — and only while — nothing has reached the caller.
+// An overloaded upstream answers the SSE request with an error frame before the
+// first token (OpenRouter does this for "provider overloaded"), and because no
+// chunk has been handed over yet the second attempt is invisible: the caller
+// sees one stream, not a restart. Once the first chunk is delivered a failure
+// is final — the caller already holds text, so replaying the turn would
+// duplicate it.
 func (c *Client) Stream(ctx context.Context, req chat.ChatRequest) (chatport.ChatStream, error) {
 	payload, err := c.buildPayload(req, nil, nil, true)
 	if err != nil {
 		return nil, err
 	}
-	httpReq, err := c.newRequest(ctx, payload, req.ProviderOptions)
-	if err != nil {
-		return nil, err
+
+	backoff := c.baseBackoff
+	for attempt := 0; ; attempt++ {
+		if attempt > 0 {
+			if err := c.sleep(ctx, backoff); err != nil {
+				return nil, errs.Wrap(errs.CodeProviderTimeout,
+					"openai: cancelled while backing off", err)
+			}
+			backoff *= 2
+		}
+
+		stream, retryable, err := c.openStream(ctx, payload, req.ProviderOptions)
+		if err != nil {
+			if !retryable || attempt >= c.maxRetries {
+				return nil, err
+			}
+			continue
+		}
+
+		// Read the first chunk here rather than lazily so a dial that failed
+		// before producing anything can be retried. Reaching this point means
+		// the caller has received no chunk from any attempt.
+		first, err := stream.Recv()
+		if err == nil {
+			stream.pending = &first
+			return stream, nil
+		}
+		_ = stream.Close()
+		if errors.Is(err, io.EOF) {
+			// A stream that closes without a frame is a legal (if useless)
+			// answer, not a failed dial: hand it over as the empty stream it is.
+			return stream, nil
+		}
+		if !errors.Is(err, errs.ErrProviderUnavailable) || ctx.Err() != nil ||
+			attempt >= c.maxRetries {
+			return nil, err
+		}
 	}
-	resp, err := c.streamHTTP.Do(httpReq)
+}
+
+// openStream performs one streaming HTTP round-trip. The bool reports whether
+// the failure is worth another attempt.
+//
+// The request is rebuilt per attempt because newRequest wraps the payload in a
+// one-shot reader: re-sending the same *http.Request would post an empty body
+// and turn a retry into a fresh error.
+//
+// A non-200 used to be returned without a retry, out of caution over billing a
+// request that failed. That caution is now bounded by maxRetries: a route that
+// is overloaded is exactly the failure a second attempt clears, and the caller
+// cannot observe the difference because nothing was streamed.
+func (c *Client) openStream(ctx context.Context, payload []byte, providerOpts map[string]any) (*sseStream, bool, error) {
+	req, err := c.newRequest(ctx, payload, providerOpts)
+	if err != nil {
+		return nil, false, err
+	}
+	resp, err := c.streamHTTP.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
-			return nil, errs.Wrap(errs.CodeProviderTimeout, "openai: stream cancelled by caller", ctx.Err())
+			return nil, false, errs.Wrap(errs.CodeProviderTimeout,
+				"openai: stream cancelled by caller", ctx.Err())
 		}
-		return nil, errs.Wrap(errs.CodeProviderUnavailable, "openai: stream request failed", err)
+		return nil, true, errs.Wrap(errs.CodeProviderUnavailable, "openai: stream request failed", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		// Drain and classify exactly like the unary path, but a failed
-		// pre-flight is never retried: nothing has been streamed yet but the
-		// request that failed may be non-idempotent at the billing layer.
-		_, err := c.classifyError(resp)
+		retryable, err := c.classifyError(resp)
 		_ = resp.Body.Close()
-		return nil, err
+		return nil, retryable, err
 	}
-	return newSSEStream(resp.Body), nil
+	return newSSEStream(resp.Body), false, nil
 }
 
 // unary performs the bounded-retry HTTP loop for a completion.
@@ -364,8 +423,21 @@ func (c *Client) attempt(ctx context.Context, payload []byte, providerOpts map[s
 		return true, 0, completionResponse{},
 			errs.Wrap(errs.CodeProviderUnavailable, "openai: decode completion response", err)
 	}
+	// A gateway can accept the request with 200 and then fail in the body
+	// instead of the status line. Surfacing that message is the difference
+	// between an operator reading "the upstream is overloaded" and an
+	// unactionable "returned no choices".
+	if out.Error != nil && strings.TrimSpace(out.Error.Message) != "" {
+		status := codeAsInt(out.Error.Code)
+		return status == 0 || retryableStatus(status), 0, completionResponse{},
+			errs.Newf(errs.CodeProviderUnavailable,
+				"openai: chat request failed (model %q): %s", c.model,
+				strings.TrimSpace(out.Error.Message))
+	}
 	if len(out.Choices) == 0 {
-		return false, 0, completionResponse{}, errs.Newf(errs.CodeProviderUnavailable,
+		// An empty 200 is a transient drop on overloaded routes, not a request
+		// the provider rejected: retrying is the recovery, so say so.
+		return true, 0, completionResponse{}, errs.Newf(errs.CodeProviderUnavailable,
 			"openai: model %q returned no choices", c.model)
 	}
 	if _, err := toDomainMessage(out.Choices[0].Message); err != nil {
@@ -394,9 +466,7 @@ func (c *Client) classifyError(resp *http.Response) (bool, error) {
 	}
 
 	switch {
-	case resp.StatusCode == http.StatusTooManyRequests,
-		resp.StatusCode == http.StatusRequestTimeout,
-		resp.StatusCode >= 500:
+	case retryableStatus(resp.StatusCode):
 		return true, errs.Newf(errs.CodeProviderUnavailable,
 			"openai: chat request failed (model %q): %s", c.model, detail)
 	case resp.StatusCode == http.StatusBadRequest:
@@ -415,6 +485,33 @@ func (c *Client) classifyError(resp *http.Response) (bool, error) {
 	default:
 		return false, errs.Newf(errs.CodeProviderUnavailable,
 			"openai: chat request failed (model %q): %s", c.model, detail)
+	}
+}
+
+// retryableStatus reports whether a status — a real HTTP one or the status an
+// upstream failure carries inside a 200 body — describes a transient problem
+// that another attempt can plausibly clear.
+func retryableStatus(status int) bool {
+	return status == http.StatusTooManyRequests ||
+		status == http.StatusRequestTimeout ||
+		status >= 500
+}
+
+// codeAsInt reads the OpenAI-family error code, which arrives as a number from
+// the OpenRouter gateway and as a string from providers that follow OpenAI
+// literally. Zero means the code was absent or unparseable.
+func codeAsInt(code any) int {
+	switch v := code.(type) {
+	case float64:
+		return int(v)
+	case string:
+		n, err := strconv.Atoi(strings.TrimSpace(v))
+		if err != nil {
+			return 0
+		}
+		return n
+	default:
+		return 0
 	}
 }
 

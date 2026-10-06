@@ -284,6 +284,68 @@ func TestRetryExhaustedOn5xx(t *testing.T) {
 	}
 }
 
+// OpenRouter reports an overloaded upstream as HTTP 200 with an error object
+// and no choices. Before this was handled the operator saw only "returned no
+// choices" and the turn died on the first attempt.
+func TestGatewayErrorIn200BodyIsSurfacedAndRetried(t *testing.T) {
+	var calls atomic.Int64
+	const body = `{"id":"gen-1","error":{"message":"Upstream error from Nvidia: Service temporarily overloaded","code":503,"metadata":{"error_type":"provider_overloaded"}}}`
+	c := newOfflineClient(t, countingTransport(&calls, func(*http.Request) (*http.Response, error) {
+		return jsonResponse(http.StatusOK, body), nil
+	}))
+	_, err := c.Complete(context.Background(), chat.ChatRequest{
+		Messages: []chat.ChatMessage{{Role: chat.RoleUser, Content: "hi"}},
+	})
+	if err == nil || errs.CodeOf(err) != errs.CodeProviderUnavailable {
+		t.Fatalf("want provider_unavailable, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "Service temporarily overloaded") ||
+		!strings.Contains(err.Error(), "vendor/test-model") {
+		t.Errorf("error hides the upstream reason or the model: %v", err)
+	}
+	if calls.Load() != 3 { // first + 2 retries
+		t.Errorf("calls = %d, want 3", calls.Load())
+	}
+}
+
+// A 4xx inside the body is a fault the operator must fix, so it is reported
+// once rather than retried.
+func TestGatewayClientErrorIn200BodyIsNotRetried(t *testing.T) {
+	var calls atomic.Int64
+	const body = `{"id":"gen-2","error":{"message":"No endpoints found for this model","code":400}}`
+	c := newOfflineClient(t, countingTransport(&calls, func(*http.Request) (*http.Response, error) {
+		return jsonResponse(http.StatusOK, body), nil
+	}))
+	_, err := c.Complete(context.Background(), chat.ChatRequest{
+		Messages: []chat.ChatMessage{{Role: chat.RoleUser, Content: "hi"}},
+	})
+	if err == nil || errs.CodeOf(err) != errs.CodeProviderUnavailable {
+		t.Fatalf("want provider_unavailable, got %v", err)
+	}
+	if calls.Load() != 1 {
+		t.Errorf("calls = %d, want exactly 1", calls.Load())
+	}
+}
+
+func TestEmptyChoicesIsRetried(t *testing.T) {
+	var calls atomic.Int64
+	c := newOfflineClient(t, countingTransport(&calls, func(*http.Request) (*http.Response, error) {
+		return jsonResponse(http.StatusOK, `{"id":"gen-3","model":"vendor/test-model","choices":[]}`), nil
+	}))
+	_, err := c.Complete(context.Background(), chat.ChatRequest{
+		Messages: []chat.ChatMessage{{Role: chat.RoleUser, Content: "hi"}},
+	})
+	if err == nil || errs.CodeOf(err) != errs.CodeProviderUnavailable {
+		t.Fatalf("want provider_unavailable, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "returned no choices") {
+		t.Errorf("unexpected message: %v", err)
+	}
+	if calls.Load() != 3 {
+		t.Errorf("calls = %d, want 3", calls.Load())
+	}
+}
+
 func TestZeroRetriesMeansSingleAttempt(t *testing.T) {
 	var calls atomic.Int64
 	c, err := New(Options{

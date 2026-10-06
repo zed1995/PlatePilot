@@ -27,6 +27,10 @@ type sseStream struct {
 	finished bool
 	closed   bool
 
+	// pending holds the first chunk the dial already read, so a stream whose
+	// opening went well can be handed to the caller without re-reading it.
+	pending *chat.ChatChunk
+
 	// Accumulated tool calls keyed by the wire index, in first-seen order.
 	toolOrder []int
 	toolAcc   map[int]*tool.ToolCall
@@ -50,6 +54,11 @@ func newSSEStream(body io.ReadCloser) *sseStream {
 // Recv returns the next chunk. io.EOF marks a clean end of stream (a [DONE]
 // frame or the server closing after a terminal chunk).
 func (s *sseStream) Recv() (chat.ChatChunk, error) {
+	if s.pending != nil {
+		chunk := *s.pending
+		s.pending = nil
+		return chunk, nil
+	}
 	if s.finished {
 		return chat.ChatChunk{}, io.EOF
 	}
