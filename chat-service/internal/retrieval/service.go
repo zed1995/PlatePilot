@@ -211,6 +211,7 @@ func (s *Service) Search(ctx context.Context, req retrieval.Request) (retrieval.
 		keywordInput = ChannelInput{
 			Channel: retrieval.ChannelKeyword,
 			Note:    "关键词通道不可用：" + string(errs.CodeOf(err)),
+			Warn:    true,
 		}
 	}
 	inputs = append(inputs, keywordInput)
@@ -265,6 +266,7 @@ func (s *Service) structuredChannel(
 		return ChannelInput{
 			Channel: retrieval.ChannelStructured,
 			Note:    "结构化通道已关闭",
+			Warn:    true,
 		}, nil, nil, nil
 	}
 	// A filterless structured search is refused rather than served, because a
@@ -344,6 +346,7 @@ func (s *Service) keywordChannel(
 		return ChannelInput{
 			Channel: retrieval.ChannelKeyword,
 			Note:    "关键词通道已关闭",
+			Warn:    true,
 		}, nil, nil, nil
 	}
 
@@ -509,18 +512,21 @@ func (s *Service) vectorChannel(
 	soft []retrieval.SoftCondition,
 	depth int,
 ) (ChannelInput, map[int64]search.RestaurantCandidate, map[int64]float64, int, error) {
-	skipped := func(note string) (ChannelInput, map[int64]search.RestaurantCandidate, map[int64]float64, int, error) {
-		return ChannelInput{Channel: retrieval.ChannelVector, Note: note}, nil, nil, 0, nil
+	// skipped records a channel that did not run. warn elevates the note into
+	// the trace's warning list: unavailability and "disabled" are degradations,
+	// while a filter-only query having nothing to embed is routine.
+	skipped := func(note string, warn bool) (ChannelInput, map[int64]search.RestaurantCandidate, map[int64]float64, int, error) {
+		return ChannelInput{Channel: retrieval.ChannelVector, Note: note, Warn: warn}, nil, nil, 0, nil
 	}
 
 	if !s.cfg.EnableVector {
-		return skipped("向量通道已关闭")
+		return skipped("向量通道已关闭", true)
 	}
 	if s.knowledge == nil {
-		return skipped("向量通道不可用：未配置知识库")
+		return skipped("向量通道不可用：未配置知识库", true)
 	}
 	if s.embedding == nil {
-		return skipped("向量通道不可用：未配置 embedding provider")
+		return skipped("向量通道不可用：未配置 embedding provider", true)
 	}
 
 	// The embedded text is the question plus the soft conditions the corpus can
@@ -534,7 +540,7 @@ func (s *Service) vectorChannel(
 	if strings.TrimSpace(embeddingText) == "" {
 		// Embedding an empty string yields a vector that means nothing. A
 		// filter-only search has no soft condition to interpret.
-		return skipped("无自然语言查询，向量通道跳过")
+		return skipped("无自然语言查询，向量通道跳过", false)
 	}
 
 	vector, err := s.embedQuery(ctx, embeddingText)
@@ -553,7 +559,7 @@ func (s *Service) vectorChannel(
 				slog.String("embedding_model", s.embedding.ModelID()))
 			return ChannelInput{}, nil, nil, 0, err
 		}
-		return skipped("向量通道不可用：" + vectorFailureReason(err))
+		return skipped("向量通道不可用："+vectorFailureReason(err), true)
 	}
 
 	vectorDepth := depth * vectorOverread
@@ -572,7 +578,7 @@ func (s *Service) vectorChannel(
 		// vectorFailureReason rather than the bare code keeps the note from
 		// rendering as the literal string "internal", which reads as a leaked
 		// implementation detail instead of a reason.
-		return skipped("向量通道不可用：" + vectorFailureReason(err))
+		return skipped("向量通道不可用："+vectorFailureReason(err), true)
 	}
 
 	input := ChannelInput{Channel: retrieval.ChannelVector, Ran: true}
@@ -583,6 +589,9 @@ func (s *Service) vectorChannel(
 	// the same similarity were not necessarily recalled for the same reason.
 	if len(soft) > 0 {
 		input.Note = softConditionNote
+		// This is a product disclosure, not a skip: half the ranking came from
+		// review inference, and the caller only learns that from the warning.
+		input.Warn = true
 	}
 	// Every hit from this channel was recalled by the same query, so when that
 	// query carried soft conditions, each of them was recalled partly for them.

@@ -1,6 +1,8 @@
 package retrieval
 
 import (
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/zed1995/platepilot/shared/domain/retrieval"
@@ -167,7 +169,7 @@ func TestFuseTraceRecordsSkippedChannels(t *testing.T) {
 		{Channel: retrieval.ChannelStructured, Ran: true, Hits: []retrieval.ChannelHit{
 			{RestaurantID: 1, Score: 1, Reason: "满足硬条件"},
 		}},
-		{Channel: retrieval.ChannelVector, Ran: false, Note: "向量通道未启用"},
+		{Channel: retrieval.ChannelVector, Ran: false, Note: "向量通道未启用", Warn: true},
 	}
 	got := Fuse(inputs, pool, Options{Weights: Weights{Structured: 1, Vector: 1}, TopK: 10})
 
@@ -226,24 +228,76 @@ func TestFuseDeduplicatesRepeatedHitsWithinAChannel(t *testing.T) {
 	}
 }
 
-// A channel that names a restaurant the pool cannot describe must be dropped
-// with a warning, not passed through as a result with no name.
+// A channel that names restaurants the pool cannot describe must drop them.
+// A stale vector index can return dozens of such ids: they surface as ONE
+// aggregated warning, never as one line per restaurant. The per-id detail is
+// still recorded on the channel row for an operator reading the trace.
 func TestFuseDropsHitsForUnknownRestaurants(t *testing.T) {
 	pool := poolOf(map[int64]float64{1: 1}, candidate(1, "A"))
 	inputs := []ChannelInput{
 		{Channel: retrieval.ChannelKeyword, Ran: true, Hits: []retrieval.ChannelHit{
 			{RestaurantID: 1, Score: 0.8, Reason: "名称匹配"},
 			{RestaurantID: 99, Score: 0.7, Reason: "名称匹配"},
+			{RestaurantID: 42, Score: 0.6, Reason: "名称匹配"},
 		}},
 	}
 	got := Fuse(inputs, pool, Options{Weights: Weights{Keyword: 1}, TopK: 10})
 	for _, c := range got.Candidates {
-		if c.RestaurantID == 99 {
+		if c.RestaurantID == 99 || c.RestaurantID == 42 {
 			t.Fatal("an undescribable restaurant must not be returned")
 		}
 	}
-	if len(got.Trace.Warnings) == 0 {
-		t.Fatal("dropping an unknown restaurant must be reported")
+
+	var summary retrieval.ChannelSummary
+	for _, s := range got.Trace.Channels {
+		if s.Channel == retrieval.ChannelKeyword {
+			summary = s
+		}
+	}
+	if want := []int64{42, 99}; !reflect.DeepEqual(summary.DroppedRestaurantIDs, want) {
+		t.Fatalf("dropped ids = %v, want %v (sorted, full operator detail)",
+			summary.DroppedRestaurantIDs, want)
+	}
+
+	var unknownWarnings []string
+	for _, w := range got.Trace.Warnings {
+		if strings.Contains(w, "候选池外") {
+			unknownWarnings = append(unknownWarnings, w)
+		}
+	}
+	if len(unknownWarnings) != 1 {
+		t.Fatalf("want exactly one aggregated unknown-restaurant warning, got %v",
+			got.Trace.Warnings)
+	}
+	if !strings.Contains(unknownWarnings[0], "2 家") {
+		t.Fatalf("the aggregated warning must name the count, got %q", unknownWarnings[0])
+	}
+}
+
+// A routine skip is normal operation, not a degradation. The note stays on the
+// channel row, but a text-only search must not carry a yellow warning just
+// because the structured channel had nothing to filter.
+func TestFuseKeepsRoutineSkipNotesOutOfWarnings(t *testing.T) {
+	pool := poolOf(map[int64]float64{1: 1}, candidate(1, "A"))
+	inputs := []ChannelInput{
+		{Channel: retrieval.ChannelStructured, Ran: true, Hits: []retrieval.ChannelHit{
+			{RestaurantID: 1, Score: 1, Reason: "满足硬条件"},
+		}},
+		{Channel: retrieval.ChannelKeyword, Ran: false, Note: "无关键词，跳过"},
+	}
+	got := Fuse(inputs, pool, Options{Weights: Weights{Structured: 1, Keyword: 1}, TopK: 10})
+
+	var note string
+	for _, s := range got.Trace.Channels {
+		if s.Channel == retrieval.ChannelKeyword {
+			note = s.Note
+		}
+	}
+	if note != "无关键词，跳过" {
+		t.Fatalf("the routine skip must stay recorded on the channel row, note = %q", note)
+	}
+	if len(got.Trace.Warnings) != 0 {
+		t.Fatalf("a routine skip must not be promoted to a warning, got %v", got.Trace.Warnings)
 	}
 }
 

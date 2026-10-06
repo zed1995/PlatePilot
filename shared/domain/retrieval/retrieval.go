@@ -79,6 +79,13 @@ type ChannelSummary struct {
 	Results int     `json:"results"`
 	// Note explains a skipped or degraded channel in one sentence.
 	Note string `json:"note,omitempty"`
+	// DroppedRestaurantIDs lists hits whose restaurant the fusion pool could
+	// not describe and which were therefore ignored. The ids live here, once
+	// per channel, instead of being one warning each: a stale vector index can
+	// produce dozens of them, and the user-facing warning list has to stay
+	// short. The trace keeps the full detail so an operator can still see
+	// exactly which ids the channel invented.
+	DroppedRestaurantIDs []int64 `json:"dropped_restaurant_ids,omitempty"`
 }
 
 // Trace records how a candidate list was produced.

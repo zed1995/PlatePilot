@@ -3,6 +3,7 @@ package retrieval
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -207,7 +208,15 @@ func TestSearchWithoutFiltersRunsOnlyTheKeywordChannel(t *testing.T) {
 	}
 	for _, summary := range got.Trace.Channels {
 		if summary.Channel == retrieval.ChannelStructured && summary.Ran {
-			t.Fatal("the structured channel must be recorded as not run")
+			t.Fatal("the structured channel must not run without filters")
+		}
+	}
+	// The structured channel's filterless skip is routine, not a degradation:
+	// a text-only search must not end with a user-facing warning about it.
+	for _, w := range got.Trace.Warnings {
+		if strings.Contains(w, "结构化通道跳过") {
+			t.Fatalf("a routine channel skip must not reach the warnings, got %v",
+				got.Trace.Warnings)
 		}
 	}
 }

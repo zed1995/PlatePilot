@@ -74,8 +74,16 @@ type ChannelInput struct {
 	// channel and an empty one are different facts.
 	Ran  bool
 	Hits []retrieval.ChannelHit
-	// Note explains a skipped or degraded channel in one sentence.
+	// Note explains a skipped or degraded channel in one sentence. It is always
+	// recorded on the channel's trace row.
 	Note string
+	// Warn elevates Note into the trace's warning list. Set it for genuine
+	// degradations (the channel is disabled or unavailable) and for one-time
+	// product disclosures a reader must not miss; leave it false for routine
+	// skips that are normal operation ("no keyword", "no filter", "no natural
+	// language query"), which would otherwise put a yellow warning on almost
+	// every search.
+	Warn bool
 }
 
 // Fused is the outcome of one fusion.
@@ -133,14 +141,18 @@ func Fuse(inputs []ChannelInput, pool Pool, opts Options) Fused {
 	seen := make(map[int64]struct{}, len(pool.Candidates))
 
 	for _, input := range inputs {
-		trace.Channels = append(trace.Channels, retrieval.ChannelSummary{
+		summary := retrieval.ChannelSummary{
 			Channel: input.Channel,
 			Ran:     input.Ran,
 			Weight:  weights[input.Channel],
 			Results: len(input.Hits),
 			Note:    input.Note,
-		})
-		if input.Note != "" {
+		}
+		trace.Channels = append(trace.Channels, summary)
+		summaryIdx := len(trace.Channels) - 1
+		// Only notes the channel marked as a warning reach the warning list.
+		// A routine skip stays on the channel row and never nags the caller.
+		if input.Note != "" && input.Warn {
 			trace.Warn(input.Note)
 		}
 		if !input.Ran {
@@ -153,18 +165,30 @@ func Fuse(inputs []ChannelInput, pool Pool, opts Options) Fused {
 			}
 		}
 		bestHit[input.Channel] = byID
+		// Unknown ids are collected, sorted, and reported once. A stale vector
+		// index can return dozens of them in a single turn; one warning per id
+		// would flood the caller, and map order would make the list
+		// non-reproducible. The ids themselves are kept on the channel row.
+		var unknownIDs []int64
 		for id := range byID {
 			if _, known := pool.Candidates[id]; !known {
 				// A channel recalled a restaurant the pool does not describe.
 				// Dropping it is correct: without a name, address, and rating
 				// there is nothing to return, and inventing one would be worse.
-				trace.Warn(fmt.Sprintf("%s 通道返回了未知餐厅 %d，已忽略", input.Channel, id))
+				unknownIDs = append(unknownIDs, id)
 				continue
 			}
 			if _, dup := seen[id]; !dup {
 				seen[id] = struct{}{}
 				poolIDs = append(poolIDs, id)
 			}
+		}
+		if len(unknownIDs) > 0 {
+			sort.Slice(unknownIDs, func(i, j int) bool { return unknownIDs[i] < unknownIDs[j] })
+			trace.Channels[summaryIdx].DroppedRestaurantIDs = unknownIDs
+			trace.Warn(fmt.Sprintf(
+				"%s 通道返回了 %d 家候选池外的未知餐厅，已忽略",
+				input.Channel, len(unknownIDs)))
 		}
 	}
 	trace.CandidatePool = len(poolIDs)
