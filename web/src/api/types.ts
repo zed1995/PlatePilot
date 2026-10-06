@@ -264,6 +264,10 @@ export interface ChannelSummary {
   weight: number
   results: number
   note?: string
+  // Hits that pointed at restaurants the fusion pool could not describe; they
+  // were ignored. The warning list only carries an aggregated count, so these
+  // ids are the place to diagnose a stale vector index.
+  dropped_restaurant_ids?: number[]
 }
 
 export interface ChannelScore {

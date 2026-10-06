@@ -46,7 +46,27 @@ export function TracePanel({ trace }: { trace: Trace }) {
             </TableHeader>
             <TableBody>
               {(trace.channels ?? []).map((c: ChannelSummary) => (
-                <TableRow key={c.channel}><TableCell>{c.channel}</TableCell><TableCell>{c.ran ? 'yes' : 'no'}</TableCell><TableCell>{c.weight}</TableCell><TableCell>{c.results}</TableCell><TableCell>{c.note}</TableCell></TableRow>
+                <TableRow key={c.channel}>
+                  <TableCell>{c.channel}</TableCell>
+                  <TableCell>{c.ran ? 'yes' : 'no'}</TableCell>
+                  <TableCell>{c.weight}</TableCell>
+                  <TableCell>{c.results}</TableCell>
+                  <TableCell>
+                    {c.note}
+                    {c.dropped_restaurant_ids && c.dropped_restaurant_ids.length > 0 && (
+                      // This is the per-id detail the user-facing warning
+                      // deliberately aggregates away: an operator diagnosing a
+                      // stale recall index needs the actual ids.
+                      <span
+                        className="mt-1 block font-mono text-[11px] text-ink-tertiary"
+                        data-testid="dropped-restaurant-ids"
+                      >
+                        已忽略候选池外 {c.dropped_restaurant_ids.length} 家：
+                        {c.dropped_restaurant_ids.join(', ')}
+                      </span>
+                    )}
+                  </TableCell>
+                </TableRow>
               ))}
             </TableBody>
           </Table>

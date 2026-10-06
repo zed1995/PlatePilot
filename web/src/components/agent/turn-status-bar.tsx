@@ -41,6 +41,12 @@ export interface TurnStatusBarProps {
   modelName?: string
 }
 
+// warningPreviewLimit is how many warnings render open. A degraded turn is
+// usually one line; but a noisy retrieval can collect more, and past this many
+// the rest fold behind a disclosure instead of pushing the transcript off the
+// screen. The warnings are still all in the DOM — folded, not swallowed.
+export const warningPreviewLimit = 3
+
 export function TurnStatusBar({ turn, modelName }: TurnStatusBarProps) {
   const elapsed = useElapsed(turn)
   // The active phase is the row still showing the spinner. There is at
@@ -75,13 +81,30 @@ export function TurnStatusBar({ turn, modelName }: TurnStatusBarProps) {
         // Warnings are not decoration. The vector channel degrading to a
         // document-order scan arrives here and nowhere else, and a degraded
         // answer that looks identical to a healthy one is a wrong answer.
+        // They are still always displayed — the overflow is folded, never
+        // dropped — but one noisy turn must not turn this bar into a modal's
+        // worth of yellow lines.
         <div className="flex items-start gap-2 rounded-lg border border-warning/20 bg-warning/5 px-2.5 py-1.5 text-[11px] text-warning">
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-          <ul className="m-0 list-disc space-y-0.5 pl-4">
-            {turn.warnings.map((warning) => (
-              <li key={warning}>{warning}</li>
-            ))}
-          </ul>
+          <div className="min-w-0 flex-1">
+            <ul className="m-0 list-disc space-y-0.5 pl-4">
+              {turn.warnings.slice(0, warningPreviewLimit).map((warning) => (
+                <li key={warning}>{warning}</li>
+              ))}
+            </ul>
+            {turn.warnings.length > warningPreviewLimit && (
+              <details>
+                <summary className="cursor-pointer select-none pt-0.5 text-ink-tertiary">
+                  展开其余 {turn.warnings.length - warningPreviewLimit} 条
+                </summary>
+                <ul className="m-0 list-disc space-y-0.5 pl-4 pt-0.5">
+                  {turn.warnings.slice(warningPreviewLimit).map((warning) => (
+                    <li key={warning}>{warning}</li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </div>
         </div>
       )}
     </div>
