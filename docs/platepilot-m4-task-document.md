@@ -870,3 +870,84 @@ psql "$POSTGRES_DSN" -c \
 psql "$POSTGRES_DSN" -c \
   "SELECT tool_name,status,latency_ms,result_summary FROM tool_calls ORDER BY created_at DESC LIMIT 10;"
 ```
+
+## 附录 E：实施记录（M4 实际落地时的发现）
+
+> 按 §0 的约定，落地与计划的差异记在这里，不回头改原计划。本节记录 M4 交付后围绕
+> 「让一轮对话在结束之前就能被看见」所做的运行时修补，以及其中一次真实故障的根因。
+
+### E.1 事件契约新增两类帧（§2.3.2 的封闭集之外）
+
+一轮真实对话要 1–2 分钟，其中 `plan` 与 `answer` 各是一次几十秒的同步 LLM 调用。计划里的
+事件集（`message.start/delta/replace`、`tool.start/finish`、`citation`、
+`state.awaiting_input`、`confirmation.required`、`memory.saved`、`message.end`、`error`）
+在这段静默里一个字节都不产生，前端只能显示一个没有内容的「运行中」。因此新增两帧，
+并同步 `web/src/api/chat.ts` 的 `StreamEvent` 联合类型、`useAgentTurn` 的 reducer 与
+`isStructuralEvent` 封闭集、以及 `sse_event_test.go` 的 `everyStreamEventType()`：
+
+| 事件 | 用途 | 为什么不是别的 |
+| --- | --- | --- |
+| `phase.progress` | 改写正在运行的 phase 行的标题（`正在推理（已 N 秒）`），按 `phase_id` 匹配 | 不新开一行：`plan` 会随 `plan ⇄ tools` 循环重复出现，新开行会让"循环"看起来像并列步骤 |
+| `thinking.delta` | 推理模型在首个答案 token 之前的 `reasoning` / `reasoning_content` 增量，独占一条通道 | 不与 `message.delta` 合并：它是「模型在想」而不是「模型在说」，混进答案正文就是伪造引用文本 |
+
+### E.2 与计划的偏差
+
+| 计划 | 实际 | 原因 |
+| --- | --- | --- |
+| `agent_runs` 只记 `error_code`（M4-07） | 新增 `error_message` 列（迁移 `0013_run_error_message.sql`），`Finish` / `scanRun` / `runColumns` 同步；`Start` 的 `ON CONFLICT DO UPDATE` 把它重置为空；契约用例 `running_to_failed` 补写读断言 | 只有 `error_code` 时分不清「模型被下架」和「代码写错了」，两者都落成 `provider_unavailable` |
+| 失败原因只进审计表 | `Runner.Deps` 增加 `Logger`，`invoke` 失败分支打一条 `agent run failed`（`run_id` / `thread_id` / `trace_id` / `code` / `error`） | 审计行的 message 被截断到 512 runes（`maxMessageChars`），完整原因得有个地方看 |
+| `agent.Config` 没有流式开关 | `PLATEPILOT_ANSWER_STREAMING`（默认 true）、`AGENT_PHASE_EVENTS`（默认 true） | 沿用 §5 的约定：影响观感与线宽的决策放环境变量，不重编译即可回退 |
+| 答案按行 / 整块下发 | `lineEmitter` 逐段下发（`answer/compose.go`，UTF-8 安全） | 按行缓冲会让答案「整行整行」地跳出来，正好抵消流式的意义 |
+| — | `startPhaseProgress` / `publishProgress`，`progressHeartbeatInterval = 3s`（`nodes_instrument.go`），`plan` 与 `answer` 两处接入 | 3s 是心跳密度与通道容量的取舍：1s 会在长轮里灌满 128 帧的事件通道，3s 足够让用户看见行在动 |
+| — | 根 Makefile 增加 `ollama-up` / `ollama-down` / `ollama-logs` / `ollama-pull` | 本地 embedding 自 M3 起就是前置，之前只能手敲 `ollama serve` |
+
+**两条必须记住的约束**：
+
+1. `startPhaseProgress` 在 `currentPhaseID(ctx) == ""` 时**返回 nil 且不发任何帧**。也就是说
+   `AGENT_PHASE_EVENTS=false` 时，心跳与 phase / step 帧一起静默——开关只有一个，不存在
+   「关了 phase 帧但还在发心跳」的中间态。
+2. 关掉这两个开关**不改变答案本身**，只改变线宽，所以它们可以随时回退而不动数据。
+
+### E.3 一次真实故障：前端把整个流丢掉了（2026-10-06）
+
+**现象**：一轮对话在前端没有任何中间过程，等 1–2 分钟后所有信息（提问、回答、候选、
+run 明细）一次性出现。
+
+**排查结论**：服务端、代理、事件序列全部正常——直接 `curl` `:8080` 与经 Vite 代理
+`curl` `:5173`，都能在 t≈0 收到 `message.start` / `phase.started`，随后每 3s 一帧
+`phase.progress`；响应头干净（`transfer-encoding: chunked`，无 `Content-Encoding` /
+`Content-Length`，带 `x-accel-buffering: no`）。问题在浏览器侧。
+
+**根因**：服务端把事件名放在 SSE 的 `event:` 行上——`sse.go` 的 payload 结构体里
+**没有** `type` 字段——而前端 `sendMessage` 只做了 `JSON.parse(frame.data) as StreamEvent`，
+把 `frame.event` 丢掉了。于是 `reduce()` 的 `switch (event.type)` 对每一帧都读到
+`undefined`、一律走 `default`，`isStructuralEvent()` 也一律返回 false：**整个流被静默丢弃**。
+用户最后看到的一切，都来自 turn 结束时 `onFinished → writeTurn()` 触发的那次重新拉取，
+「突然一次性出现」正是这次 refetch 的形状。
+
+**为什么测试没拦住**：现有用例要么 mock 掉 `sendMessage`（`AgentConsole.test.tsx`），要么
+直接构造带 `type` 的对象喂给 `reduce`（`useAgentTurn.test.ts`）。**「SSE 帧 → 带 `type`
+的事件」这条缝隙没有任何用例覆盖**，而它的失败模式是静默的——没有任何断言会变红。
+
+**修复与守卫**：`web/src/api/chat.ts` 把 `frame.event` 作为 `type` 合回 payload；新增
+`web/src/api/chat.test.ts`，走真实的
+`fetch → ReadableStream → readSSEStream → sendMessage` 全链路，断言事件顺序与 `type`、
+payload 字段，以及「非 JSON 帧被跳过但不终止本轮」。
+
+### E.4 验证记录（2026-10-06）
+
+- 前端：`npx tsc --noEmit` 无输出；`npx vitest run` **22 个文件 124 个用例全绿**。
+- 浏览器实测（`http://localhost:5173/agent`）：发送后约 5 秒，主对话区与状态栏已是
+  「运行中　正在加载会话上下文」，之后才出现回答文本——中间过程可见。
+- 帧序实测（`curl -N`）：
+
+  ```
+  message.start → phase.started(ingress-1) → step.started/finished ×3
+    → phase.finished(ingress-1) → phase.started(plan-1) → phase.progress(plan-1)
+    → ... → phase.started(answer-1) → message.delta → phase.finished(answer-1)
+    → message.end
+  ```
+- Go 侧本轮未改动；`make test` / `vet` / `build` 保持绿。
+
+**事件契约变更表**：`docs/platepilot-agent-optimization-plan.md` 的「附录 A」已同步
+`thinking.delta` 与 `phase.progress` 两行（2026-10-06）。

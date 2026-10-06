@@ -442,6 +442,13 @@ PostgreSQL 侧本来就有 `tool_calls_seq_positive` / `run_nodes_seq_positive` 
 | `message.delta` | 每 run 通常一个，携带完整正文 | 语义收紧为「临时增量」，每 run 多个 | web 需按 run 聚合；`message.end` 前不落库 |
 | `message.replace` | 不存在 | **新增**：携带校准后的完整正文 | web 必须整段替换本 run 正文 |
 | `citation` | 承载校验通过的证据 id | 不变（始终在校验之后发） | 无 |
+| `thinking.delta` | 不存在 | **新增**：模型 `reasoning` / `reasoning_content` 的增量，独占一条通道，绝不并入正文 | web 新增 `thinking.delta` 分支；与 `message.delta` 分开渲染 |
+| `phase.progress` | 不存在 | **新增**：按 `phase_id` 改写正在运行的 phase 行的标题（`正在推理（已 N 秒）`） | web 按 id 匹配改写，不新开行 |
+
+> 后两行不属于 OPT-01，是 OPT-01 之后为「消除长轮静默」补的运行时修补（2026-10-06）。
+> `phase.progress` 依赖 M4-11 已落地的 `phase.started` / `phase.finished` 以及 ingress 的
+> `step.started` / `step.finished`；两者的完整实现与文件清单见
+> `docs/platepilot-m4-task-document.md` 附录 E.1 / E.2。
 
 ## 附录 B：涉及文件清单
 
