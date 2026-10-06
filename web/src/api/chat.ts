@@ -119,6 +119,12 @@ function query(params: object): string {
 export type StreamEvent =
   | { type: 'message.start'; run_id: string; thread_id: string }
   | { type: 'message.delta'; delta: string }
+  // thinking.delta is one increment of the model's own reasoning. It is a
+  // channel of its own — never appended to the answer — because on a
+  // reasoning model it is the only output for the long stretch before the
+  // first answer token, and rendering it as "思考中" is what makes that
+  // stretch visibly alive instead of a silent spinner.
+  | { type: 'thinking.delta'; delta: string }
   // The corrected answer body. Deltas are provisional — the server publishes
   // text as it is generated, and a citation that turns out to be out of range
   // is repaired afterwards — so a replacement means "discard this run's text
@@ -263,12 +269,22 @@ export function sendMessage(opts: {
       return
     }
     await readSSEStream(response.body, (frame) => {
+      let payload: unknown
       try {
-        opts.onEvent(JSON.parse(frame.data) as StreamEvent)
+        payload = JSON.parse(frame.data)
       } catch {
         // A frame whose data is not JSON is skipped rather than failing the
         // turn: one malformed frame must not cost the user the answer around it.
+        return
       }
+      if (typeof payload !== 'object' || payload === null) return
+      // The event name is the type. The back end puts it on the SSE `event:`
+      // line and never inside the JSON body, so the two halves have to be
+      // recombined here: a reducer that switches on `event.type` reads
+      // `undefined` for every frame otherwise, and the entire stream reduces
+      // to a no-op — nothing renders until the turn ends and the transcript is
+      // re-read.
+      opts.onEvent({ ...(payload as Record<string, unknown>), type: frame.event } as StreamEvent)
     })
   })()
 
