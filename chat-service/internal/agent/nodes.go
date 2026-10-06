@@ -721,7 +721,13 @@ func (r *Runner) answerNode(ctx context.Context, st *TurnState) (*TurnState, err
 			PendingAction:       st.PendingAction,
 			ConfirmationSummary: st.ConfirmationSummary,
 		})
-	case len(st.Evidence) > 0:
+	case len(st.Evidence) > 0 || len(st.Candidates) > 0:
+		// Grounding runs with reviews, candidate facts, or both. The
+		// candidates are system-of-record facts (rating, price, cuisine), so
+		// a fact question the search already answered must reach the composer
+		// even when no review evidence was recalled; gating this branch on
+		// evidence alone is what made an answer deny a rating the filter had
+		// just enforced.
 		// Anything in the retrieved material that reads like an instruction is
 		// surfaced as a warning. The prompt marks the block `suspicious` too,
 		// but a turn that silently swallowed an injection attempt would leave

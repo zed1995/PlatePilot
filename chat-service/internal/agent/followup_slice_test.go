@@ -111,6 +111,11 @@ func TestAFollowUpReadsTheSecondRecommendationAndStaysOnIt(t *testing.T) {
 				`{"cuisine":"italian","borough":"manhattan"}`),
 			assistantText("为你找到这几家意大利餐厅。"),
 		},
+		// Turn one has candidates but no review evidence; the fact route
+		// composes a grounded answer instead of passing the tool-round text
+		// through.
+		completeResps: []domainchat.ChatResponse{factAnswerResponse(
+			"为你找到这 5 家曼哈顿意大利餐厅（据 Google Local 2021 年快照）。")},
 	}
 	registry := toolreg.New(0)
 	register(t, registry, tools.SearchRestaurantsEntry(service))
@@ -459,7 +464,16 @@ func TestAPinSurvivesAFollowUpAndIsReleasedByANewSearch(t *testing.T) {
 		rankedDetail(22, "Trattoria Due", "manhattan", []string{"italian"}, 2, 4.8),
 		rankedDetail(23, "Bistro Bleu", "brooklyn", []string{"french"}, 3, 4.5),
 	)
-	provider := &scriptedProvider{supportTools: true}
+	provider := &scriptedProvider{
+		supportTools: true,
+		// Turns one and three run a fresh search and end with candidate facts,
+		// so the grounded composer needs one completion each; turn two calls
+		// no retrieval tool and passes the model text through.
+		completeResps: []domainchat.ChatResponse{
+			factAnswerResponse("找到两家曼哈顿意大利餐厅（据 Google Local 2021 年快照）。"),
+			factAnswerResponse("找到一家布鲁克林法餐厅（据 Google Local 2021 年快照）。"),
+		},
+	}
 	registry := toolreg.New(0)
 	register(t, registry, tools.SearchRestaurantsEntry(service))
 

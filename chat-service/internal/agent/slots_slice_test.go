@@ -90,6 +90,19 @@ func rankedDetail(id int64, name string, borough string, cuisines []string, pric
 	}
 }
 
+// factAnswerResponse scripts one grounded composer completion for a turn that
+// has candidates but no review evidence: a fact-only (or review-gap) answer
+// with no citation markers and a well-formed FOLLOWUPS trailer.
+func factAnswerResponse(text string) domainchat.ChatResponse {
+	return domainchat.ChatResponse{
+		Message: domainchat.ChatMessage{
+			Role:    domainchat.RoleAssistant,
+			Content: text + "\nFOLLOWUPS: []",
+		},
+		FinishReason: domainchat.FinishReasonStop,
+	}
+}
+
 // extractionResponse renders a scripted slot extraction.
 func extractionResponse(t *testing.T, payload string) *scriptedProvider {
 	t.Helper()
@@ -132,6 +145,10 @@ func TestHardConditionsSurviveAModelThatOmitsThem(t *testing.T) {
 		"cuisines": ["意大利菜"],
 		"min_rating": 4
 	}`)
+	// Candidate facts are answer material now: the turn reaches the grounded
+	// composer even though no review evidence was recalled.
+	provider.completeResps = append(provider.completeResps, factAnswerResponse(
+		"为你找到 3 家曼哈顿意大利餐厅，评分都在 4 分以上（据 Google Local 2021 年快照）。"))
 
 	registry := toolreg.New(0)
 	if err := registry.Register(tools.SearchRestaurantsEntry(recorder)); err != nil {
@@ -221,6 +238,8 @@ func TestExplicitModelArgumentsAreNotOverridden(t *testing.T) {
 	// The model deliberately drops the rating floor on its own call.
 	provider.toolResps[0] = toolCallResponse("c1", tools.SearchRestaurantsToolName,
 		`{"borough":"manhattan","cuisine":"italian"}`)
+	provider.completeResps = append(provider.completeResps, factAnswerResponse(
+		"为你找到曼哈顿的意大利餐厅（据 Google Local 2021 年快照）。"))
 
 	registry := toolreg.New(0)
 	if err := registry.Register(tools.SearchRestaurantsEntry(recorder)); err != nil {
@@ -270,6 +289,11 @@ func TestSoftConditionsReachTheRequestButNeverTheFilter(t *testing.T) {
 		"cuisines": ["italian"],
 		"soft_conditions": [{"text":"安静","topic":"ambience"}]
 	}`)
+	// No evidence tool exists in this fixture, so the opinion half is a review
+	// gap: the composer still runs on the candidate facts and has to flag that
+	// 安静 cannot be confirmed.
+	provider.completeResps = append(provider.completeResps, factAnswerResponse(
+		"是否安静缺少评论资料，无法确认；餐厅的客观信息见上。"))
 
 	registry := toolreg.New(0)
 	if err := registry.Register(tools.SearchRestaurantsEntry(recorder)); err != nil {
@@ -316,6 +340,8 @@ func TestTurnWithoutAnExtractorStillRuns(t *testing.T) {
 			toolCallResponse("c1", tools.SearchRestaurantsToolName, `{"cuisine":"italian"}`),
 			assistantText("找到一家。"),
 		},
+		completeResps: []domainchat.ChatResponse{factAnswerResponse(
+			"找到一家意大利餐厅（据 Google Local 2021 年快照）。")},
 	}
 	registry := toolreg.New(0)
 	if err := registry.Register(tools.SearchRestaurantsEntry(recorder)); err != nil {

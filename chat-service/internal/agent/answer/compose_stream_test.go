@@ -271,7 +271,7 @@ func TestComposeStreamEmitsTheAdequacyCaveatFirst(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	lead := measureAdequacy(items).lead()
+	lead := measureAdequacy(Input{Question: "这家怎么样？", Evidence: items}).lead()
 	if lead == "" {
 		t.Fatal("the fixture must produce a caveat for this test to mean anything")
 	}
