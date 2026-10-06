@@ -22,7 +22,8 @@ GO_WORK := go.work
 .PHONY: help build build-chat build-pipeline run-chat run-chat-admin run-pipeline \
         web-install web-dev web-build dev \
         migrate import-sample test test-race test-postgres test-offline eval-retrieval \
-        vet cover lint tidy clean work pg-up pg-down pg-logs
+        vet cover lint tidy clean work pg-up pg-down pg-logs \
+        ollama-up ollama-down ollama-logs ollama-pull
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
@@ -123,6 +124,51 @@ pg-down: ## Stop the local PostgreSQL and delete its volume
 
 pg-logs: ## Tail the local PostgreSQL logs
 	docker compose -f deploy/docker-compose.yml logs -f postgres
+
+# --- Local Ollama -----------------------------------------------------------
+
+# Ollama is a host-native process, not a container, so there is no compose file
+# to bring up the way pg-up does. It sits at this level for the same reason the
+# PostgreSQL compose file does: both services fall back to a degraded retrieval
+# path when the embedding provider is down, and a machine that rebooted turns
+# that silent degradation into something that reads like a ranking regression.
+#
+# The model name is taken from EMBEDDING_MODEL in .env so the pull and the
+# service configuration cannot drift apart; the fallback matches .env.example.
+
+OLLAMA_HOST  ?= http://localhost:11434
+OLLAMA_LOG   ?= /tmp/platepilot-ollama.log
+OLLAMA_MODEL ?= $(shell grep -m1 '^EMBEDDING_MODEL=' .env 2>/dev/null | cut -d= -f2-)
+OLLAMA_MODEL := $(if $(OLLAMA_MODEL),$(OLLAMA_MODEL),qwen3-embedding:0.6b)
+
+ollama-up: ## Start the local Ollama server and pull the embedding model if it is missing
+	@command -v ollama >/dev/null 2>&1 || { echo "ollama not installed: https://ollama.com/download"; exit 1; }
+	@if curl -sf $(OLLAMA_HOST)/api/tags >/dev/null 2>&1; then \
+		echo "ollama already serving at $(OLLAMA_HOST)"; \
+	else \
+		echo "starting ollama serve (log: $(OLLAMA_LOG))"; \
+		nohup ollama serve >$(OLLAMA_LOG) 2>&1 & \
+	fi
+	@echo "waiting for ollama..."
+	@n=0; until curl -sf $(OLLAMA_HOST)/api/tags >/dev/null 2>&1; do \
+		n=$$((n+1)); \
+		[ $$n -ge 30 ] && { echo "ollama did not become ready in 30s; see $(OLLAMA_LOG)"; exit 1; }; \
+		sleep 1; \
+	done
+	@echo "pulling $(OLLAMA_MODEL) (a no-op when it is already present)"
+	@ollama pull $(OLLAMA_MODEL)
+	@echo "ready: $(OLLAMA_MODEL) at $(OLLAMA_HOST)"
+
+ollama-down: ## Stop the local Ollama server (also stops the macOS app's server when that is the one running)
+	@if pgrep -x ollama >/dev/null 2>&1; then pkill -x ollama && echo "stopped ollama"; else echo "ollama is not running"; fi
+
+ollama-logs: ## Tail the log written by `make ollama-up`
+	@test -f $(OLLAMA_LOG) || { echo "no log at $(OLLAMA_LOG); start the server with 'make ollama-up'"; exit 1; }
+	@tail -f $(OLLAMA_LOG)
+
+ollama-pull: ## Pull (or refresh) the embedding model named by EMBEDDING_MODEL
+	@command -v ollama >/dev/null 2>&1 || { echo "ollama not installed: https://ollama.com/download"; exit 1; }
+	@ollama pull $(OLLAMA_MODEL)
 
 # --- Combined development loop ----------------------------------------------
 
