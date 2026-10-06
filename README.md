@@ -725,6 +725,21 @@ reached the client by then. So `message.delta` frames accumulate into a
 nothing should be written to a local store before `message.end`. A client that
 renders only the last complete text it holds is always correct.
 
+**Two credential kinds, one citation closure.** A turn distinguishes
+objective merchant-record facts from review opinions. Rating (with its review
+sample size), price level, cuisines, borough and address come from the search
+candidates — system-of-record facts from the Google Local 2021 snapshot — and
+may be stated directly without a `[^id]` marker; the first such statement
+attributes the snapshot, and a rating always travels with its sample count.
+Fields the candidate does not carry (opening hours, amenities) are answered as
+"not in the record", never guessed. Opinions (taste, quietness, atmosphere,
+service) remain under the full citation closure: they are answerable only from
+recalled review evidence, every claim keeps its `[^id]`, and an opinion
+question with no reviews is flagged in the answer as unconfirmed rather than
+silently replaced by record facts. A turn that gathered neither candidates nor
+evidence is the fixed refusal; a turn with candidates but no evidence still
+runs the grounded composer.
+
 Streaming is on by default and can be switched off with
 `PLATEPILOT_ANSWER_STREAMING=false`: the answer then arrives as a single
 `message.delta` and `message.replace` is never used. That is the fallback for a

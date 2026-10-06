@@ -1012,3 +1012,49 @@ body 是一个 error 信封、根本没有 `choices`：
 
 **要记住的代价**：`:free` 路由（这里是 `nvidia/nemotron-3-ultra-550b-a55b:free`）的上游过载会反复
 出现，重试救回单轮的方式是**把首字节延迟加上 1s、2s…**。要稳定就换成非 free 的模型。
+
+### E.6 一次真实故障：候选带着 4.8 分，回答却说「无法确认评分」（2026-10-06）
+
+**现象**：会话线程 `df967498…` 问「帮我推荐一家布鲁克林评分4以上的餐厅」，搜索召回的候选
+Royal Bay Restaurant（id=2059）档案评分 4.8、8 条评论样本、且硬过滤就是「评分 ≥4」，
+回答却写成「无法确认评分」，事实问题被当成了证据缺口。
+
+**根因**：回答侧只有一类凭据——评论证据。`answerNode` 的接地分支条件是
+`len(st.Evidence) > 0`，`Compose` / `ComposeStream` 在零证据时直接返回固定拒答，
+系统提示词第 1 条写着「只能使用 `<evidence>` 标签内的资料」。而本轮证据召回 top_k=2
+只取回了该店的评论与属性文档，载有评分的 profile 文档被截断：**搜索候选上明明带着的
+客观事实（评分、样本量、价格、菜系、行政区、地址、快照时间）在回答链路上没有任何合法
+身份**，模型只能在「编造」与「说无法确认」之间二选一。
+
+**修复（事实 / 观点两类凭据，引用闭包只约束观点）**：
+
+| 改动 | 位置 |
+| --- | --- |
+| 接地条件改为 `len(Evidence) > 0 \|\| len(Candidates) > 0`；零候选且零证据仍是固定拒答（不花模型调用） | `internal/agent/nodes.go`、`answer/compose.go`（`Compose` 与 `ComposeStream` 两处） |
+| 重写系统提示词：`<candidates>` 系统商户档案（Google Local 2021 快照）中的评分/价格/菜系/行政区/地址可直接陈述、**不挂 `[^id]`**；首次使用注明快照来源；评分必须带评论样本量；档案没有的字段（营业时间、设施等）按「未收录」处理禁止编造；口味/安静/氛围/服务等观点仍只能出自 `<evidence>` 并挂 `[^id]`，写明「评论推断」 | `answer/compose.go` `systemInstruction` |
+| 候选块渲染补上评分样本量（`评分4.8（8 条评论样本）`），并声明该块为系统商户档案 | `answer/compose.go` `candidatesContext` |
+| 硬过滤块授权「候选均已由系统确认满足，可直接陈述，无需引用」（三通道融合已物理删除不满足硬条件的候选） | `answer/compose.go` `filtersContext` |
+| `measureAdequacy` 从只收 evidence 切片改为收整个 `Input`，分三种模式：有证据按文档类型数判定（规则不变）；纯事实无 caveat；提了主观条件但零评论 → 回答以「评论资料不足…」开头并注入 `<review_gap>` 块，客观事实照答、主观条件逐条列入无法确认 | `answer/adequacy.go` |
+| 历史块措辞同步：历史事实不得直接沿用，档案事实以本轮 `<candidates>` 为凭、评论结论以本轮 `<evidence>` 为凭 | `answer/compose.go` `recentTurnsContext` |
+
+越界引用校验（`invalidCitations`）、证据块整块丢弃、单店单类型最多 3 块等引用闭包规则
+**一律不变**；`/v1` 响应结构、SSE 帧、web、store、data-pipeline 均未改动。营业时间
+（OpenAt）、设施属性、事实补档工具等后续切片记在
+`.trae/documents/retrieval-fact-opinion-split_plan.md` 附录 A，本次不做。
+
+**为什么测试没拦住**：既有切片测试把「有候选、无证据」的轮次当成固定拒答/透传场景，
+脚本里根本没有为 composer 排模型响应——等于把错误行为固化成了断言。
+
+**验证**：
+
+- TDD：先加 10 个回归用例（8 个在 `answer` 包、2 个在 `agent` 包）看到全部红，再实现。
+  受行为变化影响的 4 个旧切片测试（`slots_slice_test.go` ×3、`followup_slice_test.go` ×2
+  场景）补上 composer 响应脚本，断言意图不变。
+- `make test`（shared / chat-service / data-pipeline）、`make vet`、`cd web && npm test`
+  （22 文件 124 用例）全绿。
+- 真实模型 SSE 冒烟（同一会话两轮）：
+  - 「帮我推荐一家布鲁克林评分4以上的餐厅」→ 直接列出 5 家，Royal Bay 写为
+    「评分：4.8（8 条评论样本）」，全文无 `[^id]`，带「据 Google Local 2021 年快照」归因；
+  - 追问「第四家安静吗？适合约会不」→ 序数正确锁定第四家；氛围属性引用挂 `[^3289]`，
+    「安静」「适合约会」因无评论支持逐条进入「无法确认」，评分等事实仍无脚注。
+- 两次冒烟中槽位抽取均撞上 `:free` 路由超时、按规则解析降级成功，与本次改动无关。
