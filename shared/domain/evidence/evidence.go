@@ -95,7 +95,11 @@ type KnowledgeDocument struct {
 	EmbeddingDimensions int            `json:"embedding_dimensions,omitempty"`
 	Metadata            map[string]any `json:"metadata,omitempty"`
 	SourceRecordIDs     []string       `json:"source_record_ids,omitempty"`
-	SnapshotAt          time.Time      `json:"snapshot_at,omitempty"`
+	// SourceReviewIDs names the reviews a restaurant_review_digest's
+	// conclusions are grounded in — the ids the model itself reported using.
+	// It is empty for every other document kind.
+	SourceReviewIDs []int64   `json:"source_review_ids,omitempty"`
+	SnapshotAt      time.Time `json:"snapshot_at,omitempty"`
 	Version             int            `json:"version,omitempty"`
 	IsActive            bool           `json:"is_active"`
 }

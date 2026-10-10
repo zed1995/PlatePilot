@@ -518,7 +518,7 @@ func (s *AdminStore) DocumentDetail(
 		SELECT document_id, restaurant_id, retrieval_scope, doc_type, title,
 		       content_hash, version, is_active, embedding IS NOT NULL,
 		       embedding_model, embedding_dimensions, snapshot_at,
-		       content, metadata, source_record_ids,
+		       content, metadata, source_record_ids, source_review_ids,
 		       CASE WHEN $2 THEN embedding::text ELSE NULL::text END
 		FROM knowledge_documents
 		WHERE document_id = $1`
@@ -539,7 +539,8 @@ func (s *AdminStore) DocumentDetail(
 		&item.DocumentID, &item.RestaurantID, &item.Scope, &item.DocType, &title,
 		&item.ContentHash, &item.Version, &item.IsActive, &item.HasEmbedding,
 		&model, &dimensions, &snapshotAt,
-		&out.Content, &metadataRaw, &out.SourceRecordIDs, &embeddingTxt,
+		&out.Content, &metadataRaw, &out.SourceRecordIDs, &out.SourceReviewIDs,
+		&embeddingTxt,
 	); err != nil {
 		if pgErrNoRows(err) {
 			return admin.DocumentDetail{}, errs.Newf(errs.CodeNotFound,
@@ -574,6 +575,34 @@ func (s *AdminStore) DocumentDetail(
 		out.VectorPreview = vector
 	}
 	return out, nil
+}
+
+// DocumentSourceReviews resolves the digest's stored source_review_ids to the
+// review rows they name.
+//
+// The join is on both restaurant id and id membership: source_review_ids only
+// ever names reviews of the digest's own restaurant, and the restaurant
+// condition keeps an id collision between restaurants from resolving to the
+// wrong row. Non-digest documents carry an empty array, so the same query
+// answers them with an empty list.
+func (s *AdminStore) DocumentSourceReviews(
+	ctx context.Context, documentID int64,
+) ([]admin.ReviewListItem, error) {
+	ctx, cancel := s.client.withTimeout(ctx)
+	defer cancel()
+
+	rows, err := s.client.pool.Query(ctx, `
+		SELECT `+reviewColumns+`
+		FROM reviews r
+		JOIN knowledge_documents d
+		  ON d.restaurant_id = r.restaurant_id
+		 AND r.id = ANY(d.source_review_ids)
+		WHERE d.document_id = $1
+		ORDER BY r.reviewed_at DESC, r.id DESC`, documentID)
+	if err != nil {
+		return nil, operationError("postgres: document source reviews", err)
+	}
+	return scanReviewList(rows)
 }
 
 // DocumentsByRestaurant lists one restaurant's documents, active first.

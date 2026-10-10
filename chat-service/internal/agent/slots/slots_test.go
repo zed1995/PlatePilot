@@ -610,7 +610,7 @@ func TestExtractionSchemaIsValidAndTracksTheTopicVocabulary(t *testing.T) {
 // nonsense that the code then has to undo.
 func TestInstructionSeparatesHardFromSoft(t *testing.T) {
 	text := Instruction()
-	for _, required := range []string{"硬条件", "软条件", "ambience", "quiet", "评论"} {
+	for _, required := range []string{"hard conditions", "Soft conditions", "ambience", "quiet", "reviews"} {
 		if !strings.Contains(text, required) {
 			t.Errorf("the extraction prompt must mention %q", required)
 		}

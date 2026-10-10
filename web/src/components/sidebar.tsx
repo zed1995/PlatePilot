@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom'
-import { LayoutGrid, Store, FileText, UploadCloud, FlaskConical, MessagesSquare, CalendarClock } from 'lucide-react'
+import { LayoutGrid, Store, FileText, ScrollText, UploadCloud, FlaskConical, MessagesSquare, CalendarClock } from 'lucide-react'
 import { Brand } from './brand'
 import { cn } from '../lib/utils'
 
@@ -15,6 +15,7 @@ const groups = [
       { to: '/dashboard', label: 'Dashboard', icon: LayoutGrid },
       { to: '/restaurants', label: 'Restaurants', icon: Store },
       { to: '/documents', label: 'Documents', icon: FileText },
+      { to: '/digests', label: 'Review Digests', icon: ScrollText },
       { to: '/ingestion', label: 'Ingestion', icon: UploadCloud },
       { to: '/retrieval-debug', label: 'Retrieval Debug', icon: FlaskConical },
     ],

@@ -38,6 +38,9 @@ type AdminService interface {
 	DocumentDetail(
 		ctx context.Context, documentID int64, includeVectorPreview bool,
 	) (domainadmin.DocumentDetail, error)
+	DocumentSourceReviews(
+		ctx context.Context, documentID int64,
+	) ([]domainadmin.ReviewListItem, error)
 	DocumentsByRestaurant(
 		ctx context.Context, restaurantID int64,
 	) ([]domainadmin.DocumentSummary, error)
@@ -76,6 +79,7 @@ func registerAdminRoutes(
 	g.GET("/restaurants/:id/documents", RestaurantDocumentsHandler(admin))
 	g.GET("/documents", DocumentsAdminHandler(admin))
 	g.GET("/documents/:id", DocumentDetailAdminHandler(admin))
+	g.GET("/documents/:id/source-reviews", DocumentSourceReviewsHandler(admin))
 	g.GET("/batches", BatchesAdminHandler(admin))
 	g.GET("/batches/:id", BatchDetailAdminHandler(admin))
 	g.GET("/boundaries", BoundariesHandler(admin))
@@ -357,6 +361,27 @@ func DocumentDetailAdminHandler(svc AdminService) app.HandlerFunc {
 			return
 		}
 		c.JSON(200, detail)
+	}
+}
+
+// DocumentSourceReviewsHandler answers GET
+// /admin/v1/documents/:id/source-reviews.
+func DocumentSourceReviewsHandler(svc AdminService) app.HandlerFunc {
+	return func(ctx context.Context, c *app.RequestContext) {
+		documentID, err := pathID(c, "id")
+		if err != nil {
+			WriteAndAbort(ctx, c, err)
+			return
+		}
+		reviews, err := svc.DocumentSourceReviews(ctx, documentID)
+		if err != nil {
+			httperr.Write(ctx, c, err)
+			return
+		}
+		if reviews == nil {
+			reviews = []domainadmin.ReviewListItem{}
+		}
+		c.JSON(200, reviews)
 	}
 }
 

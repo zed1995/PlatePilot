@@ -133,7 +133,7 @@ func scanScoredDocuments(rows pgx.Rows) ([]store.ScoredDocument, error) {
 		if err := rows.Scan(
 			&doc.DocumentID, &doc.RestaurantID, &scope, &docType, &title, &doc.Content,
 			&doc.ContentHash, &embeddingModel, &dimensions, &borough,
-			&metadataRaw, &doc.SourceRecordIDs, &snapshotAt, &doc.Version, &doc.IsActive,
+			&metadataRaw, &doc.SourceRecordIDs, &doc.SourceReviewIDs, &snapshotAt, &doc.Version, &doc.IsActive,
 			&embeddingText, &item.Distance,
 		); err != nil {
 			return nil, operationError("postgres: scan scored document", err)

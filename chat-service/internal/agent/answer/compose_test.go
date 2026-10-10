@@ -299,7 +299,7 @@ func TestComposeInstructionRequiresLabellingReviewInferences(t *testing.T) {
 	}
 
 	system := systemOf(t, chat)
-	for _, want := range []string{"评论推断", "无法确认", "数据时间", "来源"} {
+	for _, want := range []string{"inferred from reviews", "unconfirmed", "data timestamps", "note the source"} {
 		if !strings.Contains(system, want) {
 			t.Fatalf("system instruction must mention %q:\n%s", want, system)
 		}
@@ -426,8 +426,8 @@ func TestComposeInstructionFixesTheExplanationOrder(t *testing.T) {
 
 	system := systemOf(t, chat)
 	for _, want := range []string{
-		"① 结论", "② 匹配原因", "③ 每条推荐的来源与数据时间",
-		"④ 无法确认", "⑤ FOLLOWUPS",
+		"(1) Conclusion", "(2) Why they match", "(3) Source and data time",
+		"(4) Unconfirmed conditions", "(5) FOLLOWUPS",
 	} {
 		if !strings.Contains(system, want) {
 			t.Fatalf("system instruction must state step %q:\n%s", want, system)

@@ -31,6 +31,10 @@ type AdminStore interface {
 	// includeVectorPreview is set, the first components of the stored vector
 	// are returned as well.
 	DocumentDetail(ctx context.Context, documentID int64, includeVectorPreview bool) (admin.DocumentDetail, error)
+	// DocumentSourceReviews returns the reviews a digest's conclusions are
+	// grounded in, resolved from the document's stored source_review_ids. It
+	// returns an empty list for a non-digest document.
+	DocumentSourceReviews(ctx context.Context, documentID int64) ([]admin.ReviewListItem, error)
 	// DocumentsByRestaurant lists one restaurant's documents, active first.
 	DocumentsByRestaurant(ctx context.Context, restaurantID int64) ([]admin.DocumentSummary, error)
 

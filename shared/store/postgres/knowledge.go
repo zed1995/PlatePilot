@@ -42,7 +42,7 @@ var _ store.KnowledgeStore = (*KnowledgeStore)(nil)
 const knowledgeColumns = `
 	document_id, restaurant_id, retrieval_scope, doc_type, title, content,
 	content_hash, embedding_model, embedding_dimensions, borough, metadata,
-	source_record_ids, snapshot_at, version, is_active, embedding`
+	source_record_ids, source_review_ids, snapshot_at, version, is_active, embedding`
 
 // upsertDocumentsSQL inserts a batch of document versions.
 //
@@ -61,15 +61,15 @@ const knowledgeColumns = `
 const upsertDocumentsSQL = `	WITH incoming AS (
 		SELECT u.ord, u.restaurant_id, u.retrieval_scope, u.doc_type, u.title,
 		       u.content, u.content_hash, u.borough, u.metadata,
-		       u.source_record_ids, u.snapshot_at, u.version, u.is_active
+		       u.source_record_ids, u.source_review_ids, u.snapshot_at, u.version, u.is_active
 		FROM unnest(
-			$1::bigint[], $2::text[], $3::text[], $4::text[], $5::text[],
-			$6::text[], $7::text[], $8::jsonb[], $9::text[],
-			$10::timestamptz[], $11::int[], $12::boolean[]
-		) WITH ORDINALITY AS u(
-			restaurant_id, retrieval_scope, doc_type, title,
-			content, content_hash, borough, metadata, source_record_ids,
-			snapshot_at, version, is_active, ord)
+		$1::bigint[], $2::text[], $3::text[], $4::text[], $5::text[],
+		$6::text[], $7::text[], $8::jsonb[], $9::text[],
+		$10::timestamptz[], $11::int[], $12::boolean[], $13::text[]
+	) WITH ORDINALITY AS u(
+		restaurant_id, retrieval_scope, doc_type, title,
+		content, content_hash, borough, metadata, source_record_ids,
+		snapshot_at, version, is_active, source_review_ids, ord)
 	), next_version AS (
 		SELECT g.ord,
 		       coalesce(e.max_version, 0)
@@ -94,11 +94,12 @@ const upsertDocumentsSQL = `	WITH incoming AS (
 	INSERT INTO knowledge_documents (
 		restaurant_id, retrieval_scope, doc_type, title, content,
 		content_hash, borough, metadata, source_record_ids, snapshot_at,
-		version, is_active)
+		version, is_active, source_review_ids)
 	SELECT i.restaurant_id, i.retrieval_scope, i.doc_type,
 	       i.title, i.content, i.content_hash, i.borough, i.metadata,
 	       coalesce(string_to_array(i.source_record_ids, chr(31)), '{}')::text[],
-	       i.snapshot_at, nv.version, i.is_active
+	       i.snapshot_at, nv.version, i.is_active,
+	       coalesce(string_to_array(i.source_review_ids, ','), '{}')::bigint[]
 	FROM incoming i
 	JOIN next_version nv ON nv.ord = i.ord
 	ON CONFLICT (restaurant_id, retrieval_scope, doc_type, content_hash)
@@ -133,6 +134,11 @@ func (s *KnowledgeStore) UpsertDocuments(ctx context.Context, docs []evidence.Kn
 	// inner lists are flattened into one delimited text[] here and split apart
 	// again in SQL. The delimiter cannot occur in a source record id.
 	sourceIDs := make([]string, len(docs))
+	// sourceReviewIDs mirrors the source_record_ids trick: each document's
+	// bounded id list is flattened into one comma-delimited text value because
+	// the per-document lists have different lengths and cannot be one
+	// rectangular bigint[][] argument. It is split back into bigint[] in SQL.
+	sourceReviewIDText := make([]string, len(docs))
 	snapshotAt := make([]*time.Time, len(docs))
 	versions := make([]int32, len(docs))
 	active := make([]bool, len(docs))
@@ -164,6 +170,11 @@ func (s *KnowledgeStore) UpsertDocuments(ctx context.Context, docs []evidence.Kn
 		}
 		metadata[i] = encoded
 		sourceIDs[i] = strings.Join(doc.SourceRecordIDs, sourceIDDelimiter)
+		reviewIDText := make([]string, 0, len(doc.SourceReviewIDs))
+		for _, id := range doc.SourceReviewIDs {
+			reviewIDText = append(reviewIDText, strconv.FormatInt(id, 10))
+		}
+		sourceReviewIDText[i] = strings.Join(reviewIDText, ",")
 		if !doc.SnapshotAt.IsZero() {
 			snapshot := doc.SnapshotAt
 			snapshotAt[i] = &snapshot
@@ -198,7 +209,8 @@ func (s *KnowledgeStore) UpsertDocuments(ctx context.Context, docs []evidence.Kn
 	// on the primary key instead of on the idempotency key.
 	tag, err := s.client.pool.Exec(ctx, upsertDocumentsSQL,
 		restaurantIDs, scopes, docTypes, titles, contents, hashes,
-		boroughs, metadata, sourceIDs, snapshotAt, versions, active)
+		boroughs, metadata, sourceIDs, snapshotAt, versions, active,
+		sourceReviewIDText)
 	if err != nil {
 		return result, operationError("postgres: upsert knowledge documents", err)
 	}
@@ -404,8 +416,8 @@ func scanKnowledgeDocuments(rows pgx.Rows) ([]evidence.KnowledgeDocument, error)
 		if err := rows.Scan(
 			&doc.DocumentID, &doc.RestaurantID, &scope, &docType, &title, &doc.Content,
 			&doc.ContentHash, &embeddingModel, &dimensions, &borough,
-			&metadataRaw, &doc.SourceRecordIDs, &snapshotAt, &doc.Version, &doc.IsActive,
-			&embeddingText,
+			&metadataRaw, &doc.SourceRecordIDs, &doc.SourceReviewIDs, &snapshotAt,
+			&doc.Version, &doc.IsActive, &embeddingText,
 		); err != nil {
 			return nil, operationError("postgres: scan knowledge document", err)
 		}

@@ -123,7 +123,7 @@ func TestComposeInstructionDeclaresTheHistoryNonCitable(t *testing.T) {
 	if !strings.Contains(system, "<recent_turns>") {
 		t.Fatalf("the instruction must name the history block:\n%s", system)
 	}
-	for _, want := range []string{"不得写进 [^id] 标注", "不得直接沿用"} {
+	for _, want := range []string{"may not appear in [^id] markers", "may not be carried over directly"} {
 		if !strings.Contains(system, want) {
 			t.Fatalf("the instruction must state %q:\n%s", want, system)
 		}

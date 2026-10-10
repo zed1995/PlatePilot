@@ -189,6 +189,14 @@ func (s *Service) DocumentDetail(
 	return s.store.DocumentDetail(ctx, documentID, includeVectorPreview)
 }
 
+// DocumentSourceReviews returns the reviews the digest's conclusions are
+// grounded in.
+func (s *Service) DocumentSourceReviews(
+	ctx context.Context, documentID int64,
+) ([]domainadmin.ReviewListItem, error) {
+	return s.store.DocumentSourceReviews(ctx, documentID)
+}
+
 // DocumentsByRestaurant returns one restaurant's documents, active first.
 func (s *Service) DocumentsByRestaurant(
 	ctx context.Context, restaurantID int64,

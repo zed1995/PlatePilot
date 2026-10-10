@@ -28,6 +28,8 @@ type fakeStore struct {
 	lastDetailID      int64
 	lastIncludeVector bool
 	lastMaxRejections int
+
+	sourceReviews []domainadmin.ReviewListItem
 }
 
 func (f *fakeStore) Overview(context.Context) (domainadmin.Overview, error) {
@@ -81,6 +83,13 @@ func (f *fakeStore) DocumentsByRestaurant(
 ) ([]domainadmin.DocumentSummary, error) {
 	f.lastDetailID = restaurantID
 	return nil, nil
+}
+
+func (f *fakeStore) DocumentSourceReviews(
+	_ context.Context, documentID int64,
+) ([]domainadmin.ReviewListItem, error) {
+	f.lastDetailID = documentID
+	return f.sourceReviews, nil
 }
 
 func (f *fakeStore) Batches(
@@ -318,6 +327,26 @@ func TestDocumentDetailForwardsVectorFlag(t *testing.T) {
 	_, _ = svc.DocumentDetail(context.Background(), 5, true)
 	if !store.lastIncludeVector {
 		t.Error("vector preview flag was not forwarded")
+	}
+}
+
+// The service is a pass-through for source reviews, but the document id must
+// reach the store and the recorded items must come back unchanged.
+func TestDocumentSourceReviewsPassesThrough(t *testing.T) {
+	store := &fakeStore{sourceReviews: []domainadmin.ReviewListItem{
+		{ReviewID: 101, RestaurantID: 10, Rating: 5, Text: "amazing broth"},
+	}}
+	svc := newService(store)
+
+	got, err := svc.DocumentSourceReviews(context.Background(), 7)
+	if err != nil {
+		t.Fatalf("DocumentSourceReviews: %v", err)
+	}
+	if store.lastDetailID != 7 {
+		t.Errorf("document id = %d, want 7", store.lastDetailID)
+	}
+	if len(got) != 1 || got[0].ReviewID != 101 {
+		t.Errorf("reviews = %+v, want the stored item", got)
 	}
 }
 

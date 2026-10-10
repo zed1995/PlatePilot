@@ -12,6 +12,7 @@ import type {
   Overview,
   RestaurantDetail,
   RestaurantPage,
+  ReviewListItem,
   ReviewPage,
   ReviewSummary,
   SearchRequest,
@@ -148,6 +149,10 @@ export const adminApi = {
       `/admin/v1/documents/${id}${buildQuery({
         vector_preview: vectorPreview,
       })}`,
+    ),
+  documentSourceReviews: (id: number) =>
+    get<ReviewListItem[]>(
+      `/admin/v1/documents/${id}/source-reviews`,
     ),
 
   batches: (params: BatchesParams) =>

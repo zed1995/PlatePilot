@@ -31,6 +31,8 @@ type fakeAdmin struct {
 	resetResult   *domainadmin.InventoryResetResult
 	inventoryErr  error
 
+	sourceReviews []domainadmin.ReviewListItem
+
 	restQ     domainadmin.RestaurantQuery
 	reviewQ   domainadmin.ReviewQuery
 	docQ      domainadmin.DocumentQuery
@@ -91,6 +93,13 @@ func (f *fakeAdmin) DocumentsByRestaurant(
 ) ([]domainadmin.DocumentSummary, error) {
 	f.detailIDs = append(f.detailIDs, id)
 	return f.restDocs, nil
+}
+
+func (f *fakeAdmin) DocumentSourceReviews(
+	_ context.Context, id int64,
+) ([]domainadmin.ReviewListItem, error) {
+	f.detailIDs = append(f.detailIDs, id)
+	return f.sourceReviews, nil
 }
 
 func (f *fakeAdmin) Batches(
@@ -154,6 +163,7 @@ func adminHandlersEngine(f *fakeAdmin) *server.Hertz {
 	h.GET("/restaurants/:id/documents", RestaurantDocumentsHandler(f))
 	h.GET("/documents", DocumentsAdminHandler(f))
 	h.GET("/documents/:id", DocumentDetailAdminHandler(f))
+	h.GET("/documents/:id/source-reviews", DocumentSourceReviewsHandler(f))
 	h.GET("/batches", BatchesAdminHandler(f))
 	h.GET("/batches/:id", BatchDetailAdminHandler(f))
 	h.GET("/boundaries", BoundariesHandler(f))
@@ -353,6 +363,48 @@ func TestAdminDocumentDetailVectorPreviewFlag(t *testing.T) {
 	w = ut.PerformRequest(h.Engine, http.MethodGet, "/documents/5?vector_preview=true", nil)
 	if w.Code != http.StatusOK || !fake.preview {
 		t.Fatalf("status = %d, preview must be true", w.Code)
+	}
+}
+
+// The source-reviews endpoint forwards the document id and returns the
+// recorded reviews; a document with none answers an empty array, never null.
+func TestAdminDocumentSourceReviews(t *testing.T) {
+	empty := &fakeAdmin{}
+	h := adminHandlersEngine(empty)
+
+	w := ut.PerformRequest(h.Engine, http.MethodGet, "/documents/5/source-reviews", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d (body %s)", w.Code, w.Body.String())
+	}
+	if got := w.Body.String(); got != "[]" {
+		t.Errorf("empty result = %s, want []", got)
+	}
+
+	withReviews := &fakeAdmin{sourceReviews: []domainadmin.ReviewListItem{
+		{ReviewID: 101, RestaurantID: 10, Rating: 5, Text: "amazing broth"},
+	}}
+	h = adminHandlersEngine(withReviews)
+	w = ut.PerformRequest(h.Engine, http.MethodGet, "/documents/5/source-reviews", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d (body %s)", w.Code, w.Body.String())
+	}
+	var got []domainadmin.ReviewListItem
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got) != 1 || got[0].ReviewID != 101 {
+		t.Errorf("reviews = %+v, want the recorded item", got)
+	}
+}
+
+// A malformed document id on the source-reviews route is a client error, not
+// a silent empty result.
+func TestAdminDocumentSourceReviewsRejectsBadID(t *testing.T) {
+	fake := &fakeAdmin{}
+	w := ut.PerformRequest(adminHandlersEngine(fake).Engine, http.MethodGet,
+		"/documents/abc/source-reviews", nil)
+	if w.Code == http.StatusOK {
+		t.Fatalf("status = %d, want a client error for a non-numeric id", w.Code)
 	}
 }
 

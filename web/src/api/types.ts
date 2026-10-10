@@ -159,6 +159,7 @@ export interface DocumentDetail extends DocumentListItem {
   content: string
   metadata: unknown
   source_record_ids: string[]
+  source_review_ids?: number[]
   vector_preview?: number[]
 }
 

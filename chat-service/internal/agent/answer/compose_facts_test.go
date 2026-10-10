@@ -208,12 +208,12 @@ func TestComposeInstructionSeparatesFactSourceFromReviewCitations(t *testing.T) 
 
 	system := systemOf(t, chat)
 	for _, want := range []string{
-		"系统商户档案",
-		"直接陈述",
-		"不要标注 [^id]",
+		"system venue profiles",
+		"state them directly",
+		"do not mark them with [^id]",
 		"Google Local",
-		"评论样本量",
-		"档案未收录",
+		"review sample size",
+		"not included in the venue profile",
 	} {
 		if !strings.Contains(system, want) {
 			t.Fatalf("system instruction must contain %q:\n%s", want, system)

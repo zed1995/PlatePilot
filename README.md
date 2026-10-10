@@ -699,6 +699,14 @@ Behaviour worth knowing:
   and reset it (`GET/POST /admin/v1/restaurants/:id/inventory[/reset]?date=`)
   so a demo can be replayed from the top; the reset is the one write behind
   the admin loopback guard.
+- **Review digests with provenance.** Each restaurant's
+  `restaurant_review_digest` (one per restaurant, scope `restaurant`) records
+  the reviews the model actually grounded its conclusions in, not merely the
+  bundle it was offered. The ops console lists digests under
+  `/digests`, and a digest's detail page links every recorded source review
+  via `GET /admin/v1/documents/:id/source-reviews`; the rules baseline names
+  the representative input set. Digest content is English retrieval fuel,
+  while the advisor answers in the language of the user's question.
 
 The web console (`web/`, `npm run dev`) exposes this as two surfaces: the
 ops pages read the database through `/admin/v1`, and the verification pages —

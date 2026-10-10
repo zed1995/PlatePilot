@@ -1,6 +1,7 @@
 package knowledge
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"sort"
@@ -85,32 +86,33 @@ func AssembleDigestBundle(r restaurant.Restaurant, textReviews []review.Review) 
 func SerializeDigestBundle(bundle DigestBundle) string {
 	r := bundle.Restaurant
 	var w strings.Builder
-	fmt.Fprintf(&w, "店名：%s\n", r.Name)
+	fmt.Fprintf(&w, "Restaurant: %s\n", r.Name)
 	if cuisine := primaryCuisine(r); cuisine != "" {
-		fmt.Fprintf(&w, "主菜系：%s\n", cuisine)
+		fmt.Fprintf(&w, "Primary cuisine: %s\n", cuisine)
 	}
 	if borough := strings.TrimSpace(r.BoroughGuess); borough != "" {
-		fmt.Fprintf(&w, "行政区：%s\n", borough)
+		fmt.Fprintf(&w, "Borough: %s\n", borough)
 	}
 	if level := priceLevelValue(r); level != "" {
-		fmt.Fprintf(&w, "价格等级：%s\n", level)
+		fmt.Fprintf(&w, "Price level: %s\n", level)
 	}
 	if bundle.Average != nil {
-		fmt.Fprintf(&w, "样本均分：%.2f（样本量 %d 条文字评论）\n", *bundle.Average, bundle.TextReviewCount)
+		fmt.Fprintf(&w, "Average sample rating: %.2f (sample size: %d text reviews)\n",
+			*bundle.Average, bundle.TextReviewCount)
 	}
 
 	topics := append([]TopicStats(nil), bundle.Topics...)
 	sort.Slice(topics, func(i, j int) bool { return topics[i].Topic < topics[j].Topic })
 	for _, s := range topics {
-		fmt.Fprintf(&w, "主题：%s | 评论数 %d | 均分 %.2f | 正面占比 %.2f | 相对情感 %+.2f | 高频词 %s\n",
+		fmt.Fprintf(&w, "Topic: %s | reviews %d | avg %.2f | positive ratio %.2f | relative sentiment %+.2f | keywords %s\n",
 			s.Topic, s.Count, s.AverageRating, s.PositiveRatio, s.Sentiment,
-			strings.Join(s.Keywords, "、"))
+			strings.Join(s.Keywords, ", "))
 	}
 
 	reviews := append([]review.Review(nil), bundle.Reviews...)
 	sort.Slice(reviews, func(i, j int) bool { return reviews[i].ID < reviews[j].ID })
 	for _, item := range reviews {
-		fmt.Fprintf(&w, "评论 #%d | %d 星 | %s | %s\n",
+		fmt.Fprintf(&w, "Review #%d | %d stars | %s | %s\n",
 			item.ID, item.Rating, item.ReviewedAt.Format("2006-01-02"),
 			truncateRunes(curate.NormalizeText(item.Text), representativeSampleText))
 	}
@@ -136,20 +138,21 @@ func BundleHash(bundle DigestBundle) string {
 func BuildRulesDigest(bundle DigestBundle) string {
 	r := bundle.Restaurant
 	var w strings.Builder
-	fmt.Fprintf(&w, "%s的评论综合理解（基于 %d 条文字评论的离线规则统计）。\n", r.Name, bundle.TextReviewCount)
+	fmt.Fprintf(&w, "%s review comprehension (offline rule statistics over %d text reviews).\n",
+		r.Name, bundle.TextReviewCount)
 
 	var header []string
 	if cuisine := primaryCuisine(r); cuisine != "" {
-		header = append(header, "菜系："+cuisine)
+		header = append(header, "cuisine: "+cuisine)
 	}
 	if borough := strings.TrimSpace(r.BoroughGuess); borough != "" {
-		header = append(header, "行政区："+borough)
+		header = append(header, "borough: "+borough)
 	}
 	if level := priceLevelValue(r); level != "" {
-		header = append(header, "价格："+level)
+		header = append(header, "price: "+level)
 	}
 	if len(header) > 0 {
-		fmt.Fprintf(&w, "%s。\n", strings.Join(header, "，"))
+		fmt.Fprintf(&w, "%s.\n", strings.Join(header, ", "))
 	}
 
 	if bundle.Average != nil {
@@ -159,32 +162,45 @@ func BuildRulesDigest(bundle DigestBundle) string {
 				positive++
 			}
 		}
-		fmt.Fprintf(&w, "样本均分 %.1f 星，代表性评论中正面（4–5 星）占比 %.0f%%。\n",
+		fmt.Fprintf(&w, "Average sample rating %.1f stars; positive (4-5 stars) share among representative reviews is %.0f%%.\n",
 			*bundle.Average, float64(positive)/float64(len(bundle.Reviews))*100)
 	}
 
 	topics := append([]TopicStats(nil), bundle.Topics...)
 	sort.Slice(topics, func(i, j int) bool { return topics[i].Topic < topics[j].Topic })
 	for _, s := range topics {
-		direction := describeSentiment(s.Sentiment)
-		sentimentText := "与本店整体持平"
-		if direction != "" {
-			sentimentText = "相对本店整体" + direction
+		sentimentText := "in line with the overall restaurant"
+		if direction := rulesSentimentText(s.Sentiment); direction != "" {
+			sentimentText = "relatively " + direction
 		}
-		keywords := "暂无明显关键词"
+		keywords := "no notable keywords"
 		if len(s.Keywords) > 0 {
-			keywords = strings.Join(s.Keywords, "、")
+			keywords = strings.Join(s.Keywords, ", ")
 		}
-		fmt.Fprintf(&w, "%s方面：%d 条评论，平均 %.1f 星，正面占比 %.0f%%，%s；高频词：%s。\n",
-			curate.TopicLabel(s.Topic), s.Count, s.AverageRating, s.PositiveRatio*100,
+		fmt.Fprintf(&w, "%s: %d reviews, average %.1f stars, positive ratio %.0f%%, %s; keywords: %s.\n",
+			s.Topic, s.Count, s.AverageRating, s.PositiveRatio*100,
 			sentimentText, keywords)
 	}
-	w.WriteString("本文为规则统计文本，仅用于检索排序，不作为引用依据。")
+	w.WriteString("This is a rule-based statistics text used only for retrieval ranking, not as citation evidence.")
 	return w.String()
 }
 
-// Digest output bounds. The LLM prompt asks for 300–600 字, and the ceiling is
-// deliberately several times that so an answer is only rejected when it is
+// rulesSentimentText describes a topic offset in English for the rules digest.
+// The shared describeSentiment helper returns Chinese, so the rules baseline
+// keeps its own wording rather than pulling Chinese into an English document.
+func rulesSentimentText(sentiment float64) string {
+	switch {
+	case sentiment > 0.15:
+		return "better reviewed"
+	case sentiment < -0.15:
+		return "lower reviewed"
+	default:
+		return ""
+	}
+}
+
+// Digest output bounds. The LLM prompt asks for 300–600 words, and the ceiling
+// is deliberately several times that so an answer is only rejected when it is
 // genuinely out of contract; the floor catches a truncated or empty reply.
 const (
 	minDigestRunes = 50
@@ -245,6 +261,73 @@ func ValidateDigestOutput(text string) error {
 	return errs.Newf(errs.CodeValidationFailed, "digest output rejected: %s", strings.Join(problems, "; "))
 }
 
+// DigestLLMOutput is the JSON contract the model answers with.
+type DigestLLMOutput struct {
+	Content         string  `json:"content"`
+	SourceReviewIDs []int64 `json:"source_review_ids"`
+}
+
+// ParseDigestOutput decodes the model's JSON answer, validates the digest body
+// with ValidateDigestOutput, and verifies that every cited review id is one of
+// the review ids offered in the bundle. Returned ids are deduplicated and
+// sorted ascending so the stored provenance is deterministic.
+//
+// A cited id outside the offered set is a hallucination, and the whole answer
+// is rejected rather than storing a broken link: provenance pointing at a
+// review the model never saw is worse than no provenance.
+func ParseDigestOutput(raw string, allowedIDs []int64) (string, []int64, error) {
+	var out DigestLLMOutput
+	decoder := json.NewDecoder(strings.NewReader(strings.TrimSpace(raw)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&out); err != nil {
+		return "", nil, errs.Newf(errs.CodeValidationFailed,
+			"digest output rejected: output must be a JSON object: %v", err)
+	}
+	if decoder.More() {
+		return "", nil, errs.New(errs.CodeValidationFailed,
+			"digest output rejected: exactly one JSON object expected")
+	}
+	if err := ValidateDigestOutput(out.Content); err != nil {
+		return "", nil, err
+	}
+	if len(out.SourceReviewIDs) == 0 {
+		return "", nil, errs.New(errs.CodeValidationFailed,
+			"digest output rejected: source_review_ids must not be empty")
+	}
+
+	allowed := make(map[int64]struct{}, len(allowedIDs))
+	for _, id := range allowedIDs {
+		allowed[id] = struct{}{}
+	}
+	seen := make(map[int64]struct{}, len(out.SourceReviewIDs))
+	cited := make([]int64, 0, len(out.SourceReviewIDs))
+	for _, id := range out.SourceReviewIDs {
+		if _, ok := allowed[id]; !ok {
+			return "", nil, errs.Newf(errs.CodeValidationFailed,
+				"digest output rejected: source_review_ids contains %d, which was not offered in the input bundle", id)
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		cited = append(cited, id)
+	}
+	sort.Slice(cited, func(i, j int) bool { return cited[i] < cited[j] })
+	return strings.TrimSpace(out.Content), cited, nil
+}
+
+// BundleReviewIDs returns the representative review ids carried in a bundle in
+// ascending order. It is the set the rules digest adopts wholesale and the
+// allowed set for the LLM output contract.
+func BundleReviewIDs(bundle DigestBundle) []int64 {
+	ids := make([]int64, 0, len(bundle.Reviews))
+	for _, item := range bundle.Reviews {
+		ids = append(ids, item.ID)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	return ids
+}
+
 // BuildDigestDocument packages a validated digest text as the single
 // restaurant-scope document the review channel recalls.
 //
@@ -258,6 +341,7 @@ func BuildDigestDocument(
 	bundle DigestBundle,
 	bundleHash string,
 	content string,
+	sourceReviewIDs []int64,
 	promptVersion string,
 	modelID string,
 	opts ProfileOptions,
@@ -290,7 +374,7 @@ func BuildDigestDocument(
 		RestaurantID: r.ID,
 		Scope:        evidence.ScopeRestaurant,
 		DocType:      evidence.DocTypeRestaurantReviewDigest,
-		Title:        r.Name + " 的评论理解摘要",
+		Title:        r.Name + " review digest",
 		Content:      content,
 		ContentHash: ContentHash(evidence.ScopeRestaurant,
 			evidence.DocTypeRestaurantReviewDigest, r.ID, content),
@@ -301,6 +385,9 @@ func BuildDigestDocument(
 	}
 	if r.SourceRecordID != "" {
 		doc.SourceRecordIDs = []string{r.SourceRecordID}
+	}
+	if len(sourceReviewIDs) > 0 {
+		doc.SourceReviewIDs = append([]int64(nil), sourceReviewIDs...)
 	}
 	return doc
 }

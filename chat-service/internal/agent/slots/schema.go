@@ -19,40 +19,40 @@ import (
 // paraphrases loses the user's own words, and the soft channels recall on
 // exactly those words; a summary of "想吃点清淡的" is not a query anything can
 // match.
-const extractionInstruction = `你是 PlatePilot 的意图与槽位抽取器。把用户这一轮的餐厅需求抽取成结构化条件，只输出 JSON。
+const extractionInstruction = `You are PlatePilot's intent and slot extractor. Extract the user's restaurant needs from this turn into structured conditions, and output JSON only.
 
-【硬条件】可以在数据库中确定性过滤，放进对应字段：
-- borough：只能是 manhattan / brooklyn / queens / bronx / staten_island 之一。
-  用户说商圈（中城、下城、SoHo、Williamsburg 等）时，放进 neighborhood，不要放进 borough。
-- neighborhood：商圈或街区名，原样填写。
-- cuisines：菜系或品类，用英文小写单词（italian、ramen、sushi、pizza、chinese…）。
-- price_levels：价格档，取值 1..4（1 最便宜，4 最贵）。"$" 记 1，"$$" 记 2。
-  用户说 "under $$" / "不超过 $$" 时表示上限，记 [1,2]。
-- min_rating：0..5 的最低评分。"4 星以上" 记 4；"4.5+" 记 4.5。
-- open_now：仅当用户明确要求"现在营业 / 还开着"时为 true。
+[Hard conditions] can be filtered deterministically in the database; put them in the matching fields:
+- borough: one of manhattan / brooklyn / queens / bronx / staten_island only.
+  When the user names a commercial area or neighborhood (Midtown, Downtown, SoHo, Williamsburg, etc.), put it in neighborhood, not borough.
+- neighborhood: a commercial area or neighborhood name, copied verbatim.
+- cuisines: cuisine or category words in lowercase English (italian, ramen, sushi, pizza, chinese, ...).
+- price_levels: price levels 1..4 (1 cheapest, 4 most expensive). "$" is 1, "$$" is 2.
+  "under $$" / "no more than $$" states an upper bound, so record [1,2].
+- min_rating: the minimum rating from 0..5. "4 stars or above" is 4; "4.5+" is 4.5.
+- open_now: true only when the user explicitly asks for "open now" / "still open".
 
-【软条件】数据库里没有对应字段，只能由评论支撑，放进 soft_conditions：
-- 安静、quiet、氛围、cozy、浪漫、romantic、适合约会、date night、有情调、舒适 → ambience
-- 排队、等位、no wait、上菜快、出餐快 → wait
-- 服务、态度、good service、贴心 → service
-- 性价比、划算、物有所值、good value → value
-- 好吃、delicious、正宗、招牌菜、菜品丰富 → food
-- 带孩子、亲子、kid friendly、family friendly → kid_friendly
-- 适合聚会、聚餐、团建、good for groups → group_friendly
-soft_conditions 的每一项都是 {"text": 用户原话片段, "topic": 上面列出的主题之一}。
-软条件绝对不能写进 borough / neighborhood / cuisines / price_levels / min_rating / open_now：
-这些字段是客观事实，写了就会把"评论里提到"当成"店里确定如此"。
+[Soft conditions] have no database column and can only be supported by reviews; put them in soft_conditions:
+- quiet, ambience, cozy, romantic, date night, comfortable -> ambience
+- queue, wait, no wait, fast seating, fast kitchen -> wait
+- service, attitude, attentive, good service -> service
+- value, good deal, worth it, good value -> value
+- delicious, authentic, signature dish, varied menu -> food
+- kids, kid friendly, family friendly -> kid_friendly
+- good for groups, gathering, team dinner -> group_friendly
+Each soft_conditions entry is {"text": the user's own phrase, "topic": one of the topics above}.
+Soft conditions must never go into borough / neighborhood / cuisines / price_levels / min_rating / open_now:
+those fields are objective facts, and doing so would treat "mentioned in reviews" as "objectively true of the venue".
 
-【其他字段】
-- query：把用户这一句原话原样复制，不要改写、不要翻译、不要概括。
-- intent：discover（硬条件为主）/ recommend（软条件为主）/ restaurant_qa（问某家已知餐厅）/
-  reservation（预约）/ chit_chat（纯寒暄，和餐厅无关）。
-- named_restaurants：用户点名的餐厅名称，原样填写；没有就留空数组。
-- missing_slots：确实缺少必要条件、无法检索时才填，取值 borough / cuisine / price_level /
-  date / party_size / restaurant_id。
-- need_clarification：只有在必须让用户补充信息才能继续时才为 true。
+[Other fields]
+- query: copy the user's sentence verbatim; do not rewrite, translate, or summarize it.
+- intent: discover (mostly hard conditions) / recommend (mostly soft conditions) / restaurant_qa (asking about one known restaurant) /
+  reservation / chit_chat (pure small talk unrelated to restaurants).
+- named_restaurants: restaurant names the user named, verbatim; an empty array if none.
+- missing_slots: fill only when necessary conditions are genuinely missing and retrieval cannot run; values are borough / cuisine / price_level /
+  date / party_size / restaurant_id.
+- need_clarification: true only when the user must provide more information before you can continue.
 
-不要输出任何解释文字。`
+Do not output any explanatory text.`
 
 // extractionSchemaText is the model-facing JSON Schema.
 //
@@ -73,20 +73,20 @@ func buildExtractionSchema() json.RawMessage {
 			"intent": map[string]any{
 				"type":        "string",
 				"enum":        []string{"discover", "recommend", "restaurant_qa", "reservation", "chit_chat"},
-				"description": "本轮的意图",
+				"description": "intent of this turn",
 			},
 			"query": map[string]any{
 				"type":        []string{"string", "null"},
-				"description": "用户原话，原样复制",
+				"description": "the user's own words, copied verbatim",
 			},
 			"borough": map[string]any{
 				"type":        []string{"string", "null"},
 				"enum":        []any{"manhattan", "brooklyn", "queens", "bronx", "staten_island", nil},
-				"description": "行政区，只能是五个之一",
+				"description": "borough, one of the five only",
 			},
 			"neighborhood": map[string]any{
 				"type":        []string{"string", "null"},
-				"description": "商圈或街区名",
+				"description": "commercial area or neighborhood name",
 			},
 			"cuisines": map[string]any{
 				"type":  []string{"array", "null"},
@@ -115,7 +115,7 @@ func buildExtractionSchema() json.RawMessage {
 					"properties": map[string]any{
 						"text": map[string]any{
 							"type":        "string",
-							"description": "用户原话片段",
+							"description": "phrase from the user's own words",
 						},
 						"topic": map[string]any{
 							"type": "string",

@@ -4,6 +4,7 @@ import { Dashboard } from './pages/Dashboard'
 import { Restaurants } from './pages/Restaurants'
 import { RestaurantDetailPage } from './pages/RestaurantDetail'
 import { Documents } from './pages/Documents'
+import { Digests } from './pages/Digests'
 import { DocumentDetailPage } from './pages/DocumentDetail'
 import { Ingestion } from './pages/Ingestion'
 import { IngestionDetailPage } from './pages/IngestionDetail'
@@ -21,6 +22,7 @@ export default function App() {
         <Route path="/restaurants" element={<Restaurants />} />
         <Route path="/restaurants/:id" element={<RestaurantDetailPage />} />
         <Route path="/documents" element={<Documents />} />
+        <Route path="/digests" element={<Digests />} />
         <Route path="/documents/:id" element={<DocumentDetailPage />} />
         <Route path="/ingestion" element={<Ingestion />} />
         <Route path="/ingestion/:id" element={<IngestionDetailPage />} />

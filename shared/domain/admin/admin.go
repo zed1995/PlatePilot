@@ -265,6 +265,9 @@ type DocumentDetail struct {
 	Metadata json.RawMessage `json:"metadata"`
 	// SourceRecordIDs names the source records the document was derived from.
 	SourceRecordIDs []string `json:"source_record_ids"`
+	// SourceReviewIDs names the reviews a digest's conclusions are grounded
+	// in; empty for other document kinds.
+	SourceReviewIDs []int64 `json:"source_review_ids,omitempty"`
 	// VectorPreview carries the first few components of the stored vector,
 	// populated only when the caller asks for it.
 	VectorPreview []float32 `json:"vector_preview,omitempty"`

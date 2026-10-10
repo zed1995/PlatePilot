@@ -2,7 +2,11 @@ package pipeline
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -16,9 +20,47 @@ import (
 	"github.com/zed1995/platepilot/shared/domain/review"
 )
 
-// validDigestText clears the output gate: long enough, and free of every
+// validDigestContent clears the output gate: long enough, and free of every
 // forbidden pattern.
-var validDigestText = strings.Repeat("这家店的汤头浓郁，服务也周到，适合朋友聚餐，周末人多需要等位。", 6)
+var validDigestContent = strings.Repeat("The broth is rich and the noodles are firm, and the service is attentive; weekends need a wait, but the meal is worth it. ", 3)
+
+var offeredReviewPattern = regexp.MustCompile(`Review #(\d+)`)
+
+// validDigestAnswer wraps good content in the JSON contract and cites the
+// review ids named in the serialized bundle, which the pipeline must accept.
+func validDigestAnswer(req chat.ChatRequest) string {
+	raw, err := json.Marshal(map[string]any{
+		"content":           validDigestContent,
+		"source_review_ids": offeredReviewIDs(req),
+	})
+	if err != nil {
+		panic(err)
+	}
+	return string(raw)
+}
+
+// offeredReviewIDs extracts the "Review #<id>" markers from the user message,
+// sorted and deduplicated, matching how ParseDigestOutput sees the bundle.
+func offeredReviewIDs(req chat.ChatRequest) []int64 {
+	var content string
+	if len(req.Messages) > 0 {
+		content = req.Messages[len(req.Messages)-1].Content
+	}
+	var ids []int64
+	seen := map[int64]bool{}
+	for _, m := range offeredReviewPattern.FindAllStringSubmatch(content, -1) {
+		id, err := strconv.ParseInt(m[1], 10, 64)
+		if err != nil {
+			continue
+		}
+		if !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	return ids
+}
 
 // fakeDigestChat records what the stage asked for so the cache-hit test can
 // assert the model was not called. It picks its answer per request by looking
@@ -155,6 +197,11 @@ func TestRunBuildDigestsRulesVersionNeverCallsModel(t *testing.T) {
 	if digest.Metadata["model_id"] != "" {
 		t.Errorf("rules digest recorded a model id: %v", digest.Metadata["model_id"])
 	}
+	// The rules baseline must record the representative input set as its
+	// sources, so the admin view can link every digest to real reviews.
+	if len(digest.SourceReviewIDs) == 0 {
+		t.Error("rules digest recorded no source review ids; want the representative input set")
+	}
 
 	second, err := RunBuildDigests(ctx, stores, cfg, digestOptions())
 	if err != nil {
@@ -177,7 +224,7 @@ func TestRunBuildDigestsCacheHitSkipsModel(t *testing.T) {
 	id := seedRestaurant(t, stores, "gmap-digest-cache")
 	seedReviews(t, stores, id, 40)
 
-	fake := &fakeDigestChat{respond: func(chat.ChatRequest) string { return validDigestText }}
+	fake := &fakeDigestChat{respond: func(req chat.ChatRequest) string { return validDigestAnswer(req) }}
 	useFakeChatProvider(t, fake)
 	cfg := digestTestConfig(knowledge.DigestLLMVersion)
 
@@ -212,7 +259,7 @@ func TestRunBuildDigestsSendsTemperatureZero(t *testing.T) {
 	id := seedRestaurant(t, stores, "gmap-digest-temp")
 	seedReviews(t, stores, id, 40)
 
-	fake := &fakeDigestChat{respond: func(chat.ChatRequest) string { return validDigestText }}
+	fake := &fakeDigestChat{respond: func(req chat.ChatRequest) string { return validDigestAnswer(req) }}
 	useFakeChatProvider(t, fake)
 
 	if _, err := RunBuildDigests(ctx, stores, digestTestConfig(knowledge.DigestLLMVersion), digestOptions()); err != nil {
@@ -242,9 +289,10 @@ func TestRunBuildDigestsIsolatesRejectedOutput(t *testing.T) {
 	fake := &fakeDigestChat{respond: func(req chat.ChatRequest) string {
 		// The user message is the serialized bundle, which names the restaurant.
 		if strings.Contains(req.Messages[1].Content, "gmap-digest-bad") {
-			return validDigestText + " 详情见 https://example.com/deal"
+			// Not the required JSON object: the output gate must reject it.
+			return "this is plain text, not the required json object"
 		}
-		return validDigestText
+		return validDigestAnswer(req)
 	}}
 	useFakeChatProvider(t, fake)
 
@@ -315,7 +363,7 @@ func TestRunBuildDigestsSkipsRestaurantsWithoutMaterial(t *testing.T) {
 	empty := seedRestaurant(t, stores, "gmap-digest-empty")
 	seedReviews(t, stores, withReviews, 40)
 
-	fake := &fakeDigestChat{respond: func(chat.ChatRequest) string { return validDigestText }}
+	fake := &fakeDigestChat{respond: func(req chat.ChatRequest) string { return validDigestAnswer(req) }}
 	useFakeChatProvider(t, fake)
 
 	result, err := RunBuildDigests(ctx, stores, digestTestConfig(knowledge.DigestLLMVersion), digestOptions())
@@ -344,7 +392,7 @@ func TestRunBuildDigestsDryRunWritesNothing(t *testing.T) {
 	id := seedRestaurant(t, stores, "gmap-digest-dry")
 	seedReviews(t, stores, id, 40)
 
-	fake := &fakeDigestChat{respond: func(chat.ChatRequest) string { return validDigestText }}
+	fake := &fakeDigestChat{respond: func(req chat.ChatRequest) string { return validDigestAnswer(req) }}
 	useFakeChatProvider(t, fake)
 
 	opts := digestOptions()
@@ -377,7 +425,7 @@ func TestRunBuildDigestsRecordsABatch(t *testing.T) {
 	id := seedRestaurant(t, stores, "gmap-digest-audit")
 	seedReviews(t, stores, id, 40)
 
-	fake := &fakeDigestChat{respond: func(chat.ChatRequest) string { return validDigestText }}
+	fake := &fakeDigestChat{respond: func(req chat.ChatRequest) string { return validDigestAnswer(req) }}
 	useFakeChatProvider(t, fake)
 
 	if _, err := RunBuildDigests(ctx, stores, digestTestConfig(knowledge.DigestLLMVersion), digestOptions()); err != nil {

@@ -7,6 +7,10 @@ import { PageHeader } from '../components/page-header'
 import { JsonBlock } from '../components/json-block'
 import { ErrorState } from '../components/error-state'
 import { adminApi } from '../api/client'
+import type { ReviewListItem } from '../api/types'
+import { formatTime } from '../format'
+
+const digestDocType = 'restaurant_review_digest'
 
 export function DocumentDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -15,6 +19,13 @@ export function DocumentDetailPage() {
     queryKey: ['document', id, vectorPreview],
     queryFn: () => adminApi.document(Number(id), vectorPreview),
     enabled: Boolean(id),
+  })
+
+  const isDigest = detail.data?.doc_type === digestDocType
+  const sourceReviews = useQuery({
+    queryKey: ['document-source-reviews', id],
+    queryFn: () => adminApi.documentSourceReviews(Number(id)),
+    enabled: Boolean(id) && isDigest,
   })
 
   if (detail.isError) return <ErrorState title="Failed to load document" description={detail.error instanceof Error ? detail.error.message : String(detail.error)} onRetry={() => detail.refetch()} />
@@ -38,6 +49,9 @@ export function DocumentDetailPage() {
             <Field label="Embedding model" value={d?.embedding_model ?? '-'} />
             <Field label="Dimensions" value={d?.embedding_dimensions ?? '-'} />
             <Field label="Version" value={d?.version} />
+            {isDigest && (
+              <Field label="Source reviews" value={d?.source_review_ids?.length ?? 0} />
+            )}
           </CardContent>
         </Card>
         <Card className="lg:col-span-2">
@@ -45,6 +59,22 @@ export function DocumentDetailPage() {
           <CardContent><JsonBlock value={d?.content} /></CardContent>
         </Card>
       </div>
+      {isDigest && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Source reviews ({d?.source_review_ids?.length ?? 0})</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <SourceReviewsBlock
+              loading={sourceReviews.isLoading}
+              error={sourceReviews.error}
+              items={sourceReviews.data ?? []}
+              recordedCount={d?.source_review_ids?.length ?? 0}
+              onRetry={() => sourceReviews.refetch()}
+            />
+          </CardContent>
+        </Card>
+      )}
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
         <Card>
           <CardHeader><CardTitle>Metadata</CardTitle></CardHeader>
@@ -62,6 +92,60 @@ export function DocumentDetailPage() {
         </Card>
       )}
     </div>
+  )
+}
+
+function SourceReviewsBlock({
+  loading, error, items, recordedCount, onRetry,
+}: {
+  loading: boolean
+  error: unknown
+  items: ReviewListItem[]
+  recordedCount: number
+  onRetry: () => void
+}) {
+  if (loading) {
+    return <p className="m-0 text-[13px] text-ink-secondary">Loading source reviews…</p>
+  }
+  if (error) {
+    return (
+      <div className="space-y-2">
+        <p className="m-0 text-[13px] text-red-600">
+          Failed to load source reviews: {error instanceof Error ? error.message : String(error)}
+        </p>
+        <Button variant="outline" size="sm" onClick={onRetry}>Retry</Button>
+      </div>
+    )
+  }
+  if (recordedCount === 0) {
+    return (
+      <p className="m-0 text-[13px] text-ink-secondary">
+        This digest recorded no source review ids. Re-run build-digests to regenerate it with provenance.
+      </p>
+    )
+  }
+  if (items.length === 0) {
+    return (
+      <p className="m-0 text-[13px] text-ink-secondary">
+        No source reviews could be resolved; the recorded review ids may no longer exist.
+      </p>
+    )
+  }
+  return (
+    <ul className="m-0 space-y-3 p-0">
+      {items.map((review) => (
+        <li key={review.review_id} className="rounded-lg border border-[var(--border-subtle)] p-3">
+          <div className="mb-1 flex items-center gap-3 text-[11px] uppercase tracking-[0.04em] text-ink-tertiary">
+            <span className="tabular">#{review.review_id}</span>
+            <span>{review.rating} stars</span>
+            <span>{formatTime(review.reviewed_at)}</span>
+          </div>
+          <p className="m-0 whitespace-pre-wrap text-[13px] leading-relaxed text-ink">
+            {review.text || '(review without text)'}
+          </p>
+        </li>
+      ))}
+    </ul>
   )
 }
 

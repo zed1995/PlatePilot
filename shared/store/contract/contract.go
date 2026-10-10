@@ -909,6 +909,81 @@ func runKnowledgeStore(t *testing.T, stores Stores) {
 		t.Error("UpsertDocuments accepted a document with no content hash")
 	}
 
+	t.Run("digest_source_review_ids_round_trip", func(t *testing.T) {
+		digestParent := RestaurantFixture("contract-digest-parent", "Contract Digest Parent", baseTime)
+		if err := stores.Restaurants.UpsertRestaurant(ctx, digestParent); err != nil {
+			t.Fatalf("UpsertRestaurant: %v", err)
+		}
+		createdParent, err := stores.Restaurants.GetBySourceRecordID(ctx, digestParent.SourceRecordID)
+		if err != nil {
+			t.Fatalf("GetBySourceRecordID: %v", err)
+		}
+
+		// Provenance points at real review rows. Two texts with their own
+		// idempotency keys.
+		sourceReviews := []review.Review{
+			{RestaurantID: createdParent.ID, Rating: 5, ReviewedAt: baseTime,
+				Text: "digest source review one", TextHash: "digest-src-1"},
+			{RestaurantID: createdParent.ID, Rating: 2, ReviewedAt: baseTime.Add(time.Hour),
+				Text: "digest source review two", TextHash: "digest-src-2"},
+		}
+		if _, err := stores.Reviews.UpsertReviews(ctx, sourceReviews); err != nil {
+			t.Fatalf("UpsertReviews: %v", err)
+		}
+		reviewRows, err := stores.Reviews.ListByRestaurant(ctx, createdParent.ID, 10)
+		if err != nil {
+			t.Fatalf("ListByRestaurant reviews: %v", err)
+		}
+		if len(reviewRows) != 2 {
+			t.Fatalf("stored %d reviews, want 2", len(reviewRows))
+		}
+		sourceIDs := []int64{reviewRows[0].ID, reviewRows[1].ID}
+
+		digest := knowledgeDoc(createdParent.ID, evidence.DocTypeRestaurantReviewDigest,
+			evidence.ScopeRestaurant, "digest-with-sources", "digest grounded in two reviews text")
+		digest.SourceReviewIDs = sourceIDs
+		if _, err := s.UpsertDocuments(ctx, []evidence.KnowledgeDocument{digest}); err != nil {
+			t.Fatalf("UpsertDocuments: %v", err)
+		}
+
+		back, err := s.ListByRestaurant(ctx, createdParent.ID, evidence.ScopeRestaurant)
+		if err != nil {
+			t.Fatalf("ListByRestaurant: %v", err)
+		}
+		if len(back) != 1 {
+			t.Fatalf("got %d documents, want 1", len(back))
+		}
+		if len(back[0].SourceReviewIDs) != 2 ||
+			back[0].SourceReviewIDs[0] != sourceIDs[0] ||
+			back[0].SourceReviewIDs[1] != sourceIDs[1] {
+			t.Fatalf("source_review_ids = %v, want %v", back[0].SourceReviewIDs, sourceIDs)
+		}
+
+		// A non-digest document round-trips an empty set rather than NULL:
+		// callers must be able to scan it without a nil distinction.
+		plain := knowledgeDoc(createdParent.ID, evidence.DocTypeRestaurantProfile,
+			evidence.ScopeRestaurant, "plain-profile", "profile without provenance")
+		if _, err := s.UpsertDocuments(ctx, []evidence.KnowledgeDocument{plain}); err != nil {
+			t.Fatalf("UpsertDocuments plain: %v", err)
+		}
+		plainRows, err := s.ListByRestaurant(ctx, createdParent.ID, evidence.ScopeRestaurant)
+		if err != nil {
+			t.Fatalf("ListByRestaurant after plain: %v", err)
+		}
+		var foundPlain bool
+		for _, row := range plainRows {
+			if row.ContentHash == "plain-profile" {
+				foundPlain = true
+				if len(row.SourceReviewIDs) != 0 {
+					t.Errorf("plain profile carried source ids %v", row.SourceReviewIDs)
+				}
+			}
+		}
+		if !foundPlain {
+			t.Fatal("plain profile was not stored")
+		}
+	})
+
 	runSameGroupBatch(t, stores, restaurantID)
 	runEmbeddedReviewCounts(t, stores, restaurantID)
 	runVectoredDocumentIDs(t, stores, restaurantID)
