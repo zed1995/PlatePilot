@@ -129,7 +129,7 @@ func BundleHash(bundle DigestBundle) string {
 	return curate.HashNormalized(curate.NormalizeText(SerializeDigestBundle(bundle)))
 }
 
-// BuildRulesDigest renders the digest:rules:v1 baseline: a fixed Chinese
+// BuildRulesDigest renders the digest:rules:v1 baseline: a fixed English
 // template over the topic rollups and keywords, with no model involved.
 //
 // It is a pure function with the same byte-stability contract as BuildProfile:
@@ -199,12 +199,15 @@ func rulesSentimentText(sentiment float64) string {
 	}
 }
 
-// Digest output bounds. The LLM prompt asks for 300–600 words, and the ceiling
-// is deliberately several times that so an answer is only rejected when it is
-// genuinely out of contract; the floor catches a truncated or empty reply.
+// Digest output bounds. English prose runs roughly six runes per word, so
+// the prompt's 40-100 word range spans about 240-600 runes; the ceiling
+// sits above that with headroom so an answer is only rejected when it is
+// genuinely out of contract. The floor only catches a truncated or empty
+// reply — it must stay below the rules baseline (a statistics text of ~500+
+// runes even on a small bundle), which is validated by the same gate.
 const (
-	minDigestRunes = 50
-	maxDigestRunes = 2000
+	minDigestRunes = 150
+	maxDigestRunes = 800
 )
 
 // The code-enforced half of the output contract (the prompt-level rules, like

@@ -22,7 +22,7 @@ import (
 
 // validDigestContent clears the output gate: long enough, and free of every
 // forbidden pattern.
-var validDigestContent = strings.Repeat("The broth is rich and the noodles are firm, and the service is attentive; weekends need a wait, but the meal is worth it. ", 3)
+var validDigestContent = strings.Repeat("The broth is rich and the noodles are firm, and the service is attentive; weekends need a wait, but the meal is worth it. ", 4)
 
 var offeredReviewPattern = regexp.MustCompile(`Review #(\d+)`)
 

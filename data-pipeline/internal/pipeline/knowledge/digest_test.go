@@ -149,14 +149,14 @@ func TestAssembleDigestBundleWithoutMaterial(t *testing.T) {
 
 func TestValidateDigestOutputAcceptsGoodText(t *testing.T) {
 	// Long enough to clear the floor, free of every forbidden pattern.
-	good := strings.Repeat("The broth is rich and the service is attentive, good for gatherings with friends, and weekends need a wait. ", 6)
+	good := strings.Repeat("The broth is rich and the service is attentive, good for gatherings with friends, and weekends need a wait. ", 5)
 	if err := ValidateDigestOutput(good); err != nil {
 		t.Errorf("ValidateDigestOutput rejected good text: %v", err)
 	}
 }
 
 func TestValidateDigestOutputRejectsBadText(t *testing.T) {
-	base := strings.Repeat("The broth is rich and the service is attentive, good for gatherings with friends, and weekends need a wait. ", 6)
+	base := strings.Repeat("The broth is rich and the service is attentive, good for gatherings with friends, and weekends need a wait. ", 5)
 	cases := []struct {
 		name string
 		text string
@@ -269,7 +269,7 @@ func TestBundleReviewIDsSorted(t *testing.T) {
 func TestParseDigestOutput(t *testing.T) {
 	allowed := []int64{2, 7, 9, 15}
 	good := `{"content":"` +
-		strings.Repeat("the broth is rich and the noodles are firm, service can be slow at noon. ", 4) +
+		strings.Repeat("the broth is rich and the noodles are firm, service can be slow at noon. ", 10) +
 		`","source_review_ids":[9,2]}`
 
 	content, ids, err := ParseDigestOutput(good, allowed)
@@ -289,7 +289,7 @@ func TestParseDigestOutput(t *testing.T) {
 func TestParseDigestOutputRejectsHallucinatedIDs(t *testing.T) {
 	allowed := []int64{2, 7}
 	raw := `{"content":"` +
-		strings.Repeat("the broth is rich and the noodles are firm, service can be slow at noon. ", 4) +
+		strings.Repeat("the broth is rich and the noodles are firm, service can be slow at noon. ", 10) +
 		`","source_review_ids":[2,999]}`
 
 	if _, _, err := ParseDigestOutput(raw, allowed); err == nil {
@@ -301,7 +301,7 @@ func TestParseDigestOutputRejectsHallucinatedIDs(t *testing.T) {
 
 func TestParseDigestOutputRejectsMalformed(t *testing.T) {
 	allowed := []int64{2, 7}
-	goodContent := strings.Repeat("the broth is rich and the noodles are firm, service can be slow at noon. ", 4)
+	goodContent := strings.Repeat("the broth is rich and the noodles are firm, service can be slow at noon. ", 10)
 	cases := []struct {
 		name string
 		raw  string
