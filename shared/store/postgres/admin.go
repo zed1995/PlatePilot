@@ -592,7 +592,9 @@ func (s *AdminStore) DocumentSourceReviews(
 	defer cancel()
 
 	rows, err := s.client.pool.Query(ctx, `
-		SELECT `+reviewColumns+`
+		SELECT
+			r.id, r.restaurant_id, r.rating, r.reviewed_at, r.text, r.language,
+			r.text_hash, r.is_representative, r.topic_tags, r.source_observed_at
 		FROM reviews r
 		JOIN knowledge_documents d
 		  ON d.restaurant_id = r.restaurant_id

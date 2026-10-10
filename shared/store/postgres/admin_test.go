@@ -182,6 +182,89 @@ func TestAdminDocumentsScopeFilter(t *testing.T) {
 	}
 }
 
+// TestAdminDigestSourceReviews resolves one digest document's stored
+// source_review_ids and verifies the join: exactly those review rows, each
+// belonging to the digest's restaurant. The ambiguous-column bug this guards
+// only appears at SQL execution time, which is why the test runs against the
+// live database rather than a mock.
+func TestAdminDigestSourceReviews(t *testing.T) {
+	store := newAdminStore(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	page, err := store.Documents(ctx, admin.DocumentQuery{
+		Limit:   1,
+		Scope:   "restaurant",
+		DocType: "restaurant_review_digest",
+	})
+	if err != nil {
+		t.Fatalf("list digests: %v", err)
+	}
+	if len(page.Items) == 0 {
+		t.Skip("inspected database has no restaurant_review_digest documents")
+	}
+	listed := page.Items[0]
+
+	detail, err := store.DocumentDetail(ctx, listed.DocumentID, false)
+	if err != nil {
+		t.Fatalf("DocumentDetail: %v", err)
+	}
+	if len(detail.SourceReviewIDs) == 0 {
+		t.Fatalf("digest %d carries no source_review_ids", detail.DocumentID)
+	}
+
+	reviews, err := store.DocumentSourceReviews(ctx, detail.DocumentID)
+	if err != nil {
+		t.Fatalf("DocumentSourceReviews: %v", err)
+	}
+	if len(reviews) != len(detail.SourceReviewIDs) {
+		t.Fatalf("resolved %d reviews for %d stored ids",
+			len(reviews), len(detail.SourceReviewIDs))
+	}
+
+	wantIDs := make(map[int64]struct{}, len(detail.SourceReviewIDs))
+	for _, id := range detail.SourceReviewIDs {
+		wantIDs[id] = struct{}{}
+	}
+	gotIDs := make(map[int64]struct{}, len(reviews))
+	for _, item := range reviews {
+		if item.RestaurantID != detail.RestaurantID {
+			t.Errorf("review %d belongs to restaurant %d, digest is for %d",
+				item.ReviewID, item.RestaurantID, detail.RestaurantID)
+		}
+		if item.Text == "" {
+			t.Errorf("resolved review %d has empty text", item.ReviewID)
+		}
+		gotIDs[item.ReviewID] = struct{}{}
+	}
+	for id := range wantIDs {
+		if _, ok := gotIDs[id]; !ok {
+			t.Errorf("stored source id %d not resolved to a review", id)
+		}
+	}
+
+	// Non-digest documents have no source reviews: the same endpoint must
+	// answer them with an empty list rather than an error.
+	other, err := store.Documents(ctx, admin.DocumentQuery{
+		Limit:   1,
+		Scope:   "restaurant",
+		DocType: "restaurant_profile",
+	})
+	if err != nil {
+		t.Fatalf("list profiles: %v", err)
+	}
+	if len(other.Items) > 0 {
+		empty, err := store.DocumentSourceReviews(ctx, other.Items[0].DocumentID)
+		if err != nil {
+			t.Fatalf("DocumentSourceReviews on a non-digest: %v", err)
+		}
+		if len(empty) != 0 {
+			t.Errorf("non-digest document resolved %d source reviews", len(empty))
+		}
+	}
+}
+
 // TestAdminVectorHealth asserts the embedded-row rule directly.
 func TestAdminVectorHealth(t *testing.T) {
 	store := newAdminStore(t)
