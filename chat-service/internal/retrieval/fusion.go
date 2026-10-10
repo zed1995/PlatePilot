@@ -25,6 +25,10 @@ type Weights struct {
 	Structured float64
 	Keyword    float64
 	Vector     float64
+	// Review scales the offline review-digest channel. It sits below Vector
+	// because a digest matches how a place was experienced, one inference away
+	// from the question, while a profile matches what the place says it is.
+	Review float64
 	// Quality scales the restaurant's own prior. It is not a recall channel,
 	// and its weight is the smallest by design: this ranks places against a
 	// question, not against each other's reputation.
@@ -35,11 +39,15 @@ type Weights struct {
 //
 // Keyword sits below Structured because a name match is weaker evidence than a
 // satisfied condition. Vector sits level with Structured because a semantic
-// match is the only channel that can answer a soft condition at all.
+// match is the only channel that can answer a soft condition at all. Review
+// sits below Vector because the digest is an offline reading of reviews rather
+// than the restaurant's own description; the value is an initial one for the
+// evaluation harness to move.
 var DefaultWeights = Weights{
 	Structured: 1.0,
 	Keyword:    0.5,
 	Vector:     1.0,
+	Review:     0.8,
 	Quality:    0.2,
 }
 
@@ -64,6 +72,13 @@ type Options struct {
 	// trace alone.
 	Filter search.RestaurantFilter
 	Query  string
+	// Rescore carries the pool-wide exact semantic scores. Zero value means
+	// the rescore did not run and every channel fuses its own recall scores.
+	Rescore Rescore
+	// FusionMethod selects the fusion algorithm: FusionWeighted (the default,
+	// min-max plus weights) or FusionRRF. An empty value means weighted so a
+	// caller that does not know about the knob keeps today's behaviour.
+	FusionMethod string
 }
 
 // ChannelInput is one channel's output, ready to fuse.
@@ -104,10 +119,18 @@ type Fused struct {
 // and two identical requests return two different rankings.
 func Fuse(inputs []ChannelInput, pool Pool, opts Options) Fused {
 	weights := weightFor(opts.Weights)
+	method := fusionMethodOf(opts.FusionMethod)
 	trace := &retrieval.Trace{
-		Query:   opts.Query,
-		Filters: opts.Filter,
-		TopK:    opts.TopK,
+		Query:        opts.Query,
+		Filters:      opts.Filter,
+		TopK:         opts.TopK,
+		FusionMethod: method,
+	}
+	// A rescore that failed is a degradation, not a silence: the ranking fell
+	// back to the recall pages' approximate scores, and the trace has to say
+	// so or the two runs are indistinguishable.
+	for _, warning := range opts.Rescore.Warnings {
+		trace.Warn(warning)
 	}
 
 	// bestHit keeps one channel's strongest hit per restaurant. Recall can
@@ -139,6 +162,10 @@ func Fuse(inputs []ChannelInput, pool Pool, opts Options) Fused {
 		}
 	}
 	seen := make(map[int64]struct{}, len(pool.Candidates))
+	// channelSummaryIdx remembers where each channel's trace row landed, so a
+	// later stage (the rescore threshold gate) can annotate the row it
+	// belongs to without re-walking the slice.
+	channelSummaryIdx := make(map[retrieval.Channel]int, len(inputs))
 
 	for _, input := range inputs {
 		summary := retrieval.ChannelSummary{
@@ -150,6 +177,7 @@ func Fuse(inputs []ChannelInput, pool Pool, opts Options) Fused {
 		}
 		trace.Channels = append(trace.Channels, summary)
 		summaryIdx := len(trace.Channels) - 1
+		channelSummaryIdx[input.Channel] = summaryIdx
 		// Only notes the channel marked as a warning reach the warning list.
 		// A routine skip stays on the channel row and never nags the caller.
 		if input.Note != "" && input.Warn {
@@ -193,11 +221,70 @@ func Fuse(inputs []ChannelInput, pool Pool, opts Options) Fused {
 	}
 	trace.CandidatePool = len(poolIDs)
 
+	// The rescore's exact scores are gated before anything else: a score below
+	// a channel's threshold is not a weak hit but a non-match, and letting it
+	// into the bounds would stretch the family's scale around numbers the
+	// channel has already refused. What survives participates in both the
+	// bounds and the fused scores.
+	belowThreshold, participating := thresholdRescore(opts.Rescore)
+	for channel, count := range belowThreshold {
+		idx, ok := channelSummaryIdx[channel]
+		if !ok {
+			continue
+		}
+		trace.Channels[idx].Note = joinNote(trace.Channels[idx].Note,
+			fmt.Sprintf("补分后 %d 家低于相似度阈值（%.2f），按通道缺席处理",
+				count, opts.Rescore.Thresholds[channel]))
+	}
+
+	// RRF needs each channel's ranks once, over the fused pool. Ranking by raw
+	// score with the id as tie-break keeps the ranks identical across runs no
+	// matter what order the channels or the maps produced their hits in.
+	rrfRanks := rrfRanksOf(method, inputs, poolIDs, bestHit, participating)
+
 	// Bounds are computed over the pool so two candidates always land on the
 	// same scale. Normalizing per candidate would make every hit 1.0.
+	//
+	// The semantic channels share one set of bounds: their raw scores are both
+	// cosines on the same scale, and normalizing each channel on its own would
+	// stretch a weak digest match to 1.0 exactly when the profile channel's
+	// strongest hit is also 1.0, making the two incomparable inside one
+	// ranking. When the pool-wide exact rescore ran, its scores are the
+	// authoritative bounds as well as the authoritative fused scores; without
+	// it the family falls back to the union of its own recall hits, which for
+	// a single running semantic channel is exactly the old per-channel scale.
 	bounds := make(map[retrieval.Channel][2]float64, len(inputs))
+	familyRescored := false
+	familyScores := make([]float64, 0, len(poolIDs))
+	for _, channel := range semanticFamily {
+		if scores, ok := participating[channel]; ok {
+			familyRescored = true
+			for _, score := range scores {
+				familyScores = append(familyScores, score)
+			}
+		}
+	}
+	if familyRescored {
+		familyBounds := boundsOfScores(familyScores)
+		for _, channel := range semanticFamily {
+			bounds[channel] = familyBounds
+		}
+	} else {
+		familyHits := make([]float64, 0, len(poolIDs))
+		for _, input := range inputs {
+			if input.Ran && inSemanticFamily(input.Channel) {
+				for _, hit := range input.Hits {
+					familyHits = append(familyHits, hit.Score)
+				}
+			}
+		}
+		familyBounds := boundsOfScores(familyHits)
+		for _, channel := range semanticFamily {
+			bounds[channel] = familyBounds
+		}
+	}
 	for _, input := range inputs {
-		if input.Ran {
+		if input.Ran && !inSemanticFamily(input.Channel) {
 			bounds[input.Channel] = scoreBounds(input.Hits)
 		}
 	}
@@ -212,23 +299,78 @@ func Fuse(inputs []ChannelInput, pool Pool, opts Options) Fused {
 				continue
 			}
 			weight := weights[input.Channel]
-			hit, ok := bestHit[input.Channel][id]
-			if !ok {
+			hit, recalled := bestHit[input.Channel][id]
+
+			// Resolve what this channel says about the candidate. When the
+			// exact rescore ran for the channel, its score is the only one
+			// fused -- an ANN distance approximates the cosine, and mixing the
+			// two instruments in one ranking would let a candidate's position
+			// depend on which page it happened to be recalled by. An absent or
+			// below-threshold exact score leaves the channel silent for the
+			// candidate: the absence-equals-zero rule, unchanged.
+			var (
+				raw       float64
+				reason    string
+				source    string
+				scoresFor bool
+			)
+			if rescored, ok := participating[input.Channel]; ok {
+				exact, hitByRescore := rescored[id]
+				if !hitByRescore {
+					entry.Channels = append(entry.Channels, retrieval.ChannelScore{
+						Channel: input.Channel, Weight: weight,
+					})
+					continue
+				}
+				raw = exact
+				reason = opts.Rescore.Reasons[input.Channel][id]
+				source = retrieval.SourceRescored
+				if recalled {
+					source = retrieval.SourceRecalled
+				}
+				scoresFor = true
+			} else if recalled {
+				raw = hit.Score
+				reason = hit.Reason
+				if inSemanticFamily(input.Channel) {
+					source = retrieval.SourceRecalled
+				}
+				scoresFor = true
+			}
+			if !scoresFor {
 				entry.Channels = append(entry.Channels, retrieval.ChannelScore{
 					Channel: input.Channel, Weight: weight,
 				})
 				continue
 			}
-			normalized := normalize(hit.Score, bounds[input.Channel])
-			contribution := weight * normalized
+
+			var normalized, contribution float64
+			if method == FusionRRF {
+				rank, ranked := rrfRanks[input.Channel][id]
+				if !ranked {
+					entry.Channels = append(entry.Channels, retrieval.ChannelScore{
+						Channel: input.Channel, Weight: weight,
+					})
+					continue
+				}
+				// The reciprocal rank replaces the min-max term: the channel
+				// says where the candidate stood, not how far its score was
+				// from its neighbours, and raw stays on the trace for reference.
+				normalized = 1 / (rrfK + float64(rank))
+				contribution = weight * normalized
+			} else {
+				normalized = normalize(raw, bounds[input.Channel])
+				contribution = weight * normalized
+			}
 			total += contribution
 			entry.Channels = append(entry.Channels, retrieval.ChannelScore{
 				Channel:    input.Channel,
-				Raw:        hit.Score,
+				Raw:        raw,
 				Weight:     weight,
 				Normalized: normalized,
 				Contrib:    contribution,
-				Reason:     hit.Reason,
+				Reason:     reason,
+				Source:     source,
 			})
 		}
 		// The prior is added after the channels rather than as a fourth channel:
@@ -317,13 +459,27 @@ func scoreBounds(hits []retrieval.ChannelHit) [2]float64 {
 	if len(hits) == 0 {
 		return [2]float64{}
 	}
-	bounds := [2]float64{hits[0].Score, hits[0].Score}
-	for _, hit := range hits[1:] {
-		if hit.Score < bounds[0] {
-			bounds[0] = hit.Score
+	scores := make([]float64, 0, len(hits))
+	for _, hit := range hits {
+		scores = append(scores, hit.Score)
+	}
+	return boundsOfScores(scores)
+}
+
+// boundsOfScores returns the min and max of a plain score slice. An empty
+// slice yields the zero bounds, which normalize maps to the neutral 0.5 — the
+// same "no ranking information" reading an empty channel gets.
+func boundsOfScores(scores []float64) [2]float64 {
+	if len(scores) == 0 {
+		return [2]float64{}
+	}
+	bounds := [2]float64{scores[0], scores[0]}
+	for _, score := range scores[1:] {
+		if score < bounds[0] {
+			bounds[0] = score
 		}
-		if hit.Score > bounds[1] {
-			bounds[1] = hit.Score
+		if score > bounds[1] {
+			bounds[1] = score
 		}
 	}
 	return bounds
@@ -368,6 +524,7 @@ func weightFor(configured Weights) map[retrieval.Channel]float64 {
 		retrieval.ChannelStructured: configured.Structured,
 		retrieval.ChannelKeyword:    configured.Keyword,
 		retrieval.ChannelVector:     configured.Vector,
+		retrieval.ChannelReview:     configured.Review,
 		PriorChannel:                configured.Quality,
 	}
 	for _, channel := range retrieval.AllChannels {
@@ -376,6 +533,145 @@ func weightFor(configured Weights) map[retrieval.Channel]float64 {
 		}
 	}
 	return weights
+}
+
+// semanticFamily lists the channels whose raw scores share one cosine scale:
+// both recall restaurant-level documents embedded by the same model against the
+// same query. They are normalized against one shared set of bounds so their
+// contributions stay comparable inside a single ranking.
+var semanticFamily = []retrieval.Channel{retrieval.ChannelVector, retrieval.ChannelReview}
+
+func inSemanticFamily(channel retrieval.Channel) bool {
+	for _, member := range semanticFamily {
+		if member == channel {
+			return true
+		}
+	}
+	return false
+}
+
+// Fusion algorithm names, as they appear in the trace's fusion_method.
+const (
+	// FusionWeighted is the default: family-shared min-max normalization
+	// scaled by channel weights.
+	FusionWeighted = "weighted"
+	// FusionRRF ranks candidates by weighted reciprocal rank instead of by
+	// normalized score, which is robust when two channels' raw scales are not
+	// trusted to be comparable at all.
+	FusionRRF = "rrf"
+)
+
+// rrfK is the standard RRF dampener. It flattens the head of the rank
+// distribution so the top of one channel's page does not dominate by an order
+// of magnitude the way a raw 1/rank would.
+const rrfK = 60
+
+// fusionMethodOf resolves the configured method. An empty or unknown value
+// falls back to weighted: the configuration layer rejects unknown names, so
+// the only caller that can hand one in is a test or a future rename, and the
+// safe landing is the behaviour that existed first.
+func fusionMethodOf(method string) string {
+	if method == FusionRRF {
+		return FusionRRF
+	}
+	return FusionWeighted
+}
+
+// rrfRanksOf computes each channel's 1-based ranks over the fused pool, for
+// the RRF method. A channel's universe is its exact rescore scores when the
+// rescore ran for it, otherwise its recalled hits; candidates outside the
+// pool after the hard filter are not ranked at all.
+//
+// Ranks are ordered by raw score descending with the restaurant id as the
+// tie-break, so the same inputs always produce the same ranks no matter what
+// order the channels or the underlying maps produced their hits in. A nil
+// result means the method is not RRF and the ranks are never consulted.
+func rrfRanksOf(
+	method string,
+	inputs []ChannelInput,
+	poolIDs []int64,
+	bestHit map[retrieval.Channel]map[int64]retrieval.ChannelHit,
+	participating map[retrieval.Channel]map[int64]float64,
+) map[retrieval.Channel]map[int64]int {
+	if method != FusionRRF {
+		return nil
+	}
+	inPool := make(map[int64]struct{}, len(poolIDs))
+	for _, id := range poolIDs {
+		inPool[id] = struct{}{}
+	}
+	ranks := make(map[retrieval.Channel]map[int64]int, len(inputs))
+	for _, input := range inputs {
+		if !input.Ran {
+			continue
+		}
+		scores := make(map[int64]float64)
+		if rescored, ok := participating[input.Channel]; ok {
+			for id, score := range rescored {
+				if _, keep := inPool[id]; keep {
+					scores[id] = score
+				}
+			}
+		} else {
+			for id, hit := range bestHit[input.Channel] {
+				if _, keep := inPool[id]; keep {
+					scores[id] = hit.Score
+				}
+			}
+		}
+		ids := make([]int64, 0, len(scores))
+		for id := range scores {
+			ids = append(ids, id)
+		}
+		sort.Slice(ids, func(i, j int) bool {
+			if scores[ids[i]] != scores[ids[j]] {
+				return scores[ids[i]] > scores[ids[j]]
+			}
+			return ids[i] < ids[j]
+		})
+		rank := make(map[int64]int, len(ids))
+		for i, id := range ids {
+			rank[id] = i + 1
+		}
+		ranks[input.Channel] = rank
+	}
+	return ranks
+}
+
+// thresholdRescore splits the rescore overlay into the scores that participate
+// in fusion and per-channel counts of the ones a channel's threshold refused.
+// A channel whose rescore ran gets an entry even when every score was refused,
+// because "the rescore ran and the channel still says nothing" is exactly the
+// state fusion must distinguish from "the rescore never ran".
+func thresholdRescore(rescore Rescore) (map[retrieval.Channel]int, map[retrieval.Channel]map[int64]float64) {
+	below := make(map[retrieval.Channel]int)
+	participating := make(map[retrieval.Channel]map[int64]float64, len(rescore.Scores))
+	if !rescore.Enabled {
+		return below, participating
+	}
+	for channel, scores := range rescore.Scores {
+		gated := make(map[int64]float64, len(scores))
+		threshold, gatedChannel := rescore.Thresholds[channel]
+		for id, score := range scores {
+			if gatedChannel && score < threshold {
+				below[channel]++
+				continue
+			}
+			gated[id] = score
+		}
+		participating[channel] = gated
+	}
+	return below, participating
+}
+
+// joinNote appends a second fact to a channel's note. Notes are one sentence
+// per fact joined by the same separator the reasons use, so a trace row reads
+// as a short list rather than a paragraph.
+func joinNote(note, extra string) string {
+	if note == "" {
+		return extra
+	}
+	return note + "；" + extra
 }
 
 // Page sizes are bounded for the same reason the store bounds them: an

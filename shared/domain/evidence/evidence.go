@@ -21,6 +21,13 @@ const (
 	DocTypeRestaurantHours                 DocType = "restaurant_hours"
 	DocTypeRestaurantReviewSummary         DocType = "restaurant_review_summary"
 	DocTypeRestaurantRepresentativeReviews DocType = "restaurant_representative_reviews"
+	// DocTypeRestaurantReviewDigest is the offline restaurant-level review
+	// comprehension document: one per restaurant, written by the data pipeline,
+	// embedded into the restaurant-scope HNSW partitions. It is ranking fuel,
+	// never a citation: it lives in ScopeRestaurant, physically outside every
+	// evidence read path, and its metadata carries citable=false so the intent
+	// survives a schema-only inspection. See the review-recall design doc, §3.4.
+	DocTypeRestaurantReviewDigest DocType = "restaurant_review_digest"
 )
 
 // MinAnswerableDocTypes is how many distinct document kinds an evidence bundle

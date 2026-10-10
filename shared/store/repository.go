@@ -76,6 +76,10 @@ type KnowledgeRepository interface {
 	// error: one dead id must not invalidate the citations around it, and the
 	// caller can tell which came back by comparing lengths.
 	FindEvidenceByIDs(ctx context.Context, ids []int64) ([]evidence.Evidence, error)
+	// ScorePoolByEmbedding scores the candidate pool's documents exactly.
+	// See ScorePoolRequest for the shape and the "no approximate index"
+	// guarantee.
+	ScorePoolByEmbedding(ctx context.Context, req ScorePoolRequest) ([]ScoredDocument, error)
 }
 
 // EvidenceRequest is one restaurant-bounded evidence recall.
@@ -128,6 +132,37 @@ type VectorSearchRequest struct {
 	// Topic restricts review-summary documents to one review topic.
 	Topic string
 }
+
+// ScorePoolRequest is one pool-wide exact rescore: the caller already knows
+// which restaurants are in the candidate pool and wants each one's active
+// document of a single doc_type scored by exact cosine distance — not by an
+// ANN page, which approximates and can miss.
+type ScorePoolRequest struct {
+	// Scope selects restaurant-level or evidence-level documents. Required.
+	Scope evidence.RetrievalScope
+	// Query is the embedded question. It must not be empty.
+	Query []float32
+	// RestaurantIDs is the candidate pool. Required and bounded by the caller:
+	// the rescore exists because the pool is small enough to score exactly.
+	RestaurantIDs []int64
+	// DocType is the single document kind to score. One call per doc_type —
+	// a caller that wants both profile and digest scores issues two requests.
+	DocType evidence.DocType
+}
+
+// ScorePoolByEmbedding returns, per named restaurant, the one active document
+// of the requested doc_type with its exact cosine distance to the query.
+//
+// "Exact" is the contract and the reason this is its own port rather than a
+// VectorSearch call with restaurant ids: the recall query's ORDER BY on the
+// vector invites the HNSW index, whose approximate walk post-filters the id
+// predicate and can return fewer rows than exist. This port must not depend on
+// the approximate index at all — a pool that asked for 50 restaurants gets 50
+// scored documents back (absent the ones that genuinely have no active
+// document of the kind), whatever the planner would like to do.
+//
+// Results are ordered by distance, then restaurant id, so the same pool and
+// query always come back in the same order.
 
 // ConversationRepository persists thread metadata, recoverable checkpoints,
 // and the per-thread message transcript.

@@ -42,6 +42,7 @@ Commands:
   report           show recent import batch reports           (M1-09)
   build-documents  build restaurant and evidence documents    (M2-03 / M2-04)
   embed            generate and write embeddings              (M2-06)
+  build-digests    generate restaurant review digests (LLM/rules)
   help             show this message
 
 Migrate flags:
@@ -81,6 +82,13 @@ Build-documents flags:
   --scope=restaurant|evidence          restrict to one retrieval scope
   --batch=N                            documents written per upsert
   --dry-run                            build and count without writing
+
+Build-digests flags (requires DIGEST_ENABLED=true; the prompt version comes
+                                       from DIGEST_PROMPT_VERSION):
+  --limit=N                            digest at most N restaurants (0 = all)
+  --restaurant-id=ID                   digest one restaurant, for debugging
+  --batch=N                            restaurants per page
+  --dry-run                            generate and count without writing
 
 Embed flags:
   --limit=N                            embed at most N pending documents
@@ -152,6 +160,8 @@ func run(args []string) error {
 		return runReport(ctx, cfg, rest)
 	case "build-documents":
 		return runBuildDocuments(ctx, cfg, rest)
+	case "build-digests":
+		return runBuildDigests(ctx, cfg, rest)
 	case "embed":
 		return runEmbed(ctx, cfg, rest)
 	default:
@@ -453,6 +463,41 @@ func runBuildDocuments(ctx context.Context, cfg config.Config, args []string) er
 		result.RepresentativeReviews)
 	for _, docType := range pipeline.SortedDocTypes(result.ByDocType) {
 		fmt.Printf("    %-34s %d\n", docType, result.ByDocType[docType])
+	}
+	return nil
+}
+
+// runBuildDigests generates the restaurant-level review digests.
+//
+// The stage is off by default and must be switched on explicitly: it calls a
+// paid API, so a mistyped command must fail loudly rather than silently spend
+// budget or quietly no-op.
+func runBuildDigests(ctx context.Context, cfg config.Config, args []string) error {
+	opts, err := pipeline.ParseDigestOptions(args, cfg)
+	if err != nil {
+		return err
+	}
+	if !cfg.Digest.Enabled {
+		return errs.New(errs.CodeInvalidArgument,
+			"DIGEST_ENABLED must be true for build-digests; the digest stage is off by default " +
+				"because it calls a paid API (set DIGEST_ENABLED=true and configure DIGEST_CHAT_*)")
+	}
+	if cfg.Postgres.DSN == "" {
+		return errs.New(errs.CodeInvalidArgument, "POSTGRES_DSN is required for build-digests")
+	}
+	_, stores, err := openStores(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	result, err := pipeline.RunBuildDigests(ctx, stores, cfg, opts)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("restaurants=%d inserted=%d skipped=%d no_material=%d failed=%d prompt_version=%s\n",
+		result.Restaurants, result.Inserted, result.Skipped, result.NoMaterial,
+		result.Failed, cfg.Digest.PromptVersion)
+	for _, reason := range pipeline.SortedRejectReasons(result.RejectReasons) {
+		fmt.Printf("    rejected %-24s %d\n", reason, result.RejectReasons[reason])
 	}
 	return nil
 }

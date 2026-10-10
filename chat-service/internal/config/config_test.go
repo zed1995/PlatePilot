@@ -43,6 +43,14 @@ func baseConfig() Config {
 			Model:      "qwen3-embedding:0.6b",
 			Dimensions: 1024,
 		},
+		Review: ReviewConfig{
+			Enabled:       true,
+			Weight:        0.8,
+			MinSimilarity: 0.30,
+			Overread:      10,
+			PoolRescore:   true,
+			FusionMethod:  "weighted",
+		},
 	}
 }
 
@@ -574,5 +582,95 @@ func TestValidateChecksTheReservationTTLOnlyWhenEnabled(t *testing.T) {
 	err = blank.Validate()
 	if err == nil || !strings.Contains(err.Error(), "RESERVATION_POLICY_VERSION") {
 		t.Fatalf("want RESERVATION_POLICY_VERSION rejected, got %v", err)
+	}
+}
+
+// The review channel is on by default: a deployment that has not built the
+// digest corpus gets a channel that recalls nothing and says so, which is the
+// visible way to run ahead of the data rather than a hidden misconfiguration.
+func TestReviewChannelDefaultsAreLoaded(t *testing.T) {
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := ReviewConfig{
+		Enabled:       true,
+		Weight:        0.8,
+		MinSimilarity: 0.30,
+		Overread:      10,
+		PoolRescore:   true,
+		FusionMethod:  "weighted",
+	}
+	if cfg.Review != want {
+		t.Fatalf("review config = %+v, want %+v", cfg.Review, want)
+	}
+}
+
+func TestLoadParsesReviewOverrides(t *testing.T) {
+	t.Setenv("RETRIEVAL_ENABLE_REVIEW", "false")
+	t.Setenv("RETRIEVAL_WEIGHT_REVIEW", "1.2")
+	t.Setenv("RETRIEVAL_REVIEW_MIN_SIM", "0.45")
+	t.Setenv("RETRIEVAL_REVIEW_OVERREAD", "7")
+	t.Setenv("RETRIEVAL_ENABLE_POOL_RESCORE", "false")
+	t.Setenv("RETRIEVAL_FUSION_METHOD", "rrf")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := ReviewConfig{
+		Enabled:       false,
+		Weight:        1.2,
+		MinSimilarity: 0.45,
+		Overread:      7,
+		PoolRescore:   false,
+		FusionMethod:  "rrf",
+	}
+	if cfg.Review != want {
+		t.Fatalf("review overrides not applied: %+v, want %+v", cfg.Review, want)
+	}
+}
+
+func TestValidateRejectsOutOfRangeReviewKnobs(t *testing.T) {
+	cases := map[string]func(*ReviewConfig){
+		"RETRIEVAL_WEIGHT_REVIEW":   func(c *ReviewConfig) { c.Weight = -0.1 },
+		"RETRIEVAL_REVIEW_MIN_SIM":  func(c *ReviewConfig) { c.MinSimilarity = 1.5 },
+		"RETRIEVAL_REVIEW_OVERREAD": func(c *ReviewConfig) { c.Overread = 0 },
+		"RETRIEVAL_FUSION_METHOD":   func(c *ReviewConfig) { c.FusionMethod = "bogus" },
+	}
+	for wantVar, mutate := range cases {
+		cfg := baseConfig()
+		mutate(&cfg.Review)
+		err := cfg.Validate()
+		if err == nil || !strings.Contains(err.Error(), wantVar) {
+			t.Errorf("want validation error naming %s, got %v", wantVar, err)
+		}
+	}
+}
+
+// Turning the review channel off is a supported configuration: the switches
+// exist for A/B comparison, so an off switch must not be a start failure. The
+// numbers are still checked — an operator disabling a channel keeps the rest
+// of its configuration honest.
+func TestTurningTheReviewChannelOffIsValidConfiguration(t *testing.T) {
+	cfg := baseConfig()
+	cfg.Review.Enabled = false
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("a deployment without the review channel failed validation: %v", err)
+	}
+}
+
+func TestSummaryReportsTheReviewKnobs(t *testing.T) {
+	summary := baseConfig().Summary()
+	for key, want := range map[string]string{
+		"retrieval_enable_review":       "true",
+		"retrieval_review_min_sim":      "0.3",
+		"retrieval_review_overread":     "10",
+		"retrieval_enable_pool_rescore": "true",
+		"retrieval_fusion_method":       "weighted",
+		"weight_review":                 "0.8",
+	} {
+		if got := fmt.Sprint(summary[key]); got != want {
+			t.Errorf("summary[%q] = %q, want %q", key, got, want)
+		}
 	}
 }

@@ -233,6 +233,72 @@ func (r *KnowledgeRepository) FindEvidenceByIDs(
 	return out, nil
 }
 
+// ScorePoolByEmbedding scores the named restaurants' active documents of one
+// doc_type by exact cosine distance. The memory implementation has no
+// approximate index to avoid: it computes every distance exactly, which is
+// precisely the behaviour the Postgres adapter must reproduce without the
+// HNSW walk.
+func (r *KnowledgeRepository) ScorePoolByEmbedding(
+	_ context.Context, req store.ScorePoolRequest,
+) ([]store.ScoredDocument, error) {
+	if req.Scope != evidence.ScopeRestaurant && req.Scope != evidence.ScopeEvidence {
+		return nil, errs.Newf(errs.CodeInvalidArgument, "unknown retrieval scope %q", req.Scope)
+	}
+	if len(req.Query) == 0 {
+		return nil, errs.New(errs.CodeInvalidArgument, "query vector must not be empty")
+	}
+	if len(req.RestaurantIDs) == 0 {
+		return nil, errs.New(errs.CodeRetrievalNoScope,
+			"pool rescore must name the restaurants it is asking about")
+	}
+	if req.DocType == "" {
+		return nil, errs.New(errs.CodeInvalidArgument, "pool rescore needs a doc_type")
+	}
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	ids := make(map[int64]struct{}, len(req.RestaurantIDs))
+	for _, id := range req.RestaurantIDs {
+		ids[id] = struct{}{}
+	}
+	// One document per restaurant: a healthy store has exactly one active row
+	// per (restaurant, scope, doc_type) group, and if a store ever violates
+	// that, keeping the closest — ties broken by the smaller document id — is
+	// the deterministic way to answer "the" document.
+	best := make(map[int64]store.ScoredDocument, len(ids))
+	for _, doc := range r.docs {
+		if doc.Scope != req.Scope || doc.DocType != req.DocType || !doc.IsActive {
+			continue
+		}
+		if len(doc.Embedding) != len(req.Query) {
+			continue
+		}
+		if _, wanted := ids[doc.RestaurantID]; !wanted {
+			continue
+		}
+		hit := store.ScoredDocument{KnowledgeDocument: doc, Distance: 1 - cosine(req.Query, doc.Embedding)}
+		if existing, ok := best[doc.RestaurantID]; ok {
+			if hit.Distance > existing.Distance ||
+				(hit.Distance == existing.Distance && hit.DocumentID >= existing.DocumentID) {
+				continue
+			}
+		}
+		best[doc.RestaurantID] = hit
+	}
+	out := make([]store.ScoredDocument, 0, len(best))
+	for _, hit := range best {
+		out = append(out, hit)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Distance != out[j].Distance {
+			return out[i].Distance < out[j].Distance
+		}
+		return out[i].RestaurantID < out[j].RestaurantID
+	})
+	return out, nil
+}
+
 // boroughOf reads the denormalised borough a document was written with.
 func boroughOf(doc evidence.KnowledgeDocument) string {
 	if doc.Metadata == nil {

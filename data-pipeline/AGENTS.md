@@ -27,6 +27,7 @@ make build           # ./bin/data-pipeline
 | `import --stage=meta\|review\|stats\|score\|all` | 流式导入 + 派生状态 |
 | `prefilter` | 在本地先把不可 join 的评论过滤掉，产出精简语料 |
 | `build-documents` | 由清洗后的行生成知识文档 |
+| `build-digests` | 生成餐厅级评论理解文档（`DIGEST_ENABLED=true` 才可运行；`DIGEST_PROMPT_VERSION` 选 llm/rules 生成器） |
 | `embed` | 调 provider 给活跃文档生成向量 |
 | `report --last=N` / `--batch-id=<id>` | 查看运行报告 |
 

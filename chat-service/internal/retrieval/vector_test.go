@@ -22,6 +22,16 @@ type stubKnowledge struct {
 	recallCall int
 	recalled   []evidence.Evidence
 	recallErr  error
+	// digestDocs answers a VectorSearch that pinned the review-digest doc
+	// type, so a test can give the two semantic channels different corpora.
+	digestDocs []store.ScoredDocument
+	digestErr  error
+	// poolDocs answers ScorePoolByEmbedding per doc type; a nil map answers
+	// with no documents for every type rather than with an error, which is the
+	// "the store has nothing there" reading. poolCalls records every request.
+	poolDocs  map[evidence.DocType][]store.ScoredDocument
+	poolErr   error
+	poolCalls []store.ScorePoolRequest
 	// byIDs answers FindEvidenceByIDs; nil means the read is not set up and
 	// must refuse rather than answer nothing, which in a test would be
 	// indistinguishable from a corpus with no documents.
@@ -72,7 +82,25 @@ func (s *stubKnowledge) FindEvidenceByIDs(_ context.Context, ids []int64) ([]evi
 func (s *stubKnowledge) VectorSearch(_ context.Context, req store.VectorSearchRequest) ([]store.ScoredDocument, error) {
 	s.recallCall++
 	s.got = req
+	for _, docType := range req.DocTypes {
+		if docType == evidence.DocTypeRestaurantReviewDigest {
+			return s.digestDocs, s.digestErr
+		}
+	}
 	return s.docs, s.err
+}
+
+func (s *stubKnowledge) ScorePoolByEmbedding(
+	_ context.Context, req store.ScorePoolRequest,
+) ([]store.ScoredDocument, error) {
+	s.poolCalls = append(s.poolCalls, req)
+	if s.poolErr != nil {
+		return nil, s.poolErr
+	}
+	if s.poolDocs == nil {
+		return nil, nil
+	}
+	return s.poolDocs[req.DocType], nil
 }
 
 // stubEmbedding is an embedding provider a test can steer.
@@ -124,6 +152,23 @@ func scoredDoc(documentID, restaurantID int64, title string, distance float64) s
 			DocType:      evidence.DocTypeRestaurantProfile,
 			Title:        title,
 			SnapshotAt:   testSnapshot,
+		},
+		Distance: distance,
+	}
+}
+
+// scoredDigestDoc builds a review-digest document whose offline reading was
+// built from reviewCount reviews.
+func scoredDigestDoc(documentID, restaurantID int64, title string, distance float64, reviewCount int) store.ScoredDocument {
+	return store.ScoredDocument{
+		KnowledgeDocument: evidence.KnowledgeDocument{
+			DocumentID:   documentID,
+			RestaurantID: restaurantID,
+			Scope:        evidence.ScopeRestaurant,
+			DocType:      evidence.DocTypeRestaurantReviewDigest,
+			Title:        title,
+			SnapshotAt:   testSnapshot,
+			Metadata:     map[string]any{"input_review_count": reviewCount},
 		},
 		Distance: distance,
 	}

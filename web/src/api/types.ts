@@ -226,7 +226,7 @@ export interface Boundary {
 
 // --- Retrieval --------------------------------------------------------------
 
-export type Channel = 'structured' | 'keyword' | 'vector'
+export type Channel = 'structured' | 'keyword' | 'vector' | 'review'
 
 export interface GeoPoint {
   longitude: number
@@ -277,6 +277,9 @@ export interface ChannelScore {
   normalized_score: number
   contribution: number
   reason?: string
+  // recalled: the hit came from the channel's own ANN page; rescored: the exact
+  // pool rescore surfaced it. Absent on non-semantic channels.
+  source?: 'recalled' | 'rescored'
 }
 
 export interface CandidateScore {
@@ -295,6 +298,8 @@ export interface Trace {
   filters?: RestaurantFilter
   embedding_model_id?: string
   query_embedding_dim?: number
+  // Fusion algorithm behind this trace's ranking: weighted (default) or rrf.
+  fusion_method?: 'weighted' | 'rrf'
   rerank_applied: boolean
   rerank_model_id?: string
   warnings?: string[]

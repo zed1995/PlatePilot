@@ -31,6 +31,25 @@ type ServiceConfig struct {
 	EnableStructured bool
 	EnableKeyword    bool
 	EnableVector     bool
+	// EnableReview switches the review-digest channel on or off. Like the other
+	// switches it is reported in the trace when off, so a weakened ranking is
+	// visible rather than silent.
+	EnableReview bool
+	// ReviewMinSim is the digest-similarity floor below which a review hit is a
+	// non-match rather than a weak one: a review corpus that "loosely" matches
+	// anything is a second prior instead of evidence. Zero disables the gate.
+	ReviewMinSim float64
+	// ReviewOverread multiplies the review channel's depth, on the same terms
+	// as the other channels' overreads.
+	ReviewOverread int
+	// EnablePoolRescore scores the whole candidate pool with the exact cosine
+	// per doc type once fusion's pool is complete. The exact scores then are
+	// the fused ones, and the ANN pages only decide what enters the pool and
+	// how a hit is labelled.
+	EnablePoolRescore bool
+	// FusionMethod selects the fusion algorithm: FusionWeighted (default) or
+	// FusionRRF. An empty value means weighted.
+	FusionMethod string
 	// EmbeddingTimeout bounds the on-demand query embedding. It is separate from
 	// the pipeline's request timeout because that one is sized for embedding a
 	// batch of long documents on a CPU model; an online recall embeds one short
@@ -78,6 +97,16 @@ const vectorOverread = 10
 // lookup at a time to make it displayable, so the page has a real cost.
 const maxVectorDepth = 200
 
+// defaultReviewMinSim is the review channel's default similarity floor.
+//
+// It is a placeholder, not a tuned value: 0.30 was chosen to be visibly
+// conservative before any evaluation has measured where the digest corpus
+// stops matching and starts merely co-occurring. The configuration layer
+// repeats the number and marks it the same way, so neither place can pretend
+// the other calibrated it; calibrating it against the retrieval eval set is
+// the recorded follow-up.
+const defaultReviewMinSim = 0.30
+
 // DefaultServiceConfig is the configuration used when nothing is set.
 var DefaultServiceConfig = ServiceConfig{
 	Weights:          DefaultWeights,
@@ -90,8 +119,21 @@ var DefaultServiceConfig = ServiceConfig{
 	// looks like it ranked well and did not. Deployments that have not built a
 	// vector index turn it off at the configuration layer instead, which is
 	// where the decision to spend the embedding latency belongs.
-	EnableVector:     true,
-	EmbeddingTimeout: 5 * time.Second,
+	EnableVector: true,
+	// The review channel is part of the package default for the same reason the
+	// vector one is, with one difference: the digest corpus is produced by the
+	// offline pipeline, so a deployment that has not run that stage gets a
+	// channel that recalls nothing and says so — which is the visible way to
+	// run ahead of the corpus, not a misconfiguration.
+	EnableReview: true,
+	ReviewMinSim: defaultReviewMinSim,
+	// These inherit the vector channel's shape: one overread constant shared
+	// with its siblings, and the rescore on because trusting approximate pages
+	// for the fused scores is what the rescore exists to stop.
+	ReviewOverread:    reviewOverread,
+	EnablePoolRescore: true,
+	FusionMethod:      FusionWeighted,
+	EmbeddingTimeout:  5 * time.Second,
 }
 
 // Service answers restaurant searches.
@@ -137,6 +179,9 @@ func NewService(cfg ServiceConfig, deps Deps) (*Service, error) {
 	}
 	if cfg.EmbeddingTimeout <= 0 {
 		cfg.EmbeddingTimeout = DefaultServiceConfig.EmbeddingTimeout
+	}
+	if cfg.ReviewOverread <= 0 {
+		cfg.ReviewOverread = DefaultServiceConfig.ReviewOverread
 	}
 	return &Service{
 		restaurants: deps.Restaurants,
@@ -217,22 +262,48 @@ func (s *Service) Search(ctx context.Context, req retrieval.Request) (retrieval.
 	inputs = append(inputs, keywordInput)
 	mergePool(candidates, priors, keywordCandidates, keywordPriors)
 
-	vectorInput, vectorCandidates, vectorPriors, vectorDim, err :=
-		s.vectorChannel(ctx, query, req.Filter, req.SoftConditions, depth)
+	// One query embedding serves every semantic channel: the profile and the
+	// digest corpora are embedded by the same model against the same question,
+	// so embedding per channel would pay the read path's slowest step twice
+	// for identical vectors.
+	sem := s.planSemantic(ctx, query, req.SoftConditions)
+	if sem.err != nil {
+		// A dimension mismatch or an empty vector is not an availability
+		// problem -- the corpus and the configured model disagree, every recall
+		// will fail the same way, and a ranking quietly missing its semantic
+		// half reads as a correct answer. Failures the operator has to resolve
+		// are raised; transient ones are recorded per channel.
+		s.logger.Error("semantic recall is misconfigured",
+			slog.String("error", sem.err.Error()),
+			slog.String("embedding_model", s.embedding.ModelID()))
+		return retrieval.SearchResult{}, sem.err
+	}
+
+	vectorInput, vectorCandidates, vectorPriors, err :=
+		s.vectorChannel(ctx, query, req.Filter, req.SoftConditions, depth, sem)
 	if err != nil {
-		// Unlike the other two channels, the vector one can refuse outright: see
-		// vectorChannel for why a misconfigured corpus is not something to
-		// degrade around.
 		return retrieval.SearchResult{}, err
 	}
 	inputs = append(inputs, vectorInput)
 	mergePool(candidates, priors, vectorCandidates, vectorPriors)
+
+	reviewInput, reviewCandidates, reviewPriors, err :=
+		s.reviewChannel(ctx, query, req.Filter, req.SoftConditions, depth, sem)
+	if err != nil {
+		return retrieval.SearchResult{}, err
+	}
+	inputs = append(inputs, reviewInput)
+	mergePool(candidates, priors, reviewCandidates, reviewPriors)
 
 	fused := Fuse(inputs, Pool{Candidates: candidates, Priors: priors}, Options{
 		Weights: s.cfg.Weights,
 		TopK:    topK,
 		Filter:  req.Filter,
 		Query:   firstNonEmpty(query, text),
+		// The rescore runs once the pool is complete: it scores the merged
+		// candidates, not one channel's page.
+		Rescore:      s.rescorePool(ctx, sem, candidates),
+		FusionMethod: s.cfg.FusionMethod,
 	})
 
 	if s.embedding != nil {
@@ -242,7 +313,7 @@ func (s *Service) Search(ctx context.Context, req retrieval.Request) (retrieval.
 	// replay of this trace has to name the model that produced it, and a trace
 	// that only records the model on a successful recall cannot explain a
 	// result produced by a run where the recall degraded.
-	fused.Trace.QueryEmbeddingDim = vectorDim
+	fused.Trace.QueryEmbeddingDim = sem.dim
 
 	final := ApplyRerank(ctx, firstNonEmpty(query, text), fused.Candidates, s.rerank)
 	fused.Candidates = final.Candidates
@@ -505,18 +576,96 @@ const softConditionNote = "软条件按评论主题与向量召回，属于评�
 // from a column. It is the wording the answer layer is told to reuse.
 const softReasonPrefix = "评论推断："
 
+// semanticQuery is the one query embedding every semantic channel shares.
+//
+// The profile and the digest corpora are embedded by the same model against
+// the same question, so the vector that recalls one recalls the other:
+// embedding per channel would pay the read path's slowest step twice for
+// identical vectors. The struct also carries the question's display forms, so
+// both channels render the same prose for the same recall.
+type semanticQuery struct {
+	// text is the full string that was (or would be) embedded: the question
+	// plus the soft conditions. It is set even when nothing was embedded, so a
+	// channel can distinguish "nothing to embed" from "the embed failed".
+	text string
+	// display is the truncated question a reason quotes.
+	display string
+	// softReason is the shared "评论推断：…" reason prefix, empty without soft
+	// conditions.
+	softReason string
+	// vector is the embedding. nil means no semantic channel had anything to
+	// embed or the embed did not happen.
+	vector []float32
+	// dim is the width the provider actually returned. It is recorded rather
+	// than read back off the provider: the vector that ran is the fact worth
+	// putting in the trace.
+	dim int
+	// embedErr is a transient embedding failure. Each semantic channel reports
+	// it under its own name and the search degrades.
+	embedErr error
+	// err is a misconfiguration (empty vector, dimension mismatch). It fails
+	// the search rather than degrading it.
+	err error
+}
+
+// planSemantic embeds the question once for every semantic channel.
+//
+// The gates mirror the channels' own skip conditions so a search that no
+// semantic channel can serve never pays for an embedding: both channels off,
+// no knowledge store, no provider, or nothing to embed each leave the vector
+// nil without an error, and the channels report their own skip notes in their
+// own words.
+func (s *Service) planSemantic(
+	ctx context.Context, query string, soft []retrieval.SoftCondition,
+) *semanticQuery {
+	sem := &semanticQuery{
+		text:       composeEmbeddingText(query, soft),
+		softReason: describeSoftConditions(soft),
+	}
+	// The semantic half of the reason quotes the question when there is one. It
+	// does not repeat the soft words: those already appear in their own half,
+	// and a reason that says the same thing twice reads as two pieces of
+	// evidence for one fact.
+	sem.display = truncateForReason(query)
+	if strings.TrimSpace(sem.display) == "" {
+		sem.display = truncateForReason(sem.text)
+	}
+	if strings.TrimSpace(sem.text) == "" {
+		// Embedding an empty string yields a vector that means nothing. A
+		// filter-only search has no soft condition to interpret.
+		return sem
+	}
+	if (!s.cfg.EnableVector && !s.cfg.EnableReview) || s.knowledge == nil || s.embedding == nil {
+		return sem
+	}
+	vector, err := s.embedQuery(ctx, sem.text)
+	if err != nil {
+		switch errs.CodeOf(err) {
+		case errs.CodeEmbeddingEmpty, errs.CodeEmbeddingDimensionMismatch:
+			sem.err = err
+		default:
+			sem.embedErr = err
+		}
+		return sem
+	}
+	sem.vector = vector
+	sem.dim = len(vector)
+	return sem
+}
+
 func (s *Service) vectorChannel(
 	ctx context.Context,
 	query string,
 	filter search.RestaurantFilter,
 	soft []retrieval.SoftCondition,
 	depth int,
-) (ChannelInput, map[int64]search.RestaurantCandidate, map[int64]float64, int, error) {
+	sem *semanticQuery,
+) (ChannelInput, map[int64]search.RestaurantCandidate, map[int64]float64, error) {
 	// skipped records a channel that did not run. warn elevates the note into
 	// the trace's warning list: unavailability and "disabled" are degradations,
 	// while a filter-only query having nothing to embed is routine.
-	skipped := func(note string, warn bool) (ChannelInput, map[int64]search.RestaurantCandidate, map[int64]float64, int, error) {
-		return ChannelInput{Channel: retrieval.ChannelVector, Note: note, Warn: warn}, nil, nil, 0, nil
+	skipped := func(note string, warn bool) (ChannelInput, map[int64]search.RestaurantCandidate, map[int64]float64, error) {
+		return ChannelInput{Channel: retrieval.ChannelVector, Note: note, Warn: warn}, nil, nil, nil
 	}
 
 	if !s.cfg.EnableVector {
@@ -528,49 +677,27 @@ func (s *Service) vectorChannel(
 	if s.embedding == nil {
 		return skipped("向量通道不可用：未配置 embedding provider", true)
 	}
-
-	// The embedded text is the question plus the soft conditions the corpus can
-	// only answer through reviews.
-	//
-	// It is built here rather than passed in as one string because the caller's
-	// Query is also what the reranker and the trace name: folding "安静 适合约会"
-	// into it would make every downstream reader believe the user asked for
-	// those words as a subject, when what they did was constrain the ranking.
-	embeddingText := composeEmbeddingText(query, soft)
-	if strings.TrimSpace(embeddingText) == "" {
-		// Embedding an empty string yields a vector that means nothing. A
-		// filter-only search has no soft condition to interpret.
+	if strings.TrimSpace(sem.text) == "" {
 		return skipped("无自然语言查询，向量通道跳过", false)
 	}
-
-	vector, err := s.embedQuery(ctx, embeddingText)
-	if err != nil {
-		// The vector channel answers a question the user only implied, so its
-		// absence must not fail a search the other channels can still answer.
-		// But a dimension mismatch is not an availability problem -- it means
-		// the corpus and the configured model disagree, every recall will fail
-		// the same way, and a ranking quietly missing its semantic half reads as
-		// a correct answer. Failures the operator has to resolve are raised;
-		// transient ones are recorded.
-		switch errs.CodeOf(err) {
-		case errs.CodeEmbeddingEmpty, errs.CodeEmbeddingDimensionMismatch:
-			s.logger.Error("vector channel is misconfigured",
-				slog.String("error", err.Error()),
-				slog.String("embedding_model", s.embedding.ModelID()))
-			return ChannelInput{}, nil, nil, 0, err
-		}
-		return skipped("向量通道不可用："+vectorFailureReason(err), true)
+	if sem.embedErr != nil {
+		return skipped("向量通道不可用："+vectorFailureReason(sem.embedErr), true)
 	}
 
 	vectorDepth := depth * vectorOverread
 	if vectorDepth > maxVectorDepth {
 		vectorDepth = maxVectorDepth
 	}
+	// The doc type is pinned even though the profile is the older corpus: the
+	// review channel recalls restaurant-scoped documents with the same
+	// embedding, and an unpinned request would let each channel read the
+	// other's corpus the moment both run.
 	docs, err := s.knowledge.VectorSearch(ctx, store.VectorSearchRequest{
-		Scope:   evidence.ScopeRestaurant,
-		Query:   vector,
-		TopK:    vectorDepth,
-		Borough: search.CanonicalBorough(filter.Borough),
+		Scope:    evidence.ScopeRestaurant,
+		Query:    sem.vector,
+		TopK:     vectorDepth,
+		Borough:  search.CanonicalBorough(filter.Borough),
+		DocTypes: []evidence.DocType{evidence.DocTypeRestaurantProfile},
 	})
 	if err != nil {
 		// A store failure reaches here untyped -- an adapter cannot classify a
@@ -593,32 +720,14 @@ func (s *Service) vectorChannel(
 		// review inference, and the caller only learns that from the warning.
 		input.Warn = true
 	}
-	// Every hit from this channel was recalled by the same query, so when that
-	// query carried soft conditions, each of them was recalled partly for them.
-	// The reason says so once, with the topics named, rather than per candidate
-	// pretending to know which candidate matched which condition — the corpus
-	// returns documents, not per-condition verdicts.
-	softReason := describeSoftConditions(soft)
-	// The semantic half of the reason quotes the question when there is one. It
-	// does not repeat the soft words: those already appear in their own half,
-	// and a reason that says the same thing twice reads as two pieces of
-	// evidence for one fact.
-	display := truncateForReason(query)
-	if strings.TrimSpace(display) == "" {
-		display = truncateForReason(embeddingText)
-	}
 	candidates := make(map[int64]search.RestaurantCandidate, len(docs))
 	priors := make(map[int64]float64, len(docs))
 	for _, doc := range docs {
 		similarity := cosineSimilarity(doc.Distance)
-		reason := fmt.Sprintf("语义匹配“%s”（相似度 %.3f）", display, similarity)
-		if softReason != "" {
-			reason = softReason + "；" + reason
-		}
 		input.Hits = append(input.Hits, retrieval.ChannelHit{
 			RestaurantID: doc.RestaurantID,
 			Score:        similarity,
-			Reason:       reason,
+			Reason:       profileReason(sem.display, sem.softReason, similarity),
 			Detail: map[string]any{
 				"query":      query,
 				"similarity": similarity,
@@ -637,17 +746,33 @@ func (s *Service) vectorChannel(
 		// The profile document carries the name but not the address, price, or
 		// rating, and a candidate missing those is not displayable. Reading them
 		// back costs one indexed point lookup per hit, against a page of at most
-		// a few hundred rows.
+		// a few hundred rows. A failed read-back is not absorbed: the hit stays,
+		// the candidate does not join the pool, and fusion reports the id as an
+		// unknown restaurant on this channel's row -- silently ranking a
+		// candidate the UI cannot display is the bug this replaces.
 		if detail, err := s.restaurants.GetByID(ctx, doc.RestaurantID); err == nil {
 			candidate = detailAsCandidate(detail, candidate)
 			priors[doc.RestaurantID] = priorFrom(detail)
+			candidates[doc.RestaurantID] = candidate
+		} else {
+			s.logger.Debug("vector channel backfill failed",
+				slog.Int64("restaurant_id", doc.RestaurantID),
+				slog.String("error", err.Error()))
 		}
-		candidates[doc.RestaurantID] = candidate
 	}
-	// The dimension is returned rather than read back off the provider: the
-	// vector that ran is the fact worth recording, and a provider that reports a
-	// different width than it returns is exactly the case a trace should show.
-	return input, candidates, priors, len(vector), nil
+	return input, candidates, priors, nil
+}
+
+// profileReason renders the profile channel's user-facing reason: the
+// soft-condition half when one ran, then the question and the similarity. It
+// is shared with the pool rescore so a fused score and its reason always quote
+// the same number, whichever instrument produced it.
+func profileReason(display, softReason string, similarity float64) string {
+	reason := fmt.Sprintf("语义匹配“%s”（相似度 %.3f）", display, similarity)
+	if softReason != "" {
+		reason = softReason + "；" + reason
+	}
+	return reason
 }
 
 // embedQuery embeds a query, validating the result before it reaches a query.

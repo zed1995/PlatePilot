@@ -28,6 +28,7 @@ type Config struct {
 	Agent       AgentConfig
 	Embedding   sharedcfg.EmbeddingConfig
 	Retrieval   sharedcfg.RetrievalConfig
+	Review      ReviewConfig
 	Rerank      RerankConfig
 	Admin       AdminConfig
 	Reservation ReservationConfig
@@ -167,6 +168,50 @@ type RerankConfig struct {
 // Enabled reports whether a rerank provider was configured.
 func (c RerankConfig) Enabled() bool { return c.Provider != "" }
 
+// Review defaults. The similarity floor is a placeholder, not a tuned value:
+// no evaluation set has measured where the digest corpus stops matching yet,
+// which is why the comment says so instead of dressing the number up as a
+// calibration. The retrieval layer repeats it and must agree.
+const (
+	defaultRetrievalEnableReview   = true
+	defaultRetrievalWeightReview   = 0.8
+	defaultRetrievalReviewMinSim   = 0.30
+	defaultRetrievalReviewOverread = 10
+	defaultRetrievalPoolRescore    = true
+	defaultRetrievalFusionMethod   = "weighted"
+)
+
+// ReviewConfig holds the review-digest recall channel's settings.
+//
+// The channel recalls one offline digest document per restaurant with the same
+// query embedding the profile channel uses, and the two are fused as one
+// semantic family — which is why the weight and the fusion method live beside
+// it: they describe how the family's two members combine, not one channel in
+// isolation.
+type ReviewConfig struct {
+	// Enabled switches the review channel on or off. On by default: a
+	// deployment that has not built the digest corpus gets a channel that
+	// recalls nothing and says so in the trace, which is the visible way to
+	// run ahead of the data rather than a misconfiguration to hide.
+	Enabled bool
+	// Weight scales the digest channel's contribution to the fused score.
+	Weight float64
+	// MinSimilarity is the digest-similarity floor below which a hit is a
+	// non-match rather than a weak one. In [0,1]; 0 disables the gate.
+	MinSimilarity float64
+	// Overread multiplies the channel's recall depth, like the other channels'
+	// overreads.
+	Overread int
+	// PoolRescore scores the whole candidate pool with the exact cosine per
+	// doc type once fusion's pool is complete, so the fused scores come from
+	// one instrument instead of mixing approximate ANN pages with exact reads.
+	PoolRescore bool
+	// FusionMethod selects the fusion algorithm: "weighted" (family-shared
+	// min-max normalization scaled by weights) or "rrf" (weighted reciprocal
+	// rank, k=60).
+	FusionMethod string
+}
+
 // HTTPConfig holds HTTP server settings.
 type HTTPConfig struct {
 	Addr             string
@@ -248,6 +293,14 @@ func Load() (Config, error) {
 			Model:    l.String("RERANK_MODEL", ""),
 			Timeout:  l.Duration("RERANK_TIMEOUT", 3*time.Second),
 		},
+		Review: ReviewConfig{
+			Enabled:       l.Bool("RETRIEVAL_ENABLE_REVIEW", defaultRetrievalEnableReview),
+			Weight:        l.Float("RETRIEVAL_WEIGHT_REVIEW", defaultRetrievalWeightReview),
+			MinSimilarity: l.Float("RETRIEVAL_REVIEW_MIN_SIM", defaultRetrievalReviewMinSim),
+			Overread:      l.Int("RETRIEVAL_REVIEW_OVERREAD", defaultRetrievalReviewOverread),
+			PoolRescore:   l.Bool("RETRIEVAL_ENABLE_POOL_RESCORE", defaultRetrievalPoolRescore),
+			FusionMethod:  l.String("RETRIEVAL_FUSION_METHOD", defaultRetrievalFusionMethod),
+		},
 		Timeout: l.Timeout(),
 		HTTP: HTTPConfig{
 			Addr:             l.String("HTTP_ADDR", ":8080"),
@@ -314,6 +367,7 @@ func (c Config) Validate() error {
 		c.Chat.validate(),
 		c.Agent.validate(),
 		c.Retrieval.Validate(),
+		c.Review.validate(),
 		c.Rerank.validate(),
 		c.Admin.validate(),
 		c.Reservation.validate(),
@@ -442,6 +496,33 @@ func (c RerankConfig) validate() []string {
 	return nil
 }
 
+// validate checks the review channel's numbers unconditionally: the channel is
+// on by default, so an out-of-range floor or a misspelled fusion method must
+// refuse to start rather than silently gate every digest hit or fall back to a
+// method nobody chose.
+func (c ReviewConfig) validate() []string {
+	var problems []string
+	if c.Weight < 0 {
+		problems = append(problems, fmt.Sprintf(
+			"RETRIEVAL_WEIGHT_REVIEW: must be >= 0 (got %g)", c.Weight))
+	}
+	if c.MinSimilarity < 0 || c.MinSimilarity > 1 {
+		problems = append(problems, fmt.Sprintf(
+			"RETRIEVAL_REVIEW_MIN_SIM: must be in [0,1] (got %g)", c.MinSimilarity))
+	}
+	if c.Overread <= 0 {
+		problems = append(problems, fmt.Sprintf(
+			"RETRIEVAL_REVIEW_OVERREAD: must be > 0 (got %d)", c.Overread))
+	}
+	switch c.FusionMethod {
+	case "weighted", "rrf":
+	default:
+		problems = append(problems, fmt.Sprintf(
+			"RETRIEVAL_FUSION_METHOD: must be weighted or rrf (got %q)", c.FusionMethod))
+	}
+	return problems
+}
+
 // Redacted returns a copy with secrets replaced so it is safe to log.
 func (c Config) Redacted() Config {
 	c.Chat.APIKey = sharedcfg.Redact(c.Chat.APIKey)
@@ -459,52 +540,58 @@ func (c Config) Redacted() Config {
 // Summary returns a log-friendly, secret-free view of the configuration.
 func (c Config) Summary() map[string]any {
 	return map[string]any{
-		"app_env":                      c.App.Env,
-		"http_addr":                    c.HTTP.Addr,
-		"http_read_timeout":            c.HTTP.ReadTimeout.String(),
-		"http_write_timeout":           c.HTTP.WriteTimeout.String(),
-		"http_shutdown_timeout":        c.HTTP.ShutdownTimeout.String(),
-		"cors_allow_origins":           c.HTTP.CORSAllowOrigins,
-		"log_level":                    c.Log.Level,
-		"postgres_enabled":             c.Postgres.Enabled(),
-		"postgres_database":            c.Postgres.Database,
-		"chat_provider":                c.Chat.Provider,
-		"chat_model":                   c.Chat.Model,
-		"chat_model_plan":              c.Chat.PlanModel,
-		"chat_model_answer":            c.Chat.AnswerModel,
-		"chat_model_extract":           c.Chat.ExtractModel,
-		"chat_timeout":                 c.Chat.Timeout.String(),
-		"chat_max_retries":             c.Chat.MaxRetries,
-		"chat_supports_tools":          c.Chat.SupportsTools,
-		"chat_supports_parallel_tools": c.Chat.SupportsParallelTools,
-		"chat_supports_json_schema":    c.Chat.SupportsJSONSchema,
-		"chat_context_tokens":          c.Chat.ContextTokens,
-		"agent_max_tool_rounds":        c.Agent.MaxToolRounds,
-		"agent_tool_timeout":           c.Agent.ToolTimeout.String(),
-		"agent_slot_extract_timeout":   c.Agent.SlotExtractTimeout.String(),
-		"agent_max_clarifications":     c.Agent.MaxClarifications,
-		"agent_resolve_min_similarity": c.Agent.ResolveMinSimilarity,
-		"agent_resolve_ambiguity_gap":  c.Agent.ResolveAmbiguityGap,
-		"agent_memory_write_enabled":   c.Agent.MemoryWriteEnabled,
-		"agent_answer_streaming":       c.Agent.AnswerStreaming,
-		"embedding_provider":           c.Embedding.Provider,
-		"embedding_model":              c.Embedding.Model,
-		"embedding_dimensions":         c.Embedding.Dimensions,
-		"retrieval_top_k":              c.Retrieval.TopK,
-		"retrieval_enable_vector":      c.Retrieval.EnableVector,
-		"retrieval_oversample":         c.Retrieval.Oversample,
-		"weight_structured":            c.Retrieval.Weights.Structured,
-		"weight_keyword":               c.Retrieval.Weights.Keyword,
-		"weight_vector":                c.Retrieval.Weights.Vector,
-		"weight_quality":               c.Retrieval.Weights.Quality,
-		"rerank_provider":              c.Rerank.Provider,
-		"rerank_model":                 c.Rerank.Model,
-		"admin_enabled":                c.Admin.Enabled,
-		"admin_default_page_size":      c.Admin.DefaultPageSize,
-		"admin_max_page_size":          c.Admin.MaxPageSize,
-		"reservation_enabled":          c.Reservation.Enabled,
-		"reservation_hold_ttl":         c.Reservation.HoldTTL.String(),
-		"reservation_policy_version":   c.Reservation.PolicyVersion,
+		"app_env":                       c.App.Env,
+		"http_addr":                     c.HTTP.Addr,
+		"http_read_timeout":             c.HTTP.ReadTimeout.String(),
+		"http_write_timeout":            c.HTTP.WriteTimeout.String(),
+		"http_shutdown_timeout":         c.HTTP.ShutdownTimeout.String(),
+		"cors_allow_origins":            c.HTTP.CORSAllowOrigins,
+		"log_level":                     c.Log.Level,
+		"postgres_enabled":              c.Postgres.Enabled(),
+		"postgres_database":             c.Postgres.Database,
+		"chat_provider":                 c.Chat.Provider,
+		"chat_model":                    c.Chat.Model,
+		"chat_model_plan":               c.Chat.PlanModel,
+		"chat_model_answer":             c.Chat.AnswerModel,
+		"chat_model_extract":            c.Chat.ExtractModel,
+		"chat_timeout":                  c.Chat.Timeout.String(),
+		"chat_max_retries":              c.Chat.MaxRetries,
+		"chat_supports_tools":           c.Chat.SupportsTools,
+		"chat_supports_parallel_tools":  c.Chat.SupportsParallelTools,
+		"chat_supports_json_schema":     c.Chat.SupportsJSONSchema,
+		"chat_context_tokens":           c.Chat.ContextTokens,
+		"agent_max_tool_rounds":         c.Agent.MaxToolRounds,
+		"agent_tool_timeout":            c.Agent.ToolTimeout.String(),
+		"agent_slot_extract_timeout":    c.Agent.SlotExtractTimeout.String(),
+		"agent_max_clarifications":      c.Agent.MaxClarifications,
+		"agent_resolve_min_similarity":  c.Agent.ResolveMinSimilarity,
+		"agent_resolve_ambiguity_gap":   c.Agent.ResolveAmbiguityGap,
+		"agent_memory_write_enabled":    c.Agent.MemoryWriteEnabled,
+		"agent_answer_streaming":        c.Agent.AnswerStreaming,
+		"embedding_provider":            c.Embedding.Provider,
+		"embedding_model":               c.Embedding.Model,
+		"embedding_dimensions":          c.Embedding.Dimensions,
+		"retrieval_top_k":               c.Retrieval.TopK,
+		"retrieval_enable_vector":       c.Retrieval.EnableVector,
+		"retrieval_oversample":          c.Retrieval.Oversample,
+		"weight_structured":             c.Retrieval.Weights.Structured,
+		"weight_keyword":                c.Retrieval.Weights.Keyword,
+		"weight_vector":                 c.Retrieval.Weights.Vector,
+		"weight_review":                 c.Review.Weight,
+		"weight_quality":                c.Retrieval.Weights.Quality,
+		"retrieval_enable_review":       c.Review.Enabled,
+		"retrieval_review_min_sim":      c.Review.MinSimilarity,
+		"retrieval_review_overread":     c.Review.Overread,
+		"retrieval_enable_pool_rescore": c.Review.PoolRescore,
+		"retrieval_fusion_method":       c.Review.FusionMethod,
+		"rerank_provider":               c.Rerank.Provider,
+		"rerank_model":                  c.Rerank.Model,
+		"admin_enabled":                 c.Admin.Enabled,
+		"admin_default_page_size":       c.Admin.DefaultPageSize,
+		"admin_max_page_size":           c.Admin.MaxPageSize,
+		"reservation_enabled":           c.Reservation.Enabled,
+		"reservation_hold_ttl":          c.Reservation.HoldTTL.String(),
+		"reservation_policy_version":    c.Reservation.PolicyVersion,
 	}
 }
 

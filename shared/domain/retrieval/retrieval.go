@@ -24,11 +24,30 @@ const (
 	ChannelKeyword Channel = "keyword"
 	// ChannelVector matches restaurant descriptions semantically.
 	ChannelVector Channel = "vector"
+	// ChannelReview matches the offline review digest semantically. One digest
+	// per restaurant means every hit is exactly one candidate: no aggregation,
+	// no per-document dedup. Its scores share the cosine scale with
+	// ChannelVector, which is why the two are normalized as one family.
+	ChannelReview Channel = "review"
 )
 
 // AllChannels lists every channel in a stable order, so reports and tests that
 // iterate channels produce the same output every run.
-var AllChannels = []Channel{ChannelStructured, ChannelKeyword, ChannelVector}
+var AllChannels = []Channel{ChannelStructured, ChannelKeyword, ChannelVector, ChannelReview}
+
+// Channel source markers. A candidate can enter a semantic channel two ways —
+// through that channel's own ANN page (recalled), or through the pool-wide
+// exact rescore that gives structured-only candidates their semantic score
+// (rescored). The marker is kept because the two numbers are not comparable:
+// the ANN distance is an approximation, the rescore is exact, and a reader
+// comparing them across candidates is comparing different instruments.
+const (
+	// SourceRecalled marks a hit that came from the channel's own ANN page.
+	SourceRecalled = "recalled"
+	// SourceRescored marks a hit whose score was computed by the pool-wide
+	// exact rescore rather than by an ANN page.
+	SourceRescored = "rescored"
+)
 
 // ChannelHit is one candidate's raw contribution from one channel.
 //
@@ -58,6 +77,13 @@ type ChannelScore struct {
 	Normalized float64 `json:"normalized_score"`
 	Contrib    float64 `json:"contribution"`
 	Reason     string  `json:"reason,omitempty"`
+	// Source tells whether the raw score came from the channel's own ANN page
+	// (recalled) or from the pool-wide exact rescore (rescored). Empty for the
+	// channels that have only one way to produce a hit. The distinction matters
+	// because an ANN distance is an approximation and a rescore is exact; a
+	// trace that mixed them silently would let a reader compare two
+	// instruments' readings as if they were one scale.
+	Source string `json:"source,omitempty"`
 }
 
 // CandidateScore is one fused candidate with its full derivation.
@@ -106,6 +132,10 @@ type Trace struct {
 	Returned      int                     `json:"returned"`
 	TopK          int                     `json:"top_k"`
 	Filters       search.RestaurantFilter `json:"filters,omitempty"`
+	// FusionMethod records which fusion algorithm produced the ranking
+	// ("weighted" or "rrf"), so two traces produced under different
+	// configurations are comparable without guessing.
+	FusionMethod string `json:"fusion_method,omitempty"`
 	// EmbeddingModelID and QueryEmbeddingDim are recorded when the vector
 	// channel ran, so a retrieval can be tied to the model that produced it.
 	EmbeddingModelID  string `json:"embedding_model_id,omitempty"`

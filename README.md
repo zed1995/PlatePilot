@@ -60,10 +60,15 @@ satisfies all three model ports (planning, answering, interpretation); the
 agent degrades to rules when the model is absent instead of failing the turn.
 
 Milestone **M3（两级检索）** — complete. `chat-service` answers
-`POST /v1/restaurants/search` with three fused channels: hard filters run in the
-database, names and addresses match through the `pg_trgm` indexes, and an online
-embedding of the query drives a semantic channel for the soft conditions no
-filter can express. It also answers `POST /v1/restaurants/{id}/evidence` and
+`POST /v1/restaurants/search` with four fused channels: hard filters run in the
+database, names and addresses match through the `pg_trgm` indexes, and one
+shared query embedding drives two semantic channels — the restaurant's own
+profile and an offline review digest built per restaurant from the review
+corpus — fused as one family with shared normalization bounds, optionally
+rescored with the exact cosine over the whole candidate pool
+(`RETRIEVAL_ENABLE_POOL_RESCORE`, default on) and optionally ranked by weighted
+reciprocal rank (`RETRIEVAL_FUSION_METHOD=rrf`). The digest is ranking fuel,
+never a citation. It also answers `POST /v1/restaurants/{id}/evidence` and
 `POST /v1/restaurants/evidence`, which recall and assemble citable evidence for a
 named set of restaurants — the scope is a precondition, never a filter applied
 after the fact.
@@ -75,7 +80,10 @@ re-runs those numbers against a live database (and fails when the vector
 channel silently degrades, via `PLATEPILOT_REQUIRE_VECTOR=1`).
 
 Milestone **M2 (Embedding 与知识文档)** — complete. `build-documents` and `embed`
-produce 11,775 active knowledge documents over 3,000 restaurants.
+produce 11,775 active knowledge documents over 3,000 restaurants. The optional
+`build-digests` stage adds one review digest per restaurant — off by default
+because it calls a paid LLM API (`DIGEST_ENABLED=true`; `digest:rules:v1` is the
+zero-model baseline); digests enter the same embed queue and are never citable.
 
 Milestone **M1 (数据底座)** — complete on the write path. The data pipeline
 connects to PostgreSQL, applies its SQL migrations, streams the raw Google Local

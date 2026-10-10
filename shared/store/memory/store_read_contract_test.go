@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/zed1995/platepilot/shared/domain/evidence"
 	"github.com/zed1995/platepilot/shared/domain/search"
 	"github.com/zed1995/platepilot/shared/store/contract"
 	"github.com/zed1995/platepilot/shared/store/memory"
@@ -25,6 +26,34 @@ func TestMemoryReadStoresSatisfyContract(t *testing.T) {
 		return contract.ReadStores{
 			Restaurants: repo,
 			Knowledge:   memory.NewKnowledgeRepository(),
+		}
+	})
+}
+
+// TestMemoryKnowledgeReadContract runs the read-side knowledge contract — the
+// pool rescore and the digest citation boundary — against the in-memory
+// repository, so the Postgres adapter has a double to agree with.
+func TestMemoryKnowledgeReadContract(t *testing.T) {
+	contract.RunKnowledgeRead(t, func(t *testing.T) contract.KnowledgeReadHarness {
+		repo := memory.NewKnowledgeRepository()
+		next := int64(0)
+		return contract.KnowledgeReadHarness{
+			Repo: repo,
+			Seed: func(t *testing.T, docs []evidence.KnowledgeDocument) []evidence.KnowledgeDocument {
+				t.Helper()
+				stored := make([]evidence.KnowledgeDocument, len(docs))
+				for i, doc := range docs {
+					if doc.DocumentID == 0 {
+						next++
+						doc.DocumentID = next
+					}
+					stored[i] = doc
+				}
+				if err := repo.UpsertDocuments(context.Background(), stored); err != nil {
+					t.Fatalf("seed: %v", err)
+				}
+				return stored
+			},
 		}
 	})
 }

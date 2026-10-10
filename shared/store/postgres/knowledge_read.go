@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -153,8 +154,123 @@ func (r *KnowledgeReadRepository) VectorSearch(
 	return scanScoredDocuments(rows)
 }
 
-// validateVectorRequest rejects a request the store cannot execute.
+// ScorePoolByEmbedding scores the candidate pool's documents exactly.
 //
+// The statement has no ORDER BY on the distance and no LIMIT, and that absence
+// is the whole guarantee. An ordered vector query invites the planner into the
+// borough's partial HNSW index, whose approximate walk post-filters the id
+// predicate and can return fewer rows than the pool owns — the failure mode
+// the 0004 migration records. With neither an ordering the HNSW could serve
+// nor a limit to prune against, the planner is reduced to exact distance
+// computation over the joined rows, so the pool comes back complete whatever
+// the index looks like. Ordering happens in Go, where it is exact and
+// reproducible.
+func (r *KnowledgeReadRepository) ScorePoolByEmbedding(
+	ctx context.Context, req store.ScorePoolRequest,
+) ([]store.ScoredDocument, error) {
+	if err := validateScorePoolRequest(req); err != nil {
+		return nil, err
+	}
+	statement, args := buildScorePoolByEmbedding(req)
+
+	ctx, cancel := r.client.withTimeout(ctx)
+	defer cancel()
+
+	rows, err := r.client.pool.Query(ctx, statement, args...)
+	if err != nil {
+		return nil, operationError("postgres: score pool by embedding", err)
+	}
+	documents, err := scanScoredDocuments(rows)
+	if err != nil {
+		return nil, err
+	}
+	return bestPerRestaurant(documents), nil
+}
+
+// validateScorePoolRequest rejects a request the rescore cannot execute
+// faithfully. The restaurant set is refused rather than widened: an empty pool
+// that returned the whole corpus would be an ANN recall wearing a rescore's
+// name, and the caller's bounded-pool assumption is what justifies the exact
+// computation.
+func validateScorePoolRequest(req store.ScorePoolRequest) error {
+	if req.Scope != evidence.ScopeRestaurant && req.Scope != evidence.ScopeEvidence {
+		return errs.Newf(errs.CodeRetrievalNoScope,
+			"pool rescore needs an explicit retrieval scope, got %q", req.Scope)
+	}
+	if len(req.Query) == 0 {
+		return errs.New(errs.CodeInvalidArgument, "pool rescore needs a query vector")
+	}
+	if len(req.RestaurantIDs) == 0 {
+		return errs.New(errs.CodeRetrievalNoScope,
+			"pool rescore must name the restaurants it is asking about")
+	}
+	if req.DocType == "" {
+		return errs.New(errs.CodeInvalidArgument, "pool rescore needs a doc_type")
+	}
+	return nil
+}
+
+// buildScorePoolByEmbedding renders the pool rescore statement and its bound
+// arguments. The pool is materialized in a CTE and joined, so the id set is a
+// relation the planner can reason about rather than a predicate hanging off an
+// index scan; numbering follows the same discipline as buildVectorSearch.
+func buildScorePoolByEmbedding(req store.ScorePoolRequest) (string, []any) {
+	args := make([]any, 0, 4)
+	bind := func(value any) string {
+		args = append(args, value)
+		return "$" + strconv.Itoa(len(args))
+	}
+
+	ids := bind(req.RestaurantIDs)
+	// The vector goes through vectorLiteral because pgx would otherwise bind a
+	// []float32 as a Postgres array literal "{1,0,...}", which the vector type
+	// rejects — the same formatting rule buildVectorSearch follows.
+	query := bind(vectorLiteral(req.Query))
+	scope := bind(string(req.Scope))
+	docType := bind(string(req.DocType))
+
+	statement := `WITH pool AS (
+			SELECT DISTINCT unnest(` + ids + `::bigint[]) AS restaurant_id
+		)
+		SELECT ` + knowledgeColumns + `, embedding <=> ` + query + ` AS distance
+		FROM knowledge_documents
+		JOIN pool USING (restaurant_id)
+		WHERE is_active
+		  AND retrieval_scope = ` + scope + `
+		  AND doc_type = ` + docType
+	return statement, args
+}
+
+// bestPerRestaurant keeps one document per restaurant — the closest, ties
+// broken by the smaller document id — and orders the result by distance, then
+// restaurant id. The total order is what makes a re-run over the same pool
+// return the same list, which is the reproducibility rule the ranking above
+// this store depends on.
+func bestPerRestaurant(documents []store.ScoredDocument) []store.ScoredDocument {
+	best := make(map[int64]store.ScoredDocument, len(documents))
+	for _, doc := range documents {
+		if existing, ok := best[doc.RestaurantID]; ok {
+			if doc.Distance > existing.Distance ||
+				(doc.Distance == existing.Distance && doc.DocumentID >= existing.DocumentID) {
+				continue
+			}
+		}
+		best[doc.RestaurantID] = doc
+	}
+	out := make([]store.ScoredDocument, 0, len(best))
+	for _, doc := range best {
+		out = append(out, doc)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Distance != out[j].Distance {
+			return out[i].Distance < out[j].Distance
+		}
+		return out[i].RestaurantID < out[j].RestaurantID
+	})
+	return out
+}
+
+// validateVectorRequest rejects a request the store cannot execute.
 // An evidence recall without restaurants is refused rather than widened to a
 // global search. That distinction is the difference between a citation and a
 // confidently wrong one: a caller that forgot to scope its question would
