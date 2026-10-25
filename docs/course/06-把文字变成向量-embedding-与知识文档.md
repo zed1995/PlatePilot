@@ -139,8 +139,18 @@ embedding 是**完全独立的一个端口**——这是「按能力切接口」
 | `restaurant_review_summary` | evidence | 按**话题**聚出的评论摘要 | **能**（核心引用来源） |
 | `restaurant_review_digest` | restaurant | 基于评论的**整体理解**，一段散文 | **绝对不能**（排序燃料） |
 
-另外三种是 `restaurant_attributes`、`restaurant_hours`、`restaurant_representative_reviews`，
-都是 evidence scope 的细分。
+另外三种也在 evidence scope，各自装一类**记录型事实**（表里没列，是因为它们不是
+「三兄弟」，但二级召回同样会读到）：
+
+- **`restaurant_attributes`**：服务与设施标签，按「氛围 / 适合场合 / 服务 / 无障碍」
+  四组渲染，用来回答「有没有户外座位」「能不能带小孩」；
+- **`restaurant_hours`**：按周渲染的营业时间，用来回答「今天开不开门」「营业到几点」；
+- **`restaurant_representative_reviews`**：抽样出来的一整块**原文评论**（已截断、已
+  脱敏），用来回答「原话怎么说的」，也是「逐字引用」最直接的来源。
+
+这三类**没有** `topic`、也不参与餐厅排序：它们只有在一级召回已经选定「谈这几家」之后，
+才可能在二级召回里被选中。这也是 §9.2.3 那条「支撑下限」能生效的前提——候选里得真的
+有另一种文档可换。
 
 **为什么 digest 不能引用，这是本章最值得记住的一条设计。** digest 是模型**写出来**的
 一段理解性散文（下一节细讲怎么生成）。它读起来最像「一段像样的点评」，恰恰因此最危险：
@@ -249,9 +259,13 @@ commit 09985b7  refactor(digest): shorten digest prompt to 40-100 words
 > **可回溯到原文**。
 
 **第四幕：代码侧还有一道独立的门。** 除了 prompt 约束，`ValidateDigestOutput` 在代码里
-再挡一遍：长度门（150–800 runes）+ 四类正则过滤（URL / 邮箱 / 电话 / 指令覆盖）。
-为什么 digest 从不给用户看，还要过滤这些？因为**它要进 embedding 索引**——污染进了
-索引，就等于污染了所有检索。这是「在能拦的地方拦」的又一次应用。
+再挡一遍：长度门（150–800 runes）+ 四类正则（URL / 邮箱 / 电话 / 指令覆盖；具体模式与
+阈值清单见 §6.6）。为什么 digest 从不给用户看，还要过滤这些？因为**它要进 embedding
+索引**——污染进了索引，就等于污染了所有检索。
+
+这四幕的分工值得单独记一句：**prompt 是「请求模型别写」，代码门是「确认它没写」。**
+两者不能互相替代——只靠 prompt，模型总有概率不听话；只靠代码门，你会不断拒绝整份
+输出，却不知道为什么。
 
 **第五幕：缓存与失败隔离。** 重算 digest 是花钱的（要调模型），所以输入不变就跳过：
 缓存 key 检查 metadata 里的 `bundle_hash`、`prompt_version`、`generated_by`，LLM 版
@@ -263,7 +277,23 @@ commit 09985b7  refactor(digest): shorten digest prompt to 40-100 words
 
 ### 6.2.9 离线产物与在线检索的分工
 
-本章最后一块拼图，是**离线与在线的边界**：
+本章最后一块拼图，是**离线与在线的边界**。先给一张第二篇的全景图——第 5、6 章是它的
+前半段，第 7–10 章沿着后半段依次展开：
+
+```text
+① 语料      原始 gzip JSONL（3350 万条评论）                        ch5
+              └─ 流式读 → 清洗 → prefilter → 424 万行入库
+② 文档      每家店 → 六种知识文档（restaurant / evidence 两个 scope）  ch6
+              └─ content_hash 判增量 → embedding → knowledge_documents
+③ 一级召回  query / text / filter → 四通道 → 归一化 → 融合 → 池内重排  ch7–8
+              └─ 输出「谈哪几家」；digest 只在这一层当排序燃料
+④ 二级证据  这 N 家 → evidence scope 召回 → 四趟组装 → 证据包         ch9
+              └─ 输出「凭什么」；每条带 source / snapshot / 文档 id
+⑤ 答案      证据包 → 模型作答 → 引用闭包校验（第 16 章）
+⑥ 评测      手写 fixture → 六条常量门禁 → 覆盖率棘轮                 ch10
+```
+
+**①② 是离线批处理，③④⑤ 是在线请求，⑥ 是对 ③④ 的度量。** 落到部署上就是两条路：
 
 ```text
 离线（data-pipeline，批处理）：  原始语料 → 清洗 → 知识文档 → embedding → 落库
