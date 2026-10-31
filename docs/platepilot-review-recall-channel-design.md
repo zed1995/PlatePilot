@@ -175,8 +175,8 @@ DocTypeRestaurantReviewDigest DocType = "restaurant_review_digest"
 - data-pipeline 当前没有任何 chat 配置，新增**一套与在线对话模型完全独立**的
   `DIGEST_CHAT_*` 配置（在线模型归 chat-service 的 `CHAT_*`，两者不共享，
   可指向不同供应商、不同模型、不同密钥，成本与限流互不影响）：
-  - 复用 `shared/chat/openai` 客户端（OpenAI 兼容协议），digest 只用非流式
-    `Complete`，不涉及工具调用 / JSON schema 能力协商；
+  - 复用 OpenAI 兼容协议的自有客户端（现位于 `data-pipeline/internal/llm`），digest 只用
+    非流式 `Complete`，不涉及工具调用 / JSON schema 能力协商；
     密钥走既有 config 的 `Redacted()` 规范，禁止入日志；
   - 模型选型标准：长上下文（≥32k）、中文归纳稳定、指令遵循强、批处理单价低；
     **不需要** tool-calling 能力；
@@ -324,7 +324,7 @@ trace 顶层记录 `fusion_method`、权重、候选池大小。默认值是否�
 | 配置 | 说明 |
 |---|---|
 | `DIGEST_ENABLED` | 新阶段开关 |
-| `DIGEST_CHAT_BASE_URL` | digest 专用 API 端点，独立于在线 `CHAT_BASE_URL`（协议固定走 openai 兼容、复用 `shared/chat/openai`，不设 provider 变量） |
+| `DIGEST_CHAT_BASE_URL` | digest 专用 API 端点，独立于在线 `CHAT_BASE_URL`（协议固定走 openai 兼容、复用 `data-pipeline/internal/llm`，不设 provider 变量） |
 | `DIGEST_CHAT_API_KEY` | digest 专用密钥（Redacted，不进日志），独立于在线密钥 |
 | `DIGEST_CHAT_MODEL` | digest 专用模型 ID（长上下文中文归纳型，无需 tool-calling） |
 | `DIGEST_TIMEOUT` / `DIGEST_CONCURRENCY` / `DIGEST_RATE_QPS` | 单店超时、并发、限速 |
@@ -412,7 +412,7 @@ trace 顶层记录 `fusion_method`、权重、候选池大小。默认值是否�
 | `data-pipeline/internal/pipeline/knowledge/summary.go:43` | `SummarizeTopics`，digest 输入束材料 |
 | `data-pipeline/internal/pipeline/knowledge/representative.go:34` | 分层代表评论选取，digest 输入束材料 |
 | `data-pipeline/internal/pipeline/embed.go:514` | embed 双 scope 拾取与激活页（新 doc_type 自动复用） |
-| `shared/chat/chat.go:19` | `ChatProvider`（pipeline 新接入） |
+| `data-pipeline/internal/llm/llm.go:17` | `Completer` 单方法补全端口（pipeline 专用） |
 | `shared/store/postgres/migrations/0004_scope_partitioned_hnsw.sql` | 分区 HNSW，digest 复用，无需迁移 |
 | `chat-service/internal/retrieval/eval_test.go:176` | eval fixture 入口 |
 

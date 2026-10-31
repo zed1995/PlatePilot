@@ -8,6 +8,10 @@
 > `agent/answer/`、`agent/toolreg/`、`agent/slots/`）
 > 性质：**优化方案**，不是新里程碑。解决的问题都是「已交付功能的上限」，不是缺失的功能。
 > 契约：本方案不改 `/v1` 的既有语义，只增字段、增事件；破坏性变更单独列出（§2.4）。
+> 勘误注记（2026-10-31）：文内「现状证据」引用的 `answer/compose.go`、`runner.go`、
+> `einomodel/chatmodel.go`、`shared/chat/*` 等路径与行号以成稿时（2026-10-05）的仓库为准；
+> 当日两个重构（去 einomodel 适配层、`shared/chat` 收窄下沉为 `data-pipeline/internal/llm`，
+> 见 m4 任务文档附录 E.7 与 m0 附录 C）已变更其中聊天模型侧的文件与端口，功能语义未变。
 
 ---
 

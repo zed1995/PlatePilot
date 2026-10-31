@@ -1099,9 +1099,9 @@ Mock 政策随 slot 一并返回 `policy_version`，不单独提供 `get_policy`
 | 关键词检索 | `pg_trgm` GIN | 名称/地址模糊匹配与地名匹配；不引入独立搜索引擎 |
 | Schema 管理 | 版本化 SQL 迁移（`shared/store/postgres/migrations/`） | 表、索引和扩展；`make migrate` 幂等执行 |
 | Agent 工作流 | CloudWeGo Eino Graph | 状态图、节点路由、工具调用和中断 |
-| LLM 抽象 | 项目 Provider 接口 | 不绑定具体厂商；按能力描述模型 |
+| LLM 抽象 | Eino `model.BaseChatModel`（在线）/ 单方法 `Completer`（批量） | 不绑定具体厂商；工具与 JSON Schema 能力用配置断言表达 |
 | Chat 模型 | OpenAI-Compatible Chat API | 意图、槽位、规划、工具调用和回答 |
-| Chat Provider | 项目自定义 `ChatProvider` + OpenAI-Compatible Adapter | OpenRouter 等渠道仅通过配置注入 |
+| Chat Provider | eino-ext OpenAI-Compatible 模型（`internal/app` 装配）；批量侧 `data-pipeline/internal/llm` | OpenRouter 等渠道仅通过配置注入 |
 | 本地模型运行时 | Ollama | 只运行 Embedding 模型 |
 | 本地 Embedding | `qwen3-embedding:0.6b` | 中英文语义检索，1024 维 |
 | 可选模型 Adapter | OpenAI-compatible、Anthropic、Google | 通过同一 Provider 接口扩展 |
@@ -1126,7 +1126,7 @@ Mock 政策随 slot 一并返回 `policy_version`，不单独提供 `get_policy`
 - Eino Graph 用于实现显式 Agent 工作流、条件路由和人工确认中断。
 - Hertz 与 Eino 同属 CloudWeGo，HTTP 服务、中间件和 Agent 运行时可使用一致的服务治理方式。
 - 项目自己的 `conversations` 和 `conversation_checkpoints` 表仍是状态恢复的最终来源，不能完全依赖 Eino 内存状态。
-- 领域层只依赖 Chat、Tool Calling、Structured Output 和 Embedding 接口，具体厂商 SDK 只出现在 Adapter 层。
+- 领域层不认识任何厂商 SDK：在线侧通过 Eino 的模型接口调用聊天模型，批量侧通过单方法补全端口；Embedding 与 rerank 是项目自有端口，具体实现只在装配层出现。
 - 不在 MVP 使用消息队列；预约写入的最终一致性由 `reservations.idempotency_key` 唯一约束与状态机保证。
 - 不在 MVP 使用复杂实体对齐和知识图谱；先把字段和场景做丰富。
 
@@ -1134,7 +1134,7 @@ Mock 政策随 slot 一并返回 `policy_version`，不单独提供 `get_policy`
 
 Go 没有与 Python LangGraph 完全等价的“官方一站式”框架，因此采用组合方案：
 
-1. **LLM 与结构化输出**：使用项目自定义 `ChatProvider`，默认由 OpenAI-Compatible Adapter 实现，Eino 只消费该端口。
+1. **LLM 与结构化输出**：在线侧直接使用 Eino 的 `model.BaseChatModel`（eino-ext OpenAI-Compatible 实现装配于 `internal/app`，结构化输出用装配期固定的 response format 表达）；批量侧只保留一个单方法补全端口（`data-pipeline/internal/llm` 的 `Completer`）。
 2. **工作流编排**：使用 Eino Graph，或在核心状态机上实现项目自己的显式状态机。
 3. **RAG 检索**：结构化过滤、`pg_trgm` 关键词检索与 pgvector 向量召回都在 PostgreSQL 内完成，Go 层只做通道融合与可选重排（`chat-service/internal/retrieval/`）。
 4. **工具协议**：可选使用官方 MCP Go SDK。
@@ -1145,21 +1145,24 @@ Go 没有与 Python LangGraph 完全等价的“官方一站式”框架，因�
 
 ### 8.3 LLM Provider 抽象
 
-领域层不直接依赖任何厂商 SDK。建议定义以下端口：
+领域层不直接依赖任何厂商 SDK。聊天与补全能力按「在线 / 批量」两条链路各留一个口，其余 Provider 仍是项目自有端口：
+
+在线（chat-service）：节点直接面向 Eino 的模型接口，不再经过项目自定义端口。
 
 ```text
-ChatProvider
-  Stream(ctx, ChatRequest) -> ChatStream
-  Complete(ctx, ChatRequest) -> ChatResponse
+model.BaseChatModel          # Generate / Stream；PlanModel、AnswerModel、ExtractModel 各装配一个实例
+model.ToolCallingChatModel   # WithTools：runner 构造时把注册表工具绑定到规划模型
+```
 
-ToolCallingProvider
-  SupportsTools() bool
-  SupportsParallelTools() bool
-  ChatWithTools(ctx, ChatRequest, []ToolSpec) -> ToolCallResponse
+- 工具能力是配置断言（`CHAT_SUPPORTS_TOOLS`），不是接口探测：OpenAI 兼容端点无论真假都会实现 `WithTools`，接口本身回答不了这个问题。
+- 结构化输出在装配期固定：`CHAT_SUPPORTS_JSON_SCHEMA=true` 时抽取模型以 strict `json_schema` 构建，否则退化为 `json_object`，结果由调用方解析校验。
+- 模型失败的错误映射集中在 `agent/modelerr`（provider_timeout / provider_unavailable），已带项目错误码的错误原样透传。
 
-StructuredOutputProvider
-  SupportsJSONSchema() bool
-  CompleteStructured(ctx, StructuredRequest, schema) -> StructuredResponse
+批量（data-pipeline）：digest 是唯一消费者，只保留一个方法。
+
+```text
+llm.Completer（data-pipeline/internal/llm）
+  Complete(ctx, chat.ChatRequest) -> chat.ChatResponse
 
 EmbeddingProvider
   Dimensions() int
@@ -1172,28 +1175,25 @@ RerankProvider
 
 适配器：
 
-- `openai_compatible`：默认聊天、规划和工具调用 Adapter
+- `eino-ext openai`（chat-service）：在线三岗位模型，共享带重试、超时与额外请求头的 RoundTripper
+- `data-pipeline/internal/llm`（pipeline）：OpenAI 兼容非流式补全客户端，独立 `DIGEST_CHAT_*` 配置
 - `ollama_embedding`：本地 Qwen3-Embedding Adapter
-- `mock`：测试和回放 Adapter
-- `anthropic`
-- `google_genai`
-- `mock`
+- `fake`：离线测试替身
 
-公共消息、工具和结构化输出使用项目自己的 DTO，不让 Eino 或厂商类型进入数据库和领域服务。每个 Provider 暴露能力标记，路由层根据 `supports_tools`、`supports_json_schema` 和上下文长度选择模型。厂商 SDK 只允许存在于 `adapter` 层，替换模型不修改业务流程。
+消息、工具与请求/响应 DTO 仍是项目自己的（`shared/domain/chat`、`shared/domain/tool`），不让厂商类型进入数据库和领域服务。工具与 JSON Schema 能力以配置断言表达（`CHAT_SUPPORTS_TOOLS` / `CHAT_SUPPORTS_JSON_SCHEMA`），装配层据此决定绑定工具还是按无工具运行。厂商 SDK 只允许存在于装配层（`internal/app`）与批量客户端内部，替换模型不修改业务流程。
 
 ### 8.4 OpenAI-Compatible Chat Adapter
 
-远端聊天模型通过项目自己的 `OpenAICompatibleAdapter` 封装。OpenRouter 只是一个配置实例，不是领域层依赖：
+远端聊天模型通过 OpenAI 兼容协议接入。OpenRouter 只是一个配置实例，不是领域层依赖：
 
-- 使用 Hertz Client 或独立 HTTP Client，不把渠道请求结构暴露给 Agent。
+- 在线侧由 eino-ext 的 openai 模型实现装配（`chat-service/internal/app/chatmodel.go`）：规划 / 回答 / 抽取三个岗位各一个实例，模型 ID 可分别配置（`CHAT_MODEL_PLAN/ANSWER/EXTRACT`，缺省回落 `CHAT_MODEL`）。
+- 三个实例共享一个 RoundTripper：单次尝试超时（流式请求豁免）、408/429/5xx 有界重试、遵守 `Retry-After`、附加 `CHAT_EXTRA_HEADERS_JSON` 请求头（`Authorization` 除外，鉴权归 API Key）。
 - `base_url`、API Key 和模型 ID 全部由配置传入，不写死在业务代码中。
-- 默认适配 OpenAI-compatible `/chat/completions` 协议。
-- OpenRouter、vLLM、Ollama 兼容接口等都可以复用同一个 Adapter。
-- 支持 `tools` 和 `tool_calls` 映射到项目 DTO。
-- 支持 JSON Schema 结构化输出；底层模型不支持时使用校验和重试。
-- 记录模型 ID、上游 Provider、延迟、token 和估算成本。
-- 支持模型能力表，例如 `supports_tools`、`supports_json_schema`、`supports_streaming`。
-- 通过配置控制在请求失败、限流和上下文过长时的重试与切换策略。
+- OpenRouter、vLLM、Ollama 兼容接口等都可以复用同一装配。
+- `tools` / `tool_calls` 直接走 Eino 的工具绑定与 `schema.ToolCall`；JSON Schema 结构化输出由抽取模型的固定 response format 表达，底层不支持时退化为 `json_object` 并在调用方校验。
+- 记录模型 ID、上游 Provider、延迟、token 和估算成本（run 审计）。
+- 模型失败统一映射为 `provider_timeout` / `provider_unavailable`（`agent/modelerr`），重试在传输层完成，不进入节点逻辑。
+- 批量侧（digest）走 `data-pipeline/internal/llm` 的同协议客户端：非流式、独立 `DIGEST_CHAT_*` 配置、自己的重试与错误映射。
 
 典型配置：
 
@@ -1205,7 +1205,7 @@ CHAT_MODEL=<tool-capable-model-id>
 CHAT_EXTRA_HEADERS_JSON={}
 ```
 
-领域层只看到 `ChatProvider`，不关心 `CHAT_BASE_URL` 背后是 OpenRouter、vLLM、Ollama 还是其他兼容服务。OpenRouter 特有的可选请求字段放在 Adapter 的 `ProviderOptions` 中，不能扩散到业务代码。
+在线节点只看到 Eino 的模型接口，批量侧只看到单方法 `Completer`，都不关心 `CHAT_BASE_URL` 背后是 OpenRouter、vLLM 还是其他兼容服务。渠道特有的可选请求字段放在共享传输层的附加头里（`CHAT_EXTRA_HEADERS_JSON`），不能扩散到业务代码。
 
 ### 8.5 本地 Qwen Embedding
 

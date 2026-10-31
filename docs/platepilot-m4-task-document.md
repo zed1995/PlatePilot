@@ -1087,8 +1087,11 @@ chat-service 自己，两个服务复用不了（data-pipeline 仍走 `shared/ch
 | 模型失败沿用原错误码 | `TestRunnerAuditsFailedTurn` 的断言由 `internal` 改为 `provider_unavailable` | 现在所有模型错误都先过 `modelerr.Map`，未经分类的模型失败就是「模型调用失败」，比「内部错误」更准确 |
 | 测试用 `shared/testkit.MockChatProvider` 模拟三个端口 | `shared/testkit` 不引入 Eino；agent 测试改用实现 `model.ToolCallingChatModel` 的 `scriptedProvider`，app 测试在包内新增 `fakeChatModel` | `testkit` 是 shared 模块，把框架类型塞回去会破坏依赖方向 |
 
-**保持不变**：`/v1` 响应体、SSE 事件名与顺序、引用闭包规则、`shared/chat` 端口
-（data-pipeline 继续使用）、检索与证据行为。
+**保持不变**：`/v1` 响应体、SSE 事件名与顺序、引用闭包规则、检索与证据行为。
+
+> 勘误（2026-10-31）：本节原写「保持不变：`shared/chat` 端口（data-pipeline 继续使用）」。
+> 本 commit 数小时后的 `refactor(llm)`（3b21f38）即移除了 `shared/chat`——digest 是批量侧
+> 唯一消费者，收窄为 `data-pipeline/internal/llm` 的单方法 `Completer`，记录见 m0 附录 C。
 
 **验证**：
 

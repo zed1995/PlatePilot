@@ -55,8 +55,9 @@ idempotency keys so a repeated confirmation is the same booking rather than a
 second one. Long-term preferences live under `/v1/memories` with
 view/update/delete. Every turn persists a run row with tool-call records.
 
-Milestone **M4（模型接入）** — complete. An OpenAI-compatible chat client
-satisfies all three model ports (planning, answering, interpretation); the
+Milestone **M4（模型接入）** — complete. Three chat models (planning, answering,
+interpretation) are assembled as Eino `model.BaseChatModel` instances over one
+OpenAI-compatible endpoint, sharing a transport with bounded retries; the
 agent degrades to rules when the model is absent instead of failing the turn.
 
 Milestone **M3（两级检索）** — complete. `chat-service` answers

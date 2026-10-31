@@ -990,3 +990,21 @@ HTTP_ADDR=:8080
   - §7 工具与 API 边界
   - §8 技术栈（§8.3 LLM Provider 抽象、§8.4 OpenAI-Compatible Chat Adapter、§8.5 本地 Qwen Embedding）
   - §9 API 框架约定
+
+## 附录 C：实施记录
+
+### C.1 Chat Provider 端口的演进（2026-10-31）
+
+M0-05 交付的 `shared/chat` 三端口（`ChatProvider` / `ToolCallingProvider` /
+`StructuredOutputProvider`）随两个后续重构演进，本节记录最终形态，正文原计划不再回改：
+
+- `refactor(agent)`（m4 附录 E.7）：chat-service 去掉 einomodel 适配层，节点直接使用
+  Eino 的 `model.BaseChatModel`（`Generate` / `Stream`）；工具绑定改在 runner 构造时
+  用 `model.ToolCallingChatModel.WithTools` 完成，工具能力改为配置断言
+  （`CHAT_SUPPORTS_TOOLS`）；模型失败映射集中在 `agent/modelerr`。
+- `refactor(llm)`（3b21f38）：`shared/chat` 整体移除。digest 是批量侧唯一消费者，
+  收窄为 `data-pipeline/internal/llm` 的单方法 `Completer`（非流式补全，重试与
+  错误映射随迁）；`testkit.MockChatProvider` 一并移除，agent 测试改用模型接口 fake，
+  app 测试在包内新增 `fakeChatModel`。
+- 未变的部分：`EmbeddingProvider` / `RerankProvider` 端口与实现（`ollama` / `fake`）
+  保持 M0 形态；`shared/domain/chat` 的消息与请求 DTO 仍是批量侧与 HTTP 契约的词汇。

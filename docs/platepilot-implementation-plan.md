@@ -53,8 +53,8 @@
 [chat-service] HTTP / SSE
   -> Eino Agent Runtime
        -> Tool Registry
-       -> ChatProvider
-            -> OpenAICompatibleAdapter
+       -> Chat Models（model.BaseChatModel，internal/app 装配）
+            -> OpenAI-Compatible（eino-ext）+ 共享重试传输层
        -> EmbeddingProvider
             -> OllamaQwenAdapter
        -> Retrieval Service
@@ -79,7 +79,7 @@
 ### 3.1 不可破坏的设计原则
 
 - Chat API、Ollama、数据库驱动渠道类型不能进入领域层。
-- ChatProvider 和 EmbeddingProvider 是两个独立接口。
+- 聊天模型（在线走 Eino 模型接口，批量走 `data-pipeline/internal/llm` 单方法补全端口）与 Embedding 端口相互独立。
 - 餐厅召回和佐证召回必须分开。
 - `knowledge_documents` 使用 `retrieval_scope` 区分 `restaurant` 和 `evidence`。
 - 预约不是核心链路，默认排在 Agent/RAG 之后。
