@@ -297,19 +297,24 @@ result, err := runnable.Invoke(ctx, input) // 真正跑一次 turn
 Eino 类型一旦在业务代码里随处可见，换框架或升级版本就是全仓库改动。PlatePilot
 用一条 AST 架构测试把边界钉死（见 [architecture_test.go](../../chat-service/internal/agent/architecture_test.go)）：
 
-- `github.com/cloudwego/eino*` 只准出现在 `chat-service/internal/agent/` 下，
+- `github.com/cloudwego/eino*` 只准出现在 `chat-service/internal/agent/` 与
+  `chat-service/internal/app`（仅装配模型实例）下，
   测试会 walk **整个仓库**（连 data-pipeline 将來依赖 Eino 也会被抓住）；
-- 更窄的 `eino/schema` DTO（`schema.Message` 等）只准出现在两个桥接包
-  `agent/einomodel/` 与 `agent/toolreg/`——图运行时（package agent）能用
-  `compose` 和组件接口，但**节点之间传递的一律是项目自有 DTO**。
+- `internal/app` 的豁免只覆盖模型装配：它构造 eino-ext 模型并在依赖上命名
+  `model.BaseChatModel`——这是接线而非业务逻辑；图运行时（package agent）能用
+  `compose` 和组件接口，节点之间直接传递 `schema.Message`。
 
 违反时的正确反应是「代码放错了层」，而不是放宽测试——这条原则第 4 章立过。
 
 **② 适配器要薄，且双向翻译。**
-`einomodel` 负责 `schema.Message ↔ domain/chat.ChatMessage`，`toolreg` 负责
-`domain tool spec ↔ schema.ToolInfo`。所有框架类型的进出都集中在这两处，
-边界内永远说项目自己的语言。薄到什么程度？适配器里不应有业务决策——例如
-工具错误如何转成模型读得懂的文本，是注册表的职责，不藏在适配器里。
+留下来的模型/工具桥接是 `toolreg`：`domain tool spec ↔ schema.ToolInfo`。模型侧
+曾经也有一个对称的桥接包 `einomodel`（`schema.Message ↔ 项目消息 DTO` 双向翻译），
+2026-10-31 被整个删掉——它是一层无损但易错的纯搬运；删掉之后节点直接把
+`schema.Message` 交给 `Generate` / `Stream`。这段演化有个值得记住的教训：**为
+「不让框架类型越界」而生的转换层，如果自己不承载任何判断，它本身就会变成新的
+出错面**。边界要拦的是「框架类型爬进领域与存储」，不是「节点认识框架类型」。
+薄到什么程度？留下的适配器里不应有业务决策——例如工具错误如何转成模型读得懂的
+文本，是注册表的职责，不藏在适配器里。
 
 **③ 框架能力用不用，按「贴合度」而不是「有没有」决定。**
 本章出现两个克制的「不用」：不用框架托管状态（状态要跨请求存活）、不用
@@ -335,10 +340,13 @@ callback 切面（span 形状高度自定义）。反过来，Compile 校验、B
   对照 §12.3 的最小示例，逐一找出：`NewGraph` 的两个泛型参数、六个
   `AddLambdaNode`、静态 `AddEdge`、唯一一个 `AddBranch` 及其目标集合、最后的
   `g.Compile`。
-- 打开 [chatmodel.go](../../chat-service/internal/agent/einomodel/chatmodel.go)，
-  只看导出处：`Model` 实现了哪两个方法（`Generate` / `Stream`）、`WithTools`
-  如何把 `schema.ToolInfo` 翻译回项目自己的 `ToolSpec`，体会「schema 类型到此
-  为止」。
+- 打开 [runner.go](../../chat-service/internal/agent/runner.go) 的 `NewRunner`：
+  `deps.PlanModel` 如何在实现 `model.ToolCallingChatModel` 时被 `WithTools` 绑定
+  注册表工具、绑不了或配置声明不支持时如何按「无工具」运行——体会「模型接口
+  直接用，能力用配置断言」。
+- 打开 [chatmodel.go](../../chat-service/internal/app/chatmodel.go) 的
+  `retryTransport.RoundTrip`：哪些状态码可重试、流式请求为何豁免单次超时，
+  体会「传输策略住在装配层」。
 - 打开 [architecture_test.go](../../chat-service/internal/agent/architecture_test.go)，
   读懂它如何只解析 import（不编译、不依赖类型信息）就把两条边界测出来。
 
@@ -361,26 +369,31 @@ go test ./internal/agent/... -run TestEinoIsConfinedToTheAgentBoundary -count=1 
 
 ---
 
-## 12.6 两个桥接包：框架类型到这里为止
+## 12.6 框架类型的边界：桥接包与装配包
 
-在进入下一章的图全景之前，把「项目自有世界」和「Eino 世界」的交界固定下来，
-后面所有章节提到模型/工具，指的都是左列：
+在进入下一章的图全景之前，把「项目世界」和「Eino 世界」的交界固定下来。
+这条边界经历过一次演化：M4 最初在图与模型之间放了一个 einomodel 适配层
+（`schema.Message ↔ 项目消息 DTO` 的双向翻译），后来发现它是无损但易错的纯搬运，
+于 2026-10-31 移除——现在节点直接说 `schema.Message`，项目自有类型守在更外层的
+边界上（HTTP 契约、落库、工具说明、错误码）：
 
-| 边界 | 项目自有（边界内通用） | Eino（只存在于桥接包） |
+| 边界 | 项目自有（边界外） | Eino（只存在于 agent 与 app） |
 |---|---|---|
-| 消息 | `shared/domain/chat.ChatMessage` | `schema.Message` |
-| 模型端口 | `shared/chat.ChatProvider` 等 | `model.ToolCallingChatModel` |
-| 工具说明 | `shared/domain/tool.ToolSpec` | `schema.ToolInfo` / `ParamsOneOf` |
+| 消息（HTTP 契约与落库） | `domainchat.ChatMessage` / `conversation.Message` | 图内 transcript 直接是 `schema.Message` |
+| 模型实例 | 装配期在 `internal/app/chatmodel.go` 构造 | `model.BaseChatModel` 的 Generate / Stream / WithTools |
+| 模型错误 → 项目错误码 | `agent/modelerr.Map` | 框架与 HTTP 世界的错误类型 |
+| 工具说明 | `toolreg.Registry`（项目工具与 JSON Schema） | `schema.ToolInfo` / `ParamsOneOf` |
 | 工具执行 | `toolreg.Registry.Invoke` | `tool.InvokableTool.InvokableRun` |
 
-- **einomodel 包**：`Model.Generate` 把 domain 请求翻译给 `ChatProvider`，
-  响应翻回 `schema.Message`；`Stream` 用 `schema.Pipe` 泵块；还导出
-  `ToEinoMessages / FromEinoMessage / EinoFinishReason / EinoUsage` 供节点在
-  跨越模型边界的**那一行**使用。
 - **toolreg 包**：`toolInfo` 把项目 JSON Schema 经 `eino-contrib/jsonschema`
   转成 `schema.ToolInfo`（`NewParamsOneOfByJSONSchema`）；`einoTool` 实现
   `InvokableRun`——它内部其实直接回调 `Registry.Invoke`，工具错误以 tool
   content 回给模型而不是让图崩掉。
+- **app 的模型装配**：`chatmodel.go` 用 eino-ext 为三个岗位（规划 / 回答 / 抽取）
+  各建一个模型实例，共享带重试与超时的传输层；这是 Eino 类型唯一被允许出现在
+  `internal/agent` 之外的地方，架构测试为此开了「仅装配」的口子（§12.4①）。
+- **模型失败的翻译**：节点拿到的错误先过 `agent/modelerr.Map`，框架与 HTTP
+  世界的错误词汇在这里换成项目错误码（provider_timeout / provider_unavailable）。
 
 一个细节值得注意：图运行时**并没有用 Eino 的 ToolsNode 自动执行工具**。
 `einoTool` 适配器存在并被独立测试，但真实图里 tools 节点是项目自己的
@@ -408,13 +421,16 @@ ToolsNode 给不了的调度纪律（第 14 章）。**框架给了默认执行�
   `NewGraphBranch[*TurnState]` 与目标集合、`g.Compile`）；`NewRunner` 中
   编译失败即构造失败。
 
-**两个唯一允许碰 Eino DTO 的桥接包**
+**模型与工具的边界（桥接 + 装配）**
 
-- [chat-service/internal/agent/einomodel/chatmodel.go](../../chat-service/internal/agent/einomodel/chatmodel.go)：
-  `Model`（实现 `model.ToolCallingChatModel`）、`Generate` / `Stream`（
-  `schema.Pipe[*schema.Message]`）、`WithTools`（ToolInfo → 项目 ToolSpec）、
-  `toDomainMessages` / `toEinoMessage` / `chunkToMessage`、包注释「one of the
-  only two packages allowed to name Eino types」。
+- [chat-service/internal/app/chatmodel.go](../../chat-service/internal/app/chatmodel.go)：
+  `buildChatModels`（eino-ext 三实例 + 共享 `retryTransport`）、
+  `extractionResponseFormat`（strict json_schema / json_object 两档）、
+  `retryTransport.RoundTrip`（可重试状态码、`Retry-After`、流式豁免超时）——
+  Eino 类型在 `internal/agent` 之外唯一被允许出现的地方。
+- [chat-service/internal/agent/modelerr/modelerr.go](../../chat-service/internal/agent/modelerr/modelerr.go)：
+  `Map` 把模型失败翻译成 provider_timeout / provider_unavailable，
+  已带项目错误码的错误与调用方取消原样透传。
 - [chat-service/internal/agent/toolreg/einotool.go](../../chat-service/internal/agent/toolreg/einotool.go)：
   `EinoTools` / `ToolInfos`、`toolInfo`（`NewParamsOneOfByJSONSchema`）、
   `einoTool.Info` / `einoTool.InvokableRun`（回调 `Registry.Invoke`）。
@@ -423,7 +439,7 @@ ToolsNode 给不了的调度纪律（第 14 章）。**框架给了默认执行�
 
 - [chat-service/internal/agent/architecture_test.go](../../chat-service/internal/agent/architecture_test.go)：
   `TestEinoIsConfinedToTheAgentBoundary`——walk 整个仓库；eino 仅限
-  `internal/agent/`，`eino/schema` 仅限 `einomodel/` 与 `toolreg/`。
+  `internal/agent/` 与 `internal/app`（仅装配模型实例）。
 - 对照第 4 章：[shared/domain/architecture_test.go](../../shared/domain/architecture_test.go)
   （domain 不允许出现任何具体技术词）。
 

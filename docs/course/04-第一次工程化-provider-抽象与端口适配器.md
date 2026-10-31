@@ -3,6 +3,11 @@
 > 上一章：[第 3 章 一个 for 循环](03-一个-for-循环就是你的第一个-agent.md) ｜ 第一篇完 ｜ 下一篇：第 5 章 数据从哪里来
 >
 > 本章涉及的仓库真实文件、函数与实测数字集中在文末 [§4.11 参考代码与目录](#411-参考代码与目录)。
+>
+> **版本注记（2026-10-31）**：本章讲的是 M0 立地基时的端口设计。此后聊天端口随两个重构演进：
+> 在线侧（chat-service）改为直接面向 Eino 的模型接口（第 12 章详述这段演化），批量侧收窄为
+> `data-pipeline/internal/llm` 的单方法补全端口。本章的**概念与纪律**——依赖倒置、端口与适配器、
+> 能力配置化、边界测试——没有任何变化；聊天端口的现状以 §4.11 与第 12 章为准。
 
 ---
 
@@ -64,9 +69,11 @@ type ToolCallingProvider interface {
   **永远无法**被改成发起工具调用——不是靠约定，是靠类型。
 - **测试替身极好写。** 模拟一个单方法接口，比模拟一个上帝对象便宜得多。
 
-PlatePilot 里，聊天能力被切成「普通补全 / 工具调用 / 结构化输出」三个端口；
+M0 时的 PlatePilot，正是把聊天能力切成了「普通补全 / 工具调用 / 结构化输出」三个端口；
 而 embedding 是**另一个完全独立的端口**——聊天模型和 embedding 模型独立选型、
-独立部署（一个远端、一个本地），把它们绑进同一个接口才是怪事。
+独立部署（一个远端、一个本地），把它们绑进同一个接口才是怪事。（聊天端口后来随
+重构演进：在线侧由 Eino 的模型接口取代，批量侧收窄成单方法端口——见 §4.11 版本注记
+与第 12 章。但「按能力切分、embedding 独立」这条判断至今成立。）
 
 ---
 
@@ -95,7 +102,9 @@ PlatePilot 里，聊天能力被切成「普通补全 / 工具调用 / 结构化
 一个端口如果只有一个实现，那它还只是「预留的语法」，不是真正的可替换——你永远
 不知道这个接口的抽象是否合适，因为没有第二个实现来检验它。PlatePilot 的做法是：
 **每个端口都真的有至少两个实现**（一个生产、一个离线替身），而且**跑同一套测试**。
-这条纪律会在 §4.6 兑现。
+这条纪律会在 §4.6 兑现。（聊天侧后来的重构恰好是个印证：端口从项目自定义换成
+Eino 的模型接口时，「一个生产实现 + 测试包内的接口 fake」这个结构原样跟着搬了——
+纪律没变，变的只是接口由谁定义。）
 
 ---
 
@@ -224,8 +233,11 @@ NaN/Inf 全部在客户端就报错，否则它们会一路流到数据库，变
   LLM 编排框架、任何厂商 SDK 出现即失败；
 - **连词汇都不许提**：更严格的一条，源码与**注释**里出现 `postgres` / `pgvector` /
   `sql` 这类存储词汇也算失败。因为「存储词汇」正是后端技术一点点爬回领域层的路径。
-- **框架不得越界**：Agent 编排框架的类型只许出现在少数几个桥接包里，图运行时可以用它，
-  但**节点之间传递的必须是项目自有 DTO**；服务之间也禁止互相 import。
+- **框架不得越界**：Agent 编排框架（Eino）的类型只许出现在 `internal/agent` 下，
+  唯一的例外是装配包 `internal/app`（它构造具体模型实例）；服务之间也禁止互相 import。
+  （M4 最初连节点之间也只许传项目自有 DTO、框架类型锁死在两个桥接包；后来发现那层
+  转换是纯搬运，边界改为「Eino 不出 agent 与 app」，节点直接说 `schema.Message`——
+  第 12 章讲这段演化。）
 
 PlatePilot 把这三类边界都写成了测试（第 20 章的 run 审计、第 12 章的 Eino 抽象会反复
 回到它们）。配套的纪律是一条心态：
@@ -280,8 +292,9 @@ PlatePilot 把这三类边界都写成了测试（第 20 章的 run 审计、第
 **跑（全部离线、不花一分钱）**
 
 ```bash
-cd shared
-go test ./chat/openai/...   # 用 httptest 模拟 429/5xx/200-error，验证重试与分类
+cd data-pipeline
+go test ./internal/llm/...  # 用 httptest 模拟 429/5xx/200-error，验证重试与分类
+cd ../shared
 go test ./domain/ -run 'TestDomainLayer' -v
 go test ./embedding/...
 cd ../chat-service
@@ -307,34 +320,38 @@ go test ./internal/agent/ -run TestEinoIsConfinedToTheAgentBoundary -v
 
 **端口（业务定义的接口）**
 
-- [shared/chat/chat.go](../../shared/chat/chat.go)：`ChatProvider`（普通补全 / 流式）、
-  `ToolCallingProvider`、`StructuredOutputProvider` 三个聊天端口；`ChatMessage`、
-  `ToolCall`、`ChatChunk` 等 DTO 全部不含厂商词汇。
 - [shared/embedding/embedding.go](../../shared/embedding/embedding.go)：独立的 embedding 端口。
 - `shared/rerank`：预留空实现的重排端口（第 8、24 章再谈）。
+- 聊天侧的「端口」如今由框架与批量客户端承担：在线侧是 Eino 的
+  `model.BaseChatModel` / `model.ToolCallingChatModel`（`chat-service/go.mod` 引入），
+  批量侧是 [data-pipeline/internal/llm/llm.go](../../data-pipeline/internal/llm/llm.go)
+  的单方法 `Completer`。M0 时代项目自定义的 `ChatProvider` 三端口已于 2026-10-31 移除
+  （m0 附录 C 记录了这段演进）；`shared/domain/chat` 的请求/响应 DTO 仍是两条链路共用的词汇。
 
 **协议与适配器**
 
-- [shared/chat/openai/types.go](../../shared/chat/openai/types.go)：文件开头定义唯一的端点常量
-  `chatCompletionsPath = "/chat/completions"`（约第 17 行）；`completionRequest` 等 wire 类型
-  **包内不导出**，目的是让包外构造不出厂商载荷；`functionArguments` 负责「JSON 字符串信封」往返。
-- [shared/chat/openai/client.go](../../shared/chat/openai/client.go)：三个聊天端口的唯一生产实现；
-  开头用 `var _ Interface = (*Impl)(nil)` 编译期断言自证身份；重试分类（仅 429/408/5xx/传输错误
-  可重试）、首帧前重试、200+body-error 识别都在这里。默认单次 60s 超时、首调之外再试 2 次
-  （`DefaultMaxRetries=2`）。
-- [shared/chat/openai/capabilities.go](../../shared/chat/openai/capabilities.go)：能力表
-  （`Tools` / `ParallelTools` / `JSONSchema` / `Streaming` / `ContextTokens`，默认窗口 32768）。
-- [shared/chat/openai/mapping.go](../../shared/chat/openai/mapping.go)：领域 DTO ↔ wire 类型双向映射。
+- [data-pipeline/internal/llm/client.go](../../data-pipeline/internal/llm/client.go)：
+  OpenAI 兼容协议的批量侧实现；文件顶部是唯一的端点常量 `chatCompletionsPath`，
+  wire 类型包内不导出；重试分类（仅 429/408/5xx/传输错误可重试）、`Retry-After` 遵守、
+  200+body-error 识别都在这里。默认单次 60s 超时、首调之外再试 2 次（`DefaultMaxRetries=2`）。
+- [data-pipeline/internal/llm/mapping.go](../../data-pipeline/internal/llm/mapping.go)：
+  领域 DTO ↔ wire 类型双向映射，含「JSON 字符串信封」的往返。
+- [chat-service/internal/app/chatmodel.go](../../chat-service/internal/app/chatmodel.go)：
+  在线侧装配——用 eino-ext 的 openai 模型为规划 / 回答 / 抽取三个岗位各建一个实例，
+  共享一个 `retryTransport`（单次尝试超时、流式豁免、有界重试、`Retry-After`、附加请求头），
+  抽取模型的 response format 在这里按 `CHAT_SUPPORTS_JSON_SCHEMA` 固定。
 - [shared/embedding/ollama/client.go](../../shared/embedding/ollama/client.go)：embedding 适配器，
   POST `/api/embed`、30s 超时、3 次重试、返回向量逐个校验。
 
 **测试替身与契约**
 
-- [shared/testkit/mock_provider.go](../../shared/testkit/mock_provider.go)：`MockChatProvider`，
-  可设置下次返回（`Response` / `ToolResponse` / `StructuredResponse` / `Chunks` / `Err`），
-  并记录收到的请求；同时满足三个聊天端口。
 - [shared/embedding/fake/fake.go](../../shared/embedding/fake/fake.go)：确定性 embedding，
   向量是输入的纯函数，默认宽度 1024，提供 `Failing(err)` 练习失败路径。
+- 聊天侧的模型 fake 不进 `shared/testkit`（那是 shared 模块，不能引 Eino）：
+  agent 测试用 [runner_test.go](../../chat-service/internal/agent/runner_test.go) 的
+  `scriptedProvider`（实现 `model.ToolCallingChatModel`，严格按序弹出、未编排调用大声失败），
+  app 测试用 [fake_model_test.go](../../chat-service/internal/app/fake_model_test.go) 的
+  `fakeChatModel`（队列驱动，未排响应即报错）。
 - [shared/store/contract/](../../shared/store/contract/)：内存与 Postgres 适配器共用的行为契约。
 
 **架构边界测试**
@@ -345,15 +362,16 @@ go test ./internal/agent/ -run TestEinoIsConfinedToTheAgentBoundary -v
   `TestServicesDoNotDependOnEachOther`（两服务禁止互相 import）。
 - [chat-service/internal/agent/architecture_test.go](../../chat-service/internal/agent/architecture_test.go)：
   `TestEinoIsConfinedToTheAgentBoundary`——Eino 只许出现在 `internal/agent` 下，
-  其 `schema` DTO 进一步只许出现在 `agent/einomodel` 与 `agent/toolreg` 两个桥接包。
+  唯一例外是装配包 `internal/app`（构造模型实例）；它 walk 整个仓库，
+  连 data-pipeline 将来依赖 Eino 也会被抓住。
 - [chat-service/internal/admin/architecture_test.go](../../chat-service/internal/admin/architecture_test.go)：
   admin 应用层禁止 import 具体 postgres 适配器，只能面向仓储端口。
 
 **装配与配置**
 
 - [chat-service/internal/app/app.go](../../chat-service/internal/app/app.go)：全服务唯一装配具体实现的包；
-  `buildChatClient` 把配置映射成适配器参数，`buildEmbedding` 在 ollama 与 fake 之间切换；
-  chat provider 的「配置了却构建失败即启动失败」逻辑在这里。
+  `buildChatModels` 把配置映射成三个模型实例（§4.8 的「配置了却构建失败即启动失败」在这里），
+  `buildEmbedding` 在 ollama 与 fake 之间切换。
 - [chat-service/internal/config/config.go](../../chat-service/internal/config/config.go)：
   `Load()` / `Validate()` / `Redacted()`；`ChatConfig.Enabled()` 就是 `Provider != ""`。
 

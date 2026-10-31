@@ -21,7 +21,9 @@
 scripted provider: no more ChatWithTools responses queued
 ```
 
-——"脚本 provider：没有更多 ChatWithTools 响应排在那里了。"
+——"脚本 provider：没有更多 ChatWithTools 响应排在那里了。"（引文出自当年的测试假体；
+2026-10-31 起假体重写为模型接口 fake，同样的错误今天读作
+`scripted provider: no more tool responses queued`——§21.8 复现时看到的就是新文案。）
 
 这句话本身不像一个业务错误，倒像测试脚手架坏了。但那次不是脚手架坏了：它是第 18 章那条
 **确认门**在真实图上暴露出的一个缺陷。项目的 M5 实施记录里把它写成了完整的一条（逐字引其结论）：
@@ -590,7 +592,8 @@ Agent 侧同样的路要走，但**先把门禁立起来**比先堆用例数更�
 
 3. **制造一次"多出来的调用"（复现 21.1）**：把某条用例的 `script` 删掉最后一个 `say` 步骤，
    或加一个用不到的 `call`。重跑，看会发生什么——**这正是那个真实缺陷当年暴露的方式**：
-   队列空了，`scripted provider: no more ChatWithTools responses queued` 顶出来。
+   队列空了，`scripted provider: no more tool responses queued` 顶出来
+   （21.1 引的是重构前旧文案，今天看到的是这一条）。
 
 4. **看两条回答路径的对照**：单独跑 `TestTheStreamedConfigurationReallyStreams`：
 
@@ -674,12 +677,16 @@ Agent 侧同样的路要走，但**先把门禁立起来**比先堆用例数更�
 **scripted provider（离线、确定性的地基）**
 
 - `chat-service/internal/agent/runner_test.go`：`scriptedProvider` 定义与注释
-  （**队列驱动、严格按序弹出、做没编排的调用就大声失败**）、`toolCallReq`、
+  （**实现 `model.ToolCallingChatModel`；队列驱动、严格按序弹出、做没编排的调用就大声失败**）、
+  `WithTools` 返回的 `boundProvider` 视图（**带工具的调用吃工具队列、不带工具的回落补全队列**）、
+  `extractor` 视图（槽位抽取专用队列）、`toolCallReq`、
   `Complete`（`completeDelay` = 同一份解码成本）、`Stream`（`chunkDelay`、无 streamed script 时
-  整段降级为一个 chunk）、`SupportsTools` / `SupportsParallelTools`、`ChatWithTools`、`scriptedStream`。
+  整段降级为一个 chunk）、`supportTools`（配置声明不支持工具时，带工具的调用直接报错）。
 - `chat-service/internal/agent/model_routing_test.go`：
-  `TestThePlannerAndTheComposerUseDifferentModels`（`ModelName` = `vendor/planner`、
-  `AnswerModel` = `vendor/writer`）、`TestAnUnsetAnswerModelFollowsThePlanModel`。
+  `TestThePlannerAndTheComposerUseDifferentModels`（两个独立命名的模型实例
+  `planner` / `writer` 走 `Deps.PlanModel` / `Deps.AnswerModel`）、
+  `TestAnUnsetAnswerModelFollowsThePlanModel`（未设即跟随）——**断言的是"哪个实例被
+  哪个岗位到达"，因为实例自带身份、请求上不再带模型名**。
 
 **回放与多模型比较**
 
