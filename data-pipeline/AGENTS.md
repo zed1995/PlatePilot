@@ -37,6 +37,7 @@ make build           # ./bin/data-pipeline
 |---|---|
 | `main.go` | 命令行表面（flag 解析、子命令分派） |
 | `internal/config` | 本 pipeline 的环境变量面 |
+| `internal/llm` | 批量侧的 OpenAI 兼容补全客户端（单方法 `Completer`、重试、错误映射） |
 | `internal/pipeline` | 阶段编排（import / migrate / documents / embed / prefilter / progress） |
 | `internal/pipeline/raw` | gzip JSONL 流式读取 + 原始 schema |
 | `internal/pipeline/curate` | **纯函数**：归一化、PII 脱敏、去重、价格/时段/菜系、统计、打分、行政区边界 |

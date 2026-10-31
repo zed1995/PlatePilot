@@ -1,8 +1,7 @@
-package openai
+package llm
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -12,7 +11,6 @@ import (
 
 	"github.com/zed1995/platepilot/shared/domain/chat"
 	"github.com/zed1995/platepilot/shared/domain/errs"
-	"github.com/zed1995/platepilot/shared/domain/tool"
 )
 
 const successBody = `{
@@ -29,10 +27,6 @@ func TestNewValidatesOptions(t *testing.T) {
 		func(o Options) Options { o.Model = ""; return o },
 		func(o Options) Options { o.BaseURL = "ftp://nope"; return o },
 		func(o Options) Options { o.MaxRetries = -1; return o },
-		func(o Options) Options {
-			o.Capabilities.ContextTokens = -1
-			return o
-		},
 	}
 	base := Options{BaseURL: "https://x.example/v1", APIKey: "k", Model: "m"}
 	for i, mutate := range cases {
@@ -75,8 +69,12 @@ func TestCompleteRequestShapeAndResponseMapping(t *testing.T) {
 	if gotBody["model"] != "vendor/test-model" {
 		t.Errorf("body model = %v", gotBody["model"])
 	}
-	if stream, present := gotBody["stream"]; present && stream != false {
-		t.Errorf("unary request must not request streaming, got %v", stream)
+	if stream, present := gotBody["stream"]; present {
+		t.Errorf("unary request must not carry a stream field, got %v", stream)
+	}
+	msgs := gotBody["messages"].([]any)
+	if len(msgs) != 1 || msgs[0].(map[string]any)["content"] != "hi" {
+		t.Errorf("messages mapping wrong: %v", msgs)
 	}
 }
 
@@ -95,111 +93,6 @@ func TestPerRequestModelOverridesDefault(t *testing.T) {
 	}
 	if body["model"] != "vendor/other-model" {
 		t.Errorf("model override = %v", body["model"])
-	}
-}
-
-func TestChatWithToolsSerializesAndMapsToolCalls(t *testing.T) {
-	var body map[string]any
-	const toolBody = `{
-	  "model": "vendor/test-model",
-	  "choices": [{"index": 0, "message": {"role": "assistant", "content": null,
-	    "tool_calls": [{"id": "call_9", "type": "function",
-	      "function": {"name": "search_restaurants", "arguments": "{\"borough\":\"manhattan\",\"top_k\":3}"}}]},
-	    "finish_reason": "tool_calls"}],
-	  "usage": {"prompt_tokens": 20, "completion_tokens": 5, "total_tokens": 25}
-	}`
-	c := newOfflineClient(t, roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-		body = decodeRequest(t, r)
-		return jsonResponse(http.StatusOK, toolBody), nil
-	}))
-
-	resp, err := c.ChatWithTools(context.Background(),
-		chat.ChatRequest{Messages: []chat.ChatMessage{{Role: chat.RoleUser, Content: "find dinner"}}},
-		[]tool.ToolSpec{{
-			Name:        "search_restaurants",
-			Description: "find restaurants",
-			Parameters:  json.RawMessage(`{"type":"object","properties":{"borough":{"type":"string"}}}`),
-		}})
-	if err != nil {
-		t.Fatalf("ChatWithTools: %v", err)
-	}
-	if resp.FinishReason != chat.FinishReasonToolCalls || len(resp.Message.ToolCalls) != 1 {
-		t.Fatalf("response = %+v", resp)
-	}
-	tc := resp.Message.ToolCalls[0]
-	if tc.ID != "call_9" || tc.Name != "search_restaurants" ||
-		string(tc.Arguments) != `{"borough":"manhattan","top_k":3}` {
-		t.Errorf("tool call mapping: %+v", tc)
-	}
-
-	tools := body["tools"].([]any)
-	fn := tools[0].(map[string]any)["function"].(map[string]any)
-	if fn["name"] != "search_restaurants" || body["tool_choice"] != "auto" {
-		t.Errorf("request tools/choice wrong: %v", body)
-	}
-	// Parallel calls default off.
-	if body["parallel_tool_calls"] != false {
-		t.Errorf("parallel_tool_calls = %v, want false", body["parallel_tool_calls"])
-	}
-}
-
-func TestParallelToolsFlag(t *testing.T) {
-	caps := DefaultCapabilities()
-	caps.ParallelTools = true
-	c, err := New(Options{
-		BaseURL:      "https://x.example/v1",
-		APIKey:       "k",
-		Model:        "m",
-		Capabilities: caps,
-		HTTPClient: &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-			return jsonResponse(http.StatusOK, successBody), nil
-		})},
-	})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	var body map[string]any
-	rt := roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-		body = decodeRequest(t, r)
-		return jsonResponse(http.StatusOK, successBody), nil
-	})
-	c.unaryHTTP = &http.Client{Transport: rt}
-	_, err = c.ChatWithTools(context.Background(),
-		chat.ChatRequest{Messages: []chat.ChatMessage{{Role: chat.RoleUser, Content: "x"}}},
-		[]tool.ToolSpec{{Name: "t"}})
-	if err != nil {
-		t.Fatalf("ChatWithTools: %v", err)
-	}
-	if _, present := body["parallel_tool_calls"]; present {
-		t.Errorf("parallel_tool_calls should be omitted when enabled, got %v", body["parallel_tool_calls"])
-	}
-}
-
-func TestCapabilityRejectsToolsWithoutHTTP(t *testing.T) {
-	var calls atomic.Int64
-	caps := DefaultCapabilities()
-	caps.Tools = false
-	c, err := New(Options{
-		BaseURL:      "https://x.example/v1",
-		APIKey:       "k",
-		Model:        "m",
-		Capabilities: caps,
-		HTTPClient: &http.Client{Transport: countingTransport(&calls, func(*http.Request) (*http.Response, error) {
-			t.Error("no HTTP request must be made when tools are unsupported")
-			return nil, nil
-		})},
-	})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	_, err = c.ChatWithTools(context.Background(),
-		chat.ChatRequest{Messages: []chat.ChatMessage{{Role: chat.RoleUser, Content: "x"}}},
-		[]tool.ToolSpec{{Name: "t"}})
-	if err == nil || errs.CodeOf(err) != errs.CodeInvalidArgument {
-		t.Fatalf("want invalid_argument, got %v", err)
-	}
-	if calls.Load() != 0 {
-		t.Errorf("transport called %d times", calls.Load())
 	}
 }
 
@@ -404,152 +297,5 @@ func TestCancelledContextIsNotRetried(t *testing.T) {
 	}
 	if calls.Load() != 1 {
 		t.Errorf("cancelled request retried %d times", calls.Load())
-	}
-}
-
-func TestProviderOptionsExtraBodyAndHeaders(t *testing.T) {
-	var req *http.Request
-	var body map[string]any
-	c := newOfflineClient(t, roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-		req = r
-		body = decodeRequest(t, r)
-		return jsonResponse(http.StatusOK, successBody), nil
-	}))
-	_, err := c.Complete(context.Background(), chat.ChatRequest{
-		Messages: []chat.ChatMessage{{Role: chat.RoleUser, Content: "hi"}},
-		ProviderOptions: map[string]any{
-			"extra_body":    map[string]any{"provider": map[string]any{"allow_fallbacks": false}},
-			"extra_headers": map[string]string{"X-Title": "PlatePilot", "Authorization": "Bearer hijack"},
-			"ignored_key":   42,
-		},
-	})
-	if err != nil {
-		t.Fatalf("Complete: %v", err)
-	}
-	if req.Header.Get("X-Title") != "PlatePilot" {
-		t.Errorf("X-Title = %q", req.Header.Get("X-Title"))
-	}
-	if req.Header.Get("Authorization") != "Bearer test-key" {
-		t.Errorf("Authorization must not be overridable, got %q", req.Header.Get("Authorization"))
-	}
-	if body["provider"] == nil {
-		t.Errorf("extra_body not merged: %v", body)
-	}
-	if _, present := body["ignored_key"]; present {
-		t.Errorf("unknown provider option leaked into body")
-	}
-}
-
-func TestCompleteStructuredStrictSchema(t *testing.T) {
-	var body map[string]any
-	c := newOfflineClient(t, roundTripperFunc(func(r *http.Request) (*http.Response, error) {
-		body = decodeRequest(t, r)
-		return jsonResponse(http.StatusOK, `{
-		  "model": "vendor/test-model",
-		  "choices": [{"message": {"role":"assistant","content":"{\"intent\":\"search\"}"}, "finish_reason": "stop"}],
-		  "usage": {"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10}
-		}`), nil
-	}))
-	resp, err := c.CompleteStructured(context.Background(),
-		chat.StructuredRequest{Messages: []chat.ChatMessage{{Role: chat.RoleUser, Content: "classify"}}},
-		json.RawMessage(`{"type":"object","properties":{"intent":{"type":"string"}}}`))
-	if err != nil {
-		t.Fatalf("CompleteStructured: %v", err)
-	}
-	if resp.Content != `{"intent":"search"}` {
-		t.Errorf("content = %q", resp.Content)
-	}
-	rf := body["response_format"].(map[string]any)
-	if rf["type"] != "json_schema" {
-		t.Errorf("response_format = %v", rf)
-	}
-}
-
-func TestCompleteStructuredFallbackModeRetriesOnce(t *testing.T) {
-	var calls atomic.Int64
-	var lastBody map[string]any
-	caps := DefaultCapabilities() // JSONSchema false → fallback mode
-	c, err := New(Options{
-		BaseURL:      "https://x.example/v1",
-		APIKey:       "k",
-		Model:        "m",
-		Capabilities: caps,
-		Timeout:      5 * time.Second,
-		HTTPClient: &http.Client{Transport: countingTransport(&calls, func(r *http.Request) (*http.Response, error) {
-			lastBody = decodeRequest(t, r)
-			if calls.Load() == 1 {
-				return jsonResponse(http.StatusOK, `{
-				  "choices": [{"message": {"role":"assistant","content":"sure, the answer is..."}, "finish_reason":"stop"}]}`,
-				), nil
-			}
-			return jsonResponse(http.StatusOK, `{
-			  "choices": [{"message": {"role":"assistant","content":"{\"intent\":\"small_talk\"}"}, "finish_reason":"stop"}]}`,
-			), nil
-		})},
-		Sleep: noSleep,
-	})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	resp, err := c.CompleteStructured(context.Background(),
-		chat.StructuredRequest{Messages: []chat.ChatMessage{{Role: chat.RoleUser, Content: "classify"}}},
-		json.RawMessage(`{"type":"object"}`))
-	if err != nil {
-		t.Fatalf("CompleteStructured: %v", err)
-	}
-	if calls.Load() != 2 {
-		t.Errorf("calls = %d, want corrective retry", calls.Load())
-	}
-	if resp.Content != `{"intent":"small_talk"}` {
-		t.Errorf("content = %q", resp.Content)
-	}
-	rf := lastBody["response_format"].(map[string]any)
-	if rf["type"] != "json_object" {
-		t.Errorf("fallback response_format = %v", rf)
-	}
-	msgs := lastBody["messages"].([]any)
-	last := msgs[len(msgs)-1].(map[string]any)
-	if last["role"] != "system" || !strings.Contains(last["content"].(string), "JSON Schema") {
-		t.Errorf("schema instruction missing: %v", last)
-	}
-}
-
-func TestCompleteStructuredFailsAfterTwoInvalidBodies(t *testing.T) {
-	caps := DefaultCapabilities()
-	c, err := New(Options{
-		BaseURL:      "https://x.example/v1",
-		APIKey:       "k",
-		Model:        "m",
-		Capabilities: caps,
-		HTTPClient: &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
-			return jsonResponse(http.StatusOK, `{
-			  "choices": [{"message": {"role":"assistant","content":"still prose"}, "finish_reason":"stop"}]}`), nil
-		})},
-		Sleep: noSleep,
-	})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	_, err = c.CompleteStructured(context.Background(),
-		chat.StructuredRequest{Messages: []chat.ChatMessage{{Role: chat.RoleUser, Content: "classify"}}},
-		json.RawMessage(`{"type":"object"}`))
-	if err == nil || errs.CodeOf(err) != errs.CodeValidationFailed {
-		t.Fatalf("want validation_failed after retry, got %v", err)
-	}
-}
-
-func TestMalformedToolArgumentsRejected(t *testing.T) {
-	c := newOfflineClient(t, roundTripperFunc(func(*http.Request) (*http.Response, error) {
-		return jsonResponse(http.StatusOK, `{
-		  "choices": [{"message": {"role":"assistant",
-		    "tool_calls":[{"id":"c1","type":"function",
-		      "function":{"name":"t","arguments":"oops-not-json"}}]},
-		    "finish_reason":"tool_calls"}]}`), nil
-	}))
-	_, err := c.ChatWithTools(context.Background(),
-		chat.ChatRequest{Messages: []chat.ChatMessage{{Role: chat.RoleUser, Content: "x"}}},
-		[]tool.ToolSpec{{Name: "t"}})
-	if err == nil || errs.CodeOf(err) != errs.CodeProviderUnavailable {
-		t.Fatalf("want provider_unavailable, got %v", err)
 	}
 }

@@ -8,11 +8,10 @@ import (
 	"time"
 
 	"github.com/zed1995/platepilot/data-pipeline/internal/config"
+	"github.com/zed1995/platepilot/data-pipeline/internal/llm"
 	"github.com/zed1995/platepilot/data-pipeline/internal/pipeline/curate"
 	"github.com/zed1995/platepilot/data-pipeline/internal/pipeline/knowledge"
 	"github.com/zed1995/platepilot/data-pipeline/internal/pipeline/report"
-	chatport "github.com/zed1995/platepilot/shared/chat"
-	"github.com/zed1995/platepilot/shared/chat/openai"
 	"github.com/zed1995/platepilot/shared/domain/chat"
 	"github.com/zed1995/platepilot/shared/domain/errs"
 	"github.com/zed1995/platepilot/shared/domain/evidence"
@@ -103,15 +102,15 @@ func ParseDigestOptions(args []string, cfg config.Config) (DigestOptions, error)
 	return opts, nil
 }
 
-// newChatProvider builds the digest chat client from configuration.
+// newChatCompleter builds the digest chat client from configuration.
 //
 // It is a variable so the tests can substitute a deterministic provider, the
 // same way the embedding stage does: the stage's caching, isolation, and
 // validation logic is worth testing without an API key or a network.
-var newChatProvider = newOpenAIChatProvider
+var newChatCompleter = newOpenAIChatCompleter
 
-func newOpenAIChatProvider(cfg config.Config) (chatport.ChatProvider, error) {
-	return openai.New(openai.Options{
+func newOpenAIChatCompleter(cfg config.Config) (llm.Completer, error) {
+	return llm.New(llm.Options{
 		BaseURL:    cfg.Digest.ChatBaseURL,
 		APIKey:     cfg.Digest.ChatAPIKey,
 		Model:      cfg.Digest.ChatModel,
@@ -128,7 +127,7 @@ type digestGenerator struct {
 	modelID       string
 	rules         bool
 	dryRun        bool
-	provider      chatport.ChatProvider
+	provider      llm.Completer
 	limiter       *rateLimiter
 }
 
@@ -260,7 +259,7 @@ func RunBuildDigests(
 		limiter:       newRateLimiter(cfg.Digest.RateQPS),
 	}
 	if !gen.rules {
-		provider, err := newChatProvider(cfg)
+		provider, err := newChatCompleter(cfg)
 		if err != nil {
 			return result, err
 		}

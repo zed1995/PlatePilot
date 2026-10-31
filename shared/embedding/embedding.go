@@ -3,8 +3,8 @@ package embedding
 import "context"
 
 // EmbeddingProvider turns text into vectors. It is deliberately separate from
-// ChatProvider: the chat model and the embedding model are chosen and deployed
-// independently.
+// the chat completion port: the chat model and the embedding model are chosen
+// and deployed independently.
 type EmbeddingProvider interface {
 	// ModelID identifies the embedding model, e.g. "qwen3-embedding:0.6b".
 	ModelID() string

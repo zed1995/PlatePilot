@@ -23,7 +23,7 @@ make help            # every target
 | `domain/` | DTOs and invariants: restaurant, review, evidence, conversation, memory, tool, run |
 | `config/` | Environment loading, validation, secret redaction |
 | `store/` | Repository ports, the in-memory adapter, and the Postgres adapter + migrations |
-| `embedding/`, `rerank/`, `chat/` | Provider ports and their clients |
+| `embedding/`, `rerank/` | Provider ports and their clients |
 | `idgen`, `requestctx`, `observability/` | Cross-cutting helpers |
 | `testkit/` | Mocks and fixtures shared by both services' tests |
 

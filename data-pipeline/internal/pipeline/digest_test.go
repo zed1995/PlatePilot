@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"github.com/zed1995/platepilot/data-pipeline/internal/config"
+	"github.com/zed1995/platepilot/data-pipeline/internal/llm"
 	"github.com/zed1995/platepilot/data-pipeline/internal/pipeline/knowledge"
-	chatport "github.com/zed1995/platepilot/shared/chat"
 	"github.com/zed1995/platepilot/shared/domain/chat"
 	"github.com/zed1995/platepilot/shared/domain/evidence"
 	"github.com/zed1995/platepilot/shared/domain/review"
@@ -86,10 +86,6 @@ func (f *fakeDigestChat) Complete(ctx context.Context, req chat.ChatRequest) (ch
 	}, nil
 }
 
-func (f *fakeDigestChat) Stream(ctx context.Context, req chat.ChatRequest) (chatport.ChatStream, error) {
-	return nil, errors.New("fakeDigestChat: streaming is not part of the digest contract")
-}
-
 func (f *fakeDigestChat) callCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -115,14 +111,14 @@ func digestTestConfig(promptVersion string) config.Config {
 	return cfg
 }
 
-// useFakeChatProvider swaps the provider constructor for the duration of one
+// useFakeChatCompleter swaps the provider constructor for the duration of one
 // test and restores it afterwards, so the other tests in the package are not
 // affected by the substitution.
-func useFakeChatProvider(t *testing.T, fake *fakeDigestChat) {
+func useFakeChatCompleter(t *testing.T, fake *fakeDigestChat) {
 	t.Helper()
-	previous := newChatProvider
-	newChatProvider = func(config.Config) (chatport.ChatProvider, error) { return fake, nil }
-	t.Cleanup(func() { newChatProvider = previous })
+	previous := newChatCompleter
+	newChatCompleter = func(config.Config) (llm.Completer, error) { return fake, nil }
+	t.Cleanup(func() { newChatCompleter = previous })
 }
 
 func digestOptions() DigestOptions {
@@ -156,12 +152,12 @@ func TestRunBuildDigestsRulesVersionNeverCallsModel(t *testing.T) {
 	seedReviews(t, stores, id, 40)
 
 	var providerCalls int
-	previous := newChatProvider
-	newChatProvider = func(config.Config) (chatport.ChatProvider, error) {
+	previous := newChatCompleter
+	newChatCompleter = func(config.Config) (llm.Completer, error) {
 		providerCalls++
 		return nil, errors.New("rules version must not build a chat provider")
 	}
-	t.Cleanup(func() { newChatProvider = previous })
+	t.Cleanup(func() { newChatCompleter = previous })
 
 	cfg := digestTestConfig(knowledge.DigestRulesVersion)
 	cfg.Digest.ChatBaseURL = ""
@@ -225,7 +221,7 @@ func TestRunBuildDigestsCacheHitSkipsModel(t *testing.T) {
 	seedReviews(t, stores, id, 40)
 
 	fake := &fakeDigestChat{respond: func(req chat.ChatRequest) string { return validDigestAnswer(req) }}
-	useFakeChatProvider(t, fake)
+	useFakeChatCompleter(t, fake)
 	cfg := digestTestConfig(knowledge.DigestLLMVersion)
 
 	first, err := RunBuildDigests(ctx, stores, cfg, digestOptions())
@@ -260,7 +256,7 @@ func TestRunBuildDigestsSendsTemperatureZero(t *testing.T) {
 	seedReviews(t, stores, id, 40)
 
 	fake := &fakeDigestChat{respond: func(req chat.ChatRequest) string { return validDigestAnswer(req) }}
-	useFakeChatProvider(t, fake)
+	useFakeChatCompleter(t, fake)
 
 	if _, err := RunBuildDigests(ctx, stores, digestTestConfig(knowledge.DigestLLMVersion), digestOptions()); err != nil {
 		t.Fatalf("RunBuildDigests: %v", err)
@@ -294,7 +290,7 @@ func TestRunBuildDigestsIsolatesRejectedOutput(t *testing.T) {
 		}
 		return validDigestAnswer(req)
 	}}
-	useFakeChatProvider(t, fake)
+	useFakeChatCompleter(t, fake)
 
 	result, err := RunBuildDigests(ctx, stores, digestTestConfig(knowledge.DigestLLMVersion), digestOptions())
 	if err != nil {
@@ -329,7 +325,7 @@ func TestRunBuildDigestsIsolatesProviderErrors(t *testing.T) {
 	seedReviews(t, stores, broken, 40)
 
 	fake := &fakeDigestChat{err: errors.New("transport blew up")}
-	useFakeChatProvider(t, fake)
+	useFakeChatCompleter(t, fake)
 
 	result, err := RunBuildDigests(ctx, stores, digestTestConfig(knowledge.DigestLLMVersion), digestOptions())
 	if err != nil {
@@ -364,7 +360,7 @@ func TestRunBuildDigestsSkipsRestaurantsWithoutMaterial(t *testing.T) {
 	seedReviews(t, stores, withReviews, 40)
 
 	fake := &fakeDigestChat{respond: func(req chat.ChatRequest) string { return validDigestAnswer(req) }}
-	useFakeChatProvider(t, fake)
+	useFakeChatCompleter(t, fake)
 
 	result, err := RunBuildDigests(ctx, stores, digestTestConfig(knowledge.DigestLLMVersion), digestOptions())
 	if err != nil {
@@ -393,7 +389,7 @@ func TestRunBuildDigestsDryRunWritesNothing(t *testing.T) {
 	seedReviews(t, stores, id, 40)
 
 	fake := &fakeDigestChat{respond: func(req chat.ChatRequest) string { return validDigestAnswer(req) }}
-	useFakeChatProvider(t, fake)
+	useFakeChatCompleter(t, fake)
 
 	opts := digestOptions()
 	opts.DryRun = true
@@ -426,7 +422,7 @@ func TestRunBuildDigestsRecordsABatch(t *testing.T) {
 	seedReviews(t, stores, id, 40)
 
 	fake := &fakeDigestChat{respond: func(req chat.ChatRequest) string { return validDigestAnswer(req) }}
-	useFakeChatProvider(t, fake)
+	useFakeChatCompleter(t, fake)
 
 	if _, err := RunBuildDigests(ctx, stores, digestTestConfig(knowledge.DigestLLMVersion), digestOptions()); err != nil {
 		t.Fatalf("RunBuildDigests: %v", err)

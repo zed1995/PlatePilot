@@ -37,7 +37,7 @@ Run 审计、会话状态、Chat/SSE）已在 `main` 落地，但 README 的 Sta
 
 | 目录 | 类型 | 职责 | 技术栈 |
 |---|---|---|---|
-| `shared/` | Go module（库） | 领域 DTO、端口与其适配器、配置、日志、embedding / rerank / chat 客户端、测试夹具 | pgx v5 |
+| `shared/` | Go module（库） | 领域 DTO、端口与其适配器、配置、日志、embedding / rerank 客户端、测试夹具 | pgx v5 |
 | `chat-service/` | Go module（服务，常驻） | HTTP + SSE 聊天 API、Agent 运行时、两级检索、只读 `/admin/v1`；**写运行时表**（会话、run 审计、记忆、预约） | Hertz、Eino |
 | `data-pipeline/` | Go module（CLI，批处理） | 导入餐馆/评论语料、清洗、知识文档、embedding、打分、`migrate`；**写内容表** | 标准库为主 |
 | `web/` | npm 项目 | 只读管理后台 + Agent 验证台（不直接连库） | Vite + React 18 + TS + Tailwind + Radix |

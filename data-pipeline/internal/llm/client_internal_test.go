@@ -1,4 +1,4 @@
-package openai
+package llm
 
 import (
 	"context"
@@ -26,33 +26,21 @@ func jsonResponse(status int, body string) *http.Response {
 	}
 }
 
-func streamResponse(body string) *http.Response {
-	return &http.Response{
-		StatusCode: http.StatusOK,
-		Body:       io.NopCloser(strings.NewReader(body)),
-		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
-	}
-}
-
 func noSleep(context.Context, time.Duration) error { return nil }
 
 // newOfflineClient builds a Client pointed at an invalid host with the given
-// transport. Capabilities default to the shipped conservative set with
-// JSONSchema flipped on so both structured modes are testable.
+// transport.
 func newOfflineClient(t *testing.T, rt http.RoundTripper) *Client {
 	t.Helper()
-	caps := DefaultCapabilities()
-	caps.JSONSchema = true
 	c, err := New(Options{
-		BaseURL:      "https://openrouter.invalid/api/v1",
-		APIKey:       "test-key",
-		Model:        "vendor/test-model",
-		Capabilities: caps,
-		Timeout:      5 * time.Second,
-		MaxRetries:   2,
-		BaseBackoff:  time.Millisecond,
-		HTTPClient:   &http.Client{Transport: rt},
-		Sleep:        noSleep,
+		BaseURL:     "https://openrouter.invalid/api/v1",
+		APIKey:      "test-key",
+		Model:       "vendor/test-model",
+		Timeout:     5 * time.Second,
+		MaxRetries:  2,
+		BaseBackoff: time.Millisecond,
+		HTTPClient:  &http.Client{Transport: rt},
+		Sleep:       noSleep,
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)

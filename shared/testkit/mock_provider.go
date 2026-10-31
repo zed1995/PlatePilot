@@ -4,135 +4,19 @@ package testkit
 
 import (
 	"context"
-	"encoding/json"
 	"hash/fnv"
-	"io"
 	"sync"
 
-	chatport "github.com/zed1995/platepilot/shared/chat"
-	"github.com/zed1995/platepilot/shared/domain/chat"
 	"github.com/zed1995/platepilot/shared/domain/search"
-	"github.com/zed1995/platepilot/shared/domain/tool"
 	"github.com/zed1995/platepilot/shared/embedding"
 	"github.com/zed1995/platepilot/shared/rerank"
 )
 
 // Compile-time guarantees that the mocks satisfy the ports.
 var (
-	_ chatport.ChatProvider             = (*MockChatProvider)(nil)
-	_ chatport.ToolCallingProvider      = (*MockChatProvider)(nil)
-	_ chatport.StructuredOutputProvider = (*MockChatProvider)(nil)
-	_ embedding.EmbeddingProvider       = (*MockEmbeddingProvider)(nil)
-	_ rerank.RerankProvider             = (*MockRerankProvider)(nil)
+	_ embedding.EmbeddingProvider = (*MockEmbeddingProvider)(nil)
+	_ rerank.RerankProvider       = (*MockRerankProvider)(nil)
 )
-
-// MockChatProvider is a scriptable chatport.ChatProvider plus tool-calling and
-// structured-output ports. Recorded calls make assertions easy.
-type MockChatProvider struct {
-	mu sync.Mutex
-
-	Response           chat.ChatResponse
-	ToolResponse       chat.ToolCallResponse
-	StructuredResponse chat.StructuredResponse
-	Chunks             []chat.ChatChunk
-	Err                error
-
-	Tools         bool
-	ParallelTools bool
-	JSONSchema    bool
-
-	CompleteCalls   []chat.ChatRequest
-	StreamCalls     []chat.ChatRequest
-	ToolCalls       []chat.ChatRequest
-	StructuredCalls []chat.StructuredRequest
-}
-
-// Complete returns the scripted response.
-func (m *MockChatProvider) Complete(_ context.Context, req chat.ChatRequest) (chat.ChatResponse, error) {
-	m.mu.Lock()
-	m.CompleteCalls = append(m.CompleteCalls, req)
-	err := m.Err
-	resp := m.Response
-	m.mu.Unlock()
-	if err != nil {
-		return chat.ChatResponse{}, err
-	}
-	return resp, nil
-}
-
-// Stream returns a stream over the scripted chunks.
-func (m *MockChatProvider) Stream(_ context.Context, req chat.ChatRequest) (chatport.ChatStream, error) {
-	m.mu.Lock()
-	m.StreamCalls = append(m.StreamCalls, req)
-	err := m.Err
-	chunks := append([]chat.ChatChunk(nil), m.Chunks...)
-	m.mu.Unlock()
-	if err != nil {
-		return nil, err
-	}
-	return &sliceStream{chunks: chunks}, nil
-}
-
-// SupportsTools reports the scripted capability.
-func (m *MockChatProvider) SupportsTools() bool { return m.Tools }
-
-// SupportsParallelTools reports the scripted capability.
-func (m *MockChatProvider) SupportsParallelTools() bool { return m.ParallelTools }
-
-// ChatWithTools returns the scripted tool-call response.
-func (m *MockChatProvider) ChatWithTools(_ context.Context, req chat.ChatRequest, _ []tool.ToolSpec) (chat.ToolCallResponse, error) {
-	m.mu.Lock()
-	m.ToolCalls = append(m.ToolCalls, req)
-	err := m.Err
-	resp := m.ToolResponse
-	m.mu.Unlock()
-	if err != nil {
-		return chat.ToolCallResponse{}, err
-	}
-	return resp, nil
-}
-
-// SupportsJSONSchema reports the scripted capability.
-func (m *MockChatProvider) SupportsJSONSchema() bool { return m.JSONSchema }
-
-// CompleteStructured returns the scripted structured response.
-func (m *MockChatProvider) CompleteStructured(_ context.Context, req chat.StructuredRequest, _ json.RawMessage) (chat.StructuredResponse, error) {
-	m.mu.Lock()
-	m.StructuredCalls = append(m.StructuredCalls, req)
-	err := m.Err
-	resp := m.StructuredResponse
-	m.mu.Unlock()
-	if err != nil {
-		return chat.StructuredResponse{}, err
-	}
-	return resp, nil
-}
-
-// sliceStream is an in-memory chatport.ChatStream.
-type sliceStream struct {
-	mu     sync.Mutex
-	chunks []chat.ChatChunk
-	pos    int
-	closed bool
-}
-
-func (s *sliceStream) Recv() (chat.ChatChunk, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed || s.pos >= len(s.chunks) {
-		return chat.ChatChunk{}, io.EOF
-	}
-	chunk := s.chunks[s.pos]
-	s.pos++
-	return chunk, nil
-}
-
-func (s *sliceStream) Close() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.closed = true
-	return nil
-}
 
 // MockEmbeddingProvider returns deterministic, dimension-stable vectors.
 type MockEmbeddingProvider struct {

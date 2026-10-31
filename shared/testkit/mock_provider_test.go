@@ -2,66 +2,10 @@ package testkit
 
 import (
 	"context"
-	"errors"
-	"io"
 	"testing"
 
-	"github.com/zed1995/platepilot/shared/domain/chat"
 	"github.com/zed1995/platepilot/shared/domain/search"
 )
-
-func TestMockChatProviderRecordsAndReturns(t *testing.T) {
-	provider := &MockChatProvider{Response: chat.ChatResponse{Message: chat.ChatMessage{Role: chat.RoleAssistant, Content: "hi"}}}
-	resp, err := provider.Complete(context.Background(), chat.ChatRequest{ThreadID: "t1"})
-	if err != nil {
-		t.Fatalf("complete: %v", err)
-	}
-	if resp.Message.Content != "hi" {
-		t.Fatalf("content = %q", resp.Message.Content)
-	}
-	if len(provider.CompleteCalls) != 1 || provider.CompleteCalls[0].ThreadID != "t1" {
-		t.Fatalf("call not recorded: %+v", provider.CompleteCalls)
-	}
-}
-
-func TestMockChatProviderStreamsThenEOF(t *testing.T) {
-	provider := &MockChatProvider{Chunks: []chat.ChatChunk{{Delta: "he"}, {Delta: "llo"}}}
-	stream, err := provider.Stream(context.Background(), chat.ChatRequest{})
-	if err != nil {
-		t.Fatalf("stream: %v", err)
-	}
-	var got string
-	for {
-		chunk, err := stream.Recv()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			t.Fatalf("recv: %v", err)
-		}
-		got += chunk.Delta
-	}
-	if got != "hello" {
-		t.Fatalf("streamed %q, want hello", got)
-	}
-	if err := stream.Close(); err != nil {
-		t.Fatalf("close: %v", err)
-	}
-	if _, err := stream.Recv(); !errors.Is(err, io.EOF) {
-		t.Fatalf("closed stream should return io.EOF, got %v", err)
-	}
-}
-
-func TestMockChatProviderPropagatesError(t *testing.T) {
-	sentinel := errors.New("upstream down")
-	provider := &MockChatProvider{Err: sentinel}
-	if _, err := provider.Complete(context.Background(), chat.ChatRequest{}); !errors.Is(err, sentinel) {
-		t.Fatalf("want sentinel error, got %v", err)
-	}
-	if _, err := provider.Stream(context.Background(), chat.ChatRequest{}); !errors.Is(err, sentinel) {
-		t.Fatalf("stream want sentinel error, got %v", err)
-	}
-}
 
 func TestMockEmbeddingProviderIsDeterministicAndSized(t *testing.T) {
 	provider := &MockEmbeddingProvider{Dim: 16}

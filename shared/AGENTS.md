@@ -15,7 +15,7 @@
 | `store/memory/` | 离线用的内存实现 | 伪造 pgvector / PostGIS / trigram 的行为 |
 | `store/postgres/` | pgx 适配、`migrate.go`、按 store 拆的读写实现 | 迁移之外的 schema 真相（schema 在 `migrations/`） |
 | `store/contract/` | memory 与 postgres 共跑的行为契约 | 单适配器专属断言 |
-| `embedding/` `rerank/` `chat/` | Provider 端口 + 客户端（`ollama`、`fake`、`openai`） | 业务逻辑 |
+| `embedding/` `rerank/` | Provider 端口 + 客户端（`ollama`、`fake`） | 业务逻辑 |
 | `config/` | 环境变量加载、校验、**脱敏** | 某个服务私有的配置项 |
 | `testkit/` | 两个服务测试共用的 mock / fixture | 生产代码 |
 | `idgen` `requestctx` `observability/logging` | 横切小工具 | 领域逻辑 |
