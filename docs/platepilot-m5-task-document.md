@@ -46,7 +46,7 @@
 | 只读检索 API | `chat-service/internal/httpapi/restaurants.go` | `POST /v1/restaurants/search`、`POST /v1/restaurants[/:id]/evidence`（候选带 `reasons`、`snapshot_at`、`trace`） |
 | 检索应用服务 | `chat-service/internal/retrieval/` | `Service.Search`（三通道融合、软通道失败降级）、`Service.Evidence`（证据组装） |
 | 领域 DTO | `shared/domain/{search,retrieval,evidence,conversation,chat,tool,memory,run}` | `RestaurantFilter.Matches`（融合后硬条件剥离）、`conversation.State`（含 `awaiting_clarification` / `awaiting_confirmation` 常量） |
-| 契约与夹具 | `shared/store/contract/`、`shared/store/memory/`、`shared/testkit/` | memory 与 postgres 跑同一套行为断言；`MockChatProvider` |
+| 契约与夹具 | `shared/store/contract/`、`shared/store/memory/`、`shared/testkit/` | memory 与 postgres 跑同一套行为断言；embedding/rerank 的 Mock（聊天侧的模型 fake 在 chat-service 包内，testkit 不含 Eino 类型） |
 | 配置 | `chat-service/internal/config/config.go` | Chat 能力表、`AGENT_MAX_TOOL_ROUNDS`、`AGENT_TOOL_TIMEOUT`、检索权重与通道开关 |
 
 **M5 的缺口（本里程碑要补齐的）：**
@@ -171,7 +171,7 @@ HTTP 层（hertz）
   chat-service/internal/retrieval       M3 已交付（Search / Evidence），被工具包装
         │  只依赖端口
         ▼
-端口层（shared/store、shared/chat）
+端口层（shared/store；聊天模型不是共享端口——在线直接用 Eino 的 model.BaseChatModel，装配于 internal/app）
   ConversationRepository（+候选）、RunRepository（+读）、MemoryRepository、ReservationRepository（新）
         │
         ▼
@@ -411,8 +411,9 @@ M5-01（slots + 硬条件）
 
 1. **新包 `internal/agent/slots/`**（`plan.go` / `extract.go` / `normalize.go`，见 §2.3.1）：
    - `Extract(ctx, userInput string, pending *conversation.Checkpoint) (Plan, error)`：
-     用 M4-02 已交付的 `StructuredOutputProvider.CompleteStructured` + JSON Schema 抽取；
-     `CHAT_SUPPORTS_JSON_SCHEMA=false` 时走 M4-02 既有的 `json_object` 退化路径。
+     用抽取模型的 `Generate`（`model.BaseChatModel`）+ JSON Schema 抽取；response format
+     在装配期固定——`CHAT_SUPPORTS_JSON_SCHEMA=true` 时抽取模型以 strict `json_schema` 构建，
+     否则装配为 `json_object`，输出由抽取器解析校验。
    - **规则兜底是必须的**：模型不可用、输出非法 JSON、或根本没有聊天渠道时，
      `Plan` 退化为 `{Intent: discover, Source: "rules"}`，把整句话作为 `Query` 走关键词 + 向量通道，
      **绝不因为"没抽出槽位"而拒绝服务或返回 500**。
@@ -452,7 +453,7 @@ M5-01（slots + 硬条件）
 - 表驱动中英文用例 ≥20 条：`曼哈顿中城 4 星以上意大利菜`、`quiet ramen in Brooklyn under $$`、
   `帮我找适合约会的日料`、`$` / `4.5+` / `中城` / 空查询 等，断言 `Plan.HardFilters` 与
   `Plan.SoftConditions` 的拆分。
-- 规则兜底：无 chat provider、结构化输出非法 JSON 两种情况下 `Extract` 不返回错误且 `Source="rules"`。
+- 规则兜底：无聊天模型（`ExtractModel` 未装配）、结构化输出非法 JSON 两种情况下 `Extract` 不返回错误且 `Source="rules"`。
 - 切片级集成（内存仓储 + 假 embedding）：查询 → 抽槽 → 检索 → 断言**返回的每个候选都满足每一条硬条件**
   （复用 `Filter.Matches`），且候选数 ≥3（语料足够时）。
 - 负路径：`hard_filters` 中混入软词 → 被剔除并记 warning；非法 borough → `retrieval_invalid_filter`。
@@ -465,7 +466,7 @@ M5-01（slots + 硬条件）
 - `make eval-retrieval` 硬条件泄漏数仍为 0；
 - 没有聊天渠道时 `interpret` 仍返回 `source:"rules"` 且不报错。
 
-**工作量：L。依赖：M3-01、M3-05、M4-02（结构化输出）。**
+**工作量：L。依赖：M3-01、M3-05、M4-02（OpenAI 兼容接入与结构化输出配置）。**
 
 ---
 
