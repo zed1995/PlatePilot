@@ -25,8 +25,8 @@ func streamingRunner(t *testing.T, provider *scriptedProvider, streaming bool) *
 		MaxToolRounds:   3,
 		AnswerStreaming: streaming,
 	}, agent.Deps{
-		Chat:        provider,
-		ToolCalling: provider,
+		PlanModel:   provider,
+		AnswerModel: provider,
 		Registry:    registry,
 	})
 	if err != nil {

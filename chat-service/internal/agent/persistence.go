@@ -5,7 +5,8 @@ import (
 	"errors"
 	"time"
 
-	domainchat "github.com/zed1995/platepilot/shared/domain/chat"
+	"github.com/cloudwego/eino/schema"
+
 	"github.com/zed1995/platepilot/shared/domain/conversation"
 	"github.com/zed1995/platepilot/shared/domain/errs"
 )
@@ -66,17 +67,17 @@ func (r *Runner) loadConversationContext(ctx context.Context, st *TurnState, in 
 // final answers), and even if a future milestone starts storing them, an
 // assistant tool_calls entry without the following tool messages is invalid
 // for chat APIs, so they are stripped here.
-func replayTranscript(messages []conversation.Message) []domainchat.ChatMessage {
-	out := make([]domainchat.ChatMessage, 0, len(messages))
+func replayTranscript(messages []conversation.Message) []*schema.Message {
+	out := make([]*schema.Message, 0, len(messages))
 	for _, msg := range messages {
 		switch msg.Role {
 		case conversation.RoleUser:
-			out = append(out, domainchat.ChatMessage{Role: domainchat.RoleUser, Content: msg.Content})
+			out = append(out, schema.UserMessage(msg.Content))
 		case conversation.RoleAssistant:
 			if msg.Content == "" {
 				continue
 			}
-			out = append(out, domainchat.ChatMessage{Role: domainchat.RoleAssistant, Content: msg.Content})
+			out = append(out, schema.AssistantMessage(msg.Content, nil))
 		}
 	}
 	return out

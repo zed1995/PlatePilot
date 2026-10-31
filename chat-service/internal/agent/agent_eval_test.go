@@ -148,8 +148,8 @@ func newEvalHarness(t *testing.T, provider *scriptedProvider, opts evalOptions) 
 		MaxToolRounds:   4,
 		AnswerStreaming: opts.Streaming,
 	}, agent.Deps{
-		Chat:          provider,
-		ToolCalling:   provider,
+		PlanModel:     provider,
+		AnswerModel:   provider,
 		Registry:      registry,
 		Extractor:     slots.New(slots.Deps{}),
 		Conversations: conversations,

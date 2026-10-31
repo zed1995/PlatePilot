@@ -72,8 +72,9 @@ data-pipeline ─┘
 - **database driver、Hertz、Eino、Ollama 这些具体技术不得越过各自的边界**：
   - `shared/domain/**` 只允许依赖标准库和自身：连 `postgres` / `postgis` /
     `pgvector` / `sql` 这些词出现在源码或注释里都会让测试失败；
-  - `chat-service/internal/agent/**` 之外不许出现 Eino 类型，其中 Eino 的 message
-    / schema DTO 进一步只准出现在 `agent/einomodel` 和 `agent/toolreg`；
+  - `chat-service/internal/agent/**` 与 `chat-service/internal/app`（仅装配模型）之外
+    不许出现 Eino 类型；`schema.Message` 这类 Eino DTO 在 agent 边界内可以直接使用，
+    节点之间不再经过适配层；
   - `chat-service/internal/admin` 不许 import 具体的 store 适配器，只能面向端口。
 
 以上全部是**会失败的测试**（`shared/domain/architecture_test.go`、

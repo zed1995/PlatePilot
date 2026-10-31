@@ -3,12 +3,12 @@ package answer
 import (
 	"context"
 	"errors"
-	"io"
 	"strings"
 	"testing"
 
-	chatport "github.com/zed1995/platepilot/shared/chat"
-	domainchat "github.com/zed1995/platepilot/shared/domain/chat"
+	"github.com/cloudwego/eino/components/model"
+	"github.com/cloudwego/eino/schema"
+
 	"github.com/zed1995/platepilot/shared/domain/errs"
 	"github.com/zed1995/platepilot/shared/domain/evidence"
 )
@@ -17,7 +17,7 @@ import (
 //
 // Stream serves a queue of raw chunks so a test controls exactly where the
 // provider's token boundaries fall — the composer's line buffer only works if
-// it survives a FOLLOWUPS tail split across two chunks. Complete serves a
+// it survives a FOLLOWUPS tail split across two chunks. Generate serves a
 // separate queue, which is what the corrective retry and the degraded fallback
 // both reach for.
 type streamChat struct {
@@ -32,57 +32,56 @@ type streamChat struct {
 	errAfter int
 
 	completes []string
-	complete  []domainchat.ChatRequest
+	complete  [][]*schema.Message
 
+	// reads counts chunks the composer actually consumed. The pipe is
+	// unbuffered, so a send only completes while the reader is waiting: a
+	// stream the composer stopped reading never reaches its end.
 	reads     int
 	opens     int
-	closes    int
 	completed int
 }
 
-func (s *streamChat) Stream(_ context.Context, _ domainchat.ChatRequest) (chatport.ChatStream, error) {
+func (s *streamChat) Generate(_ context.Context, in []*schema.Message, _ ...model.Option) (*schema.Message, error) {
+	s.completed++
+	s.complete = append(s.complete, in)
+	if len(s.completes) == 0 {
+		return nil, errors.New("streamChat: no more Generate responses queued")
+	}
+	content := s.completes[0]
+	s.completes = s.completes[1:]
+	return schema.AssistantMessage(content, nil), nil
+}
+
+func (s *streamChat) Stream(_ context.Context, _ []*schema.Message, _ ...model.Option) (*schema.StreamReader[*schema.Message], error) {
 	if s.streamErr != nil {
 		return nil, s.streamErr
 	}
 	s.opens++
-	return &countingStream{chat: s}, nil
+	reader, writer := schema.Pipe[*schema.Message](0)
+	go func() {
+		defer writer.Close()
+		for _, reasoning := range s.reasoning {
+			msg := schema.AssistantMessage("", nil)
+			msg.ReasoningContent = reasoning
+			if writer.Send(msg, nil) {
+				return
+			}
+			s.reads++
+		}
+		for i, delta := range s.chunks {
+			if s.recvErr != nil && i >= s.errAfter {
+				writer.Send(nil, s.recvErr)
+				return
+			}
+			if writer.Send(schema.AssistantMessage(delta, nil), nil) {
+				return
+			}
+			s.reads++
+		}
+	}()
+	return reader, nil
 }
-
-func (s *streamChat) Complete(_ context.Context, req domainchat.ChatRequest) (domainchat.ChatResponse, error) {
-	s.completed++
-	s.complete = append(s.complete, req)
-	if len(s.completes) == 0 {
-		return domainchat.ChatResponse{}, errors.New("streamChat: no more Complete responses queued")
-	}
-	content := s.completes[0]
-	s.completes = s.completes[1:]
-	return domainchat.ChatResponse{
-		Message:      domainchat.ChatMessage{Role: domainchat.RoleAssistant, Content: content},
-		FinishReason: domainchat.FinishReasonStop,
-	}, nil
-}
-
-type countingStream struct{ chat *streamChat }
-
-func (c *countingStream) Recv() (domainchat.ChatChunk, error) {
-	if c.chat.recvErr != nil && c.chat.reads >= c.chat.errAfter {
-		return domainchat.ChatChunk{}, c.chat.recvErr
-	}
-	if c.chat.reads < len(c.chat.reasoning) {
-		reasoning := c.chat.reasoning[c.chat.reads]
-		c.chat.reads++
-		return domainchat.ChatChunk{Reasoning: reasoning}, nil
-	}
-	index := c.chat.reads - len(c.chat.reasoning)
-	if index >= len(c.chat.chunks) {
-		return domainchat.ChatChunk{}, io.EOF
-	}
-	delta := c.chat.chunks[index]
-	c.chat.reads++
-	return domainchat.ChatChunk{Delta: delta}, nil
-}
-
-func (c *countingStream) Close() error { c.chat.closes++; return nil }
 
 // collectingSink records the deltas in order and hands them back.
 func collectingSink() (Sink, *[]string) {
@@ -105,7 +104,7 @@ func TestComposeStreamConcatenatesToTheValidatedAnswer(t *testing.T) {
 		"\n细节如此。",
 		"\nFOLLOWUPS: [\"能订位吗?\"]",
 	}}
-	c := NewComposer(Deps{Chat: chat, Model: "m"})
+	c := NewComposer(Deps{Model: chat})
 	sink, deltas := collectingSink()
 
 	ans, err := c.ComposeStream(context.Background(), Input{
@@ -132,9 +131,6 @@ func TestComposeStreamConcatenatesToTheValidatedAnswer(t *testing.T) {
 	if len(ans.FollowUps) != 1 || ans.FollowUps[0] != "能订位吗?" {
 		t.Fatalf("followUps = %v", ans.FollowUps)
 	}
-	if chat.closes != 1 {
-		t.Fatalf("the stream was closed %d times, want 1", chat.closes)
-	}
 }
 
 // The FOLLOWUPS line is machine-readable and must never be shown. The tail is
@@ -146,7 +142,7 @@ func TestComposeStreamNeverPublishesTheFollowUpsTail(t *testing.T) {
 		"\nFOLLOW",
 		"UPS: [\"a\",\"b\"]",
 	}}
-	c := NewComposer(Deps{Chat: chat, Model: "m"})
+	c := NewComposer(Deps{Model: chat})
 	sink, deltas := collectingSink()
 
 	ans, err := c.ComposeStream(context.Background(), Input{
@@ -182,7 +178,7 @@ func TestComposeStreamPublishesParagraphTextBeforeItEnds(t *testing.T) {
 		"没有任何换行的",
 		"长回答[^10]，后面还会继续。",
 	}}
-	c := NewComposer(Deps{Chat: chat, Model: "m"})
+	c := NewComposer(Deps{Model: chat})
 	sink, deltas := collectingSink()
 
 	ans, err := c.ComposeStream(context.Background(), Input{
@@ -207,7 +203,7 @@ func TestComposeStreamPublishesReasoningSeparatelyFromTheAnswer(t *testing.T) {
 		reasoning: []string{"先看证据", "，再下结论"},
 		chunks:    []string{"结论：A 更好[^10]"},
 	}
-	c := NewComposer(Deps{Chat: chat, Model: "m"})
+	c := NewComposer(Deps{Model: chat})
 	sink, deltas := collectingSink()
 	thoughts := &[]string{}
 
@@ -243,7 +239,7 @@ func TestComposeStreamPublishesReasoningSeparatelyFromTheAnswer(t *testing.T) {
 // work: a nil Thinking handler simply hides the reasoning.
 func TestComposeStreamToleratesMissingThinkingHandler(t *testing.T) {
 	chat := &streamChat{reasoning: []string{"thinking"}, chunks: []string{"答案[^10]"}}
-	c := NewComposer(Deps{Chat: chat, Model: "m"})
+	c := NewComposer(Deps{Model: chat})
 	sink, deltas := collectingSink()
 
 	if _, err := c.ComposeStream(context.Background(), Input{
@@ -262,7 +258,7 @@ func TestComposeStreamToleratesMissingThinkingHandler(t *testing.T) {
 // above text the user had already read.
 func TestComposeStreamEmitsTheAdequacyCaveatFirst(t *testing.T) {
 	chat := &streamChat{chunks: []string{"结论：这家很好[^10]"}}
-	c := NewComposer(Deps{Chat: chat, Model: "m"})
+	c := NewComposer(Deps{Model: chat})
 	sink, deltas := collectingSink()
 
 	items := []evidence.Evidence{ev(10)}
@@ -294,7 +290,7 @@ func TestComposeStreamStopsReadingOnAnOutOfRangeCitation(t *testing.T) {
 		chunks:    []string{"结论", "[^99]", "后面还有很多", "还有很多"},
 		completes: []string{"修正回答[^10]\nFOLLOWUPS: []"},
 	}
-	c := NewComposer(Deps{Chat: chat, Model: "m"})
+	c := NewComposer(Deps{Model: chat})
 	sink, deltas := collectingSink()
 
 	ans, err := c.ComposeStream(context.Background(), Input{
@@ -318,8 +314,8 @@ func TestComposeStreamStopsReadingOnAnOutOfRangeCitation(t *testing.T) {
 	if chat.completed != 1 {
 		t.Fatalf("Complete called %d times, want 1 corrective retry", chat.completed)
 	}
-	last := chat.complete[0].Messages[len(chat.complete[0].Messages)-1]
-	if last.Role != domainchat.RoleUser || !strings.Contains(last.Content, "99") {
+	last := chat.complete[0][len(chat.complete[0])-1]
+	if last.Role != schema.User || !strings.Contains(last.Content, "99") {
 		t.Fatalf("correction message = %+v", last)
 	}
 }
@@ -331,7 +327,7 @@ func TestComposeStreamFailsAfterASecondViolation(t *testing.T) {
 		chunks:    []string{"第一次[^99]"},
 		completes: []string{"第二次还是[^99]\nFOLLOWUPS: []"},
 	}
-	c := NewComposer(Deps{Chat: chat, Model: "m"})
+	c := NewComposer(Deps{Model: chat})
 	sink, _ := collectingSink()
 
 	_, err := c.ComposeStream(context.Background(), Input{
@@ -350,7 +346,7 @@ func TestComposeStreamFailsAfterASecondViolation(t *testing.T) {
 // published, so the caller can start over in one shot with nothing to retract.
 func TestComposeStreamReportsAnUnopenableStreamBeforePublishing(t *testing.T) {
 	chat := &streamChat{streamErr: errs.New(errs.CodeProviderUnavailable, "no stream")}
-	c := NewComposer(Deps{Chat: chat, Model: "m"})
+	c := NewComposer(Deps{Model: chat})
 	sink, deltas := collectingSink()
 
 	_, err := c.ComposeStream(context.Background(), Input{
@@ -378,7 +374,7 @@ func TestComposeStreamRecoversFromAMidStreamFailure(t *testing.T) {
 		errAfter:  1,
 		completes: []string{"完整回答[^10]\nFOLLOWUPS: []"},
 	}
-	c := NewComposer(Deps{Chat: chat, Model: "m"})
+	c := NewComposer(Deps{Model: chat})
 	sink, deltas := collectingSink()
 
 	ans, err := c.ComposeStream(context.Background(), Input{
@@ -404,7 +400,7 @@ func TestComposeStreamRecoversFromAMidStreamFailure(t *testing.T) {
 // rather than reaching the client by a path of its own.
 func TestComposeStreamPublishesTheRefusalWithoutCallingTheModel(t *testing.T) {
 	chat := &streamChat{}
-	c := NewComposer(Deps{Chat: chat, Model: "m"})
+	c := NewComposer(Deps{Model: chat})
 	sink, deltas := collectingSink()
 
 	ans, err := c.ComposeStream(context.Background(), Input{Question: "哪家好？"}, StreamHandlers{Delta: sink})
@@ -424,7 +420,7 @@ func TestComposeStreamPublishesTheRefusalWithoutCallingTheModel(t *testing.T) {
 }
 
 func TestComposeStreamRequiresAQuestion(t *testing.T) {
-	c := NewComposer(Deps{Chat: &streamChat{}})
+	c := NewComposer(Deps{Model: &streamChat{}})
 	sink, _ := collectingSink()
 	_, err := c.ComposeStream(context.Background(), Input{Evidence: []evidence.Evidence{ev(1)}}, StreamHandlers{Delta: sink})
 	if errs.CodeOf(err) != errs.CodeInvalidArgument {
@@ -439,7 +435,7 @@ func TestComposeStreamAgreesWithComposeOnTheSameOutput(t *testing.T) {
 	const body = "结论：[^10]和[^20]。\n\n细节。\nFOLLOWUPS: [\"a\"]"
 
 	streamed := &streamChat{chunks: []string{"结论：", "[^10]和[^20]。", "\n\n细节。", "\nFOLLOWUPS: [\"a\"]"}}
-	c := NewComposer(Deps{Chat: streamed, Model: "m"})
+	c := NewComposer(Deps{Model: streamed})
 	sink, _ := collectingSink()
 	fromStream, err := c.ComposeStream(context.Background(), Input{
 		Question: "q",
@@ -449,7 +445,7 @@ func TestComposeStreamAgreesWithComposeOnTheSameOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	oneShot := NewComposer(Deps{Chat: &scriptedChat{contents: []string{body}}, Model: "m"})
+	oneShot := NewComposer(Deps{Model: &scriptedChat{contents: []string{body}}})
 	fromComplete, err := oneShot.Compose(context.Background(), Input{
 		Question: "q",
 		Evidence: adequateEvidence(),

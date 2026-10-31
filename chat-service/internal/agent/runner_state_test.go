@@ -30,8 +30,8 @@ func directAnswerProvider(answers ...string) *scriptedProvider {
 
 func newStateRunner(t *testing.T, p *scriptedProvider, deps agent.Deps) *agent.Runner {
 	t.Helper()
-	deps.Chat = p
-	deps.ToolCalling = p
+	deps.PlanModel = p
+	deps.AnswerModel = p
 	if deps.Registry == nil {
 		deps.Registry = toolreg.New(0)
 	}

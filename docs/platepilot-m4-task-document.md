@@ -1058,3 +1058,45 @@ Royal Bay Restaurant（id=2059）档案评分 4.8、8 条评论样本、且硬�
   - 追问「第四家安静吗？适合约会不」→ 序数正确锁定第四家；氛围属性引用挂 `[^3289]`，
     「安静」「适合约会」因无评论支持逐条进入「无法确认」，评分等事实仍无脚注。
 - 两次冒烟中槽位抽取均撞上 `:free` 路由超时、按规则解析降级成功，与本次改动无关。
+
+### E.7 重构：去掉 einomodel 适配层，节点直接用 Eino 模型接口（2026-10-31）
+
+**动机**：M4 在 Eino 图与聊天端口之间放过一层 `agent/einomodel`，它把
+`schema.Message` 翻成 `domainchat.ChatRequest`、把三个 domain 端口
+（`Complete` / `ChatWithTools` / `CompleteStructured`）翻回 Eino 调用。这一层只服务
+chat-service 自己，两个服务复用不了（data-pipeline 仍走 `shared/chat`），却让每个节点
+都多了一次无损但易错的转换，也使「工具能力」与「结构化输出」这两个概念被拆到两个端口上。
+
+**改法**：
+
+| 改动 | 位置 |
+| --- | --- |
+| 删除 `agent/einomodel`（含其测试）；生产代码不再出现 domain chat DTO 转换 | `internal/agent/einomodel/` |
+| `TurnState.Messages` / `replayedHistory` / `TurnInput.History` 改为 `[]*schema.Message`，节点直接把对话交给 `Generate` / `Stream` | `state.go`、`persistence.go`、`nodes.go` |
+| `agent.Deps` 改为 `PlanModel` / `AnswerModel`（`model.BaseChatModel`）+ `ToolsUnsupported`；runner 在构造时用 `model.ToolCallingChatModel.WithTools` 绑定注册表，无法绑定的模型仍按「无工具」运行 | `runner.go` |
+| `answer.Composer` 与 `slots.Extractor` 直接持有 `model.BaseChatModel`；结构化抽取的 response format 在装配期固定，请求不再自带 schema | `answer/compose.go`、`slots/extract.go` |
+| 新增 `agent/modelerr`：把模型失败统一映射为 `provider_timeout` / `provider_unavailable`，已带错误码的错误与 `context.Canceled` 原样透传 | `internal/agent/modelerr/` |
+| `app/chatmodel.go` 用 `eino-ext/components/model/openai` 为三个岗位各建一个模型（plan / answer / extract），共享一个带重试、超时与额外请求头的 `RoundTripper`；流式请求豁免单次超时 | `internal/app/chatmodel.go`、`app.go` |
+| 工具能力从「模型对象自报」改为配置断言：`CHAT_SUPPORTS_TOOLS` 读入 `Deps.ToolsUnsupported`。OpenAI 兼容端点无论是否真的支持工具都会实现 `WithTools`，接口本身无法回答这个问题 | `app.go`、`runner.go` |
+
+**与计划的偏差**：
+
+| 计划 | 实际 | 原因 |
+| --- | --- | --- |
+| Eino 类型只允许出现在 `internal/agent/**` | 架构测试额外允许 `internal/app/**`，两份 `AGENTS.md` 已同步 | `app` 是唯一装配具体实现的包，它必须构造 eino-ext 模型并在 `Deps` 上命名 `model.BaseChatModel`；这是装配而非业务逻辑，放开后其余包仍不得出现 Eino |
+| 模型失败沿用原错误码 | `TestRunnerAuditsFailedTurn` 的断言由 `internal` 改为 `provider_unavailable` | 现在所有模型错误都先过 `modelerr.Map`，未经分类的模型失败就是「模型调用失败」，比「内部错误」更准确 |
+| 测试用 `shared/testkit.MockChatProvider` 模拟三个端口 | `shared/testkit` 不引入 Eino；agent 测试改用实现 `model.ToolCallingChatModel` 的 `scriptedProvider`，app 测试在包内新增 `fakeChatModel` | `testkit` 是 shared 模块，把框架类型塞回去会破坏依赖方向 |
+
+**保持不变**：`/v1` 响应体、SSE 事件名与顺序、引用闭包规则、`shared/chat` 端口
+（data-pipeline 继续使用）、检索与证据行为。
+
+**验证**：
+
+- `chat-service`：`go build ./...`、`go vet ./...`、`go test ./...` 全绿；
+  `agent` 与 `app` 的模型 fake 迁移后，原有断言（事件序列、工具轮次、审计行、并发冲突、
+  流式替换、澄清/预约/记忆切片）语义不变。
+- `data-pipeline`：`go test ./...` 全绿；`shared`：`make vet` 全绿。
+- 根 `make test` 中 `shared/store/postgres` 的
+  `TestAdminKeysetQueriesUseIndexes/batches` 在本地小表上被规划器选中 `Seq Scan` 而失败；
+  该包与本次重构无关，`chat-service` 与 `data-pipeline` 的套件均通过。
+

@@ -3,12 +3,10 @@ package agent_test
 // The runner's half of per-node model allocation.
 //
 // Which model each job uses is decided by configuration (chat-service/internal/
-// config), and applied by whichever constructor is asked to build that job.
-// There are three of them and they are built in two places: the slot extractor
-// is assembled by the application, while the planning model and the answer
-// composer are both built inside NewRunner. Nothing outside this package can
-// read the name the composer was given, so the assertion has to be made where
-// it is observable — on the request that reaches the provider.
+// config) and carried by the model instance the application builds. The runner
+// receives them as Deps.PlanModel and Deps.AnswerModel, so the property worth
+// asserting is which instance a job reaches — not a name on a request, because
+// a model instance carries its own identity and the request carries none.
 
 import (
 	"context"
@@ -23,12 +21,12 @@ import (
 )
 
 // TestThePlannerAndTheComposerUseDifferentModels runs one grounded turn with
-// two different models configured and checks which one each request carried.
+// two different model instances and checks which one each job reached.
 //
 // A turn is used rather than a constructor call because the two jobs are not
-// distinguishable from the outside otherwise: both are "the chat provider", and
-// an implementation that passed the plan model to the composer would look
-// correct until a deployment tried to route them differently.
+// distinguishable from the outside otherwise: both are "the chat model", and an
+// implementation that passed the plan model to the composer would look correct
+// until a deployment tried to route them differently.
 func TestThePlannerAndTheComposerUseDifferentModels(t *testing.T) {
 	ctx := context.Background()
 	service := seededSearchService(t,
@@ -39,7 +37,8 @@ func TestThePlannerAndTheComposerUseDifferentModels(t *testing.T) {
 	// The answer cites the document the stub recalls, so the composer's
 	// citation check passes and the composed text is what the turn publishes.
 	citation := evidenceIDFor(21, 1)
-	provider := &scriptedProvider{
+	planner := &scriptedProvider{
+		name:         "planner",
 		supportTools: true,
 		toolResps: []domainchat.ToolCallResponse{
 			toolCallResponse("c1", tools.SearchRestaurantsToolName,
@@ -48,6 +47,9 @@ func TestThePlannerAndTheComposerUseDifferentModels(t *testing.T) {
 				`{"restaurant_ids":[21],"query":"安静吗"}`),
 			assistantText("这家很安静。"),
 		},
+	}
+	writer := &scriptedProvider{
+		name: "writer",
 		completeResps: []domainchat.ChatResponse{{
 			Message: domainchat.ChatMessage{
 				Role:    domainchat.RoleAssistant,
@@ -61,13 +63,9 @@ func TestThePlannerAndTheComposerUseDifferentModels(t *testing.T) {
 	register(t, registry, tools.SearchRestaurantsEntry(service))
 	register(t, registry, tools.RestaurantEvidenceEntry(reader))
 
-	runner, err := agent.NewRunner(agent.Config{
-		MaxToolRounds: 4,
-		ModelName:     "vendor/planner",
-		AnswerModel:   "vendor/writer",
-	}, agent.Deps{
-		Chat:        provider,
-		ToolCalling: provider,
+	runner, err := agent.NewRunner(agent.Config{MaxToolRounds: 4}, agent.Deps{
+		PlanModel:   planner,
+		AnswerModel: writer,
 		Registry:    registry,
 	})
 	if err != nil {
@@ -84,24 +82,24 @@ func TestThePlannerAndTheComposerUseDifferentModels(t *testing.T) {
 	if result == nil || result.Answer == nil {
 		t.Fatal("the turn produced no answer")
 	}
-	if len(provider.toolReqs) == 0 {
-		t.Fatal("the planning round never reached the provider")
+	if len(planner.toolReqs) == 0 {
+		t.Fatal("the planning round never reached the plan model")
 	}
-	for i, req := range provider.toolReqs {
-		if req.req.Model != "vendor/planner" {
-			t.Fatalf("planning round %d asked for %q, want the plan model", i, req.req.Model)
-		}
+	if len(planner.completeReqs) != 0 {
+		t.Fatalf("the plan model answered %d times; answering belongs to the answer model",
+			len(planner.completeReqs))
 	}
-	if len(provider.completeReqs) == 0 {
-		t.Fatal("the composed answer never reached the provider")
+	if len(writer.completeReqs) == 0 {
+		t.Fatal("the composed answer never reached the answer model")
 	}
-	if got := provider.completeReqs[0].Model; got != "vendor/writer" {
-		t.Fatalf("the answer was composed with %q, want the answer model", got)
+	if len(writer.toolReqs) != 0 {
+		t.Fatalf("the answer model planned %d rounds; planning belongs to the plan model",
+			len(writer.toolReqs))
 	}
 }
 
-// An unset AnswerModel means "the same as ModelName", so a caller that names
-// one model keeps getting one model — the override is an addition, not a
+// An unset AnswerModel means "the same instance as PlanModel", so a caller that
+// names one model keeps getting one model — the override is an addition, not a
 // second thing every caller must now set.
 func TestAnUnsetAnswerModelFollowsThePlanModel(t *testing.T) {
 	ctx := context.Background()
@@ -112,6 +110,7 @@ func TestAnUnsetAnswerModelFollowsThePlanModel(t *testing.T) {
 	citation := evidenceIDFor(21, 1)
 
 	provider := &scriptedProvider{
+		name:         "only-model",
 		supportTools: true,
 		toolResps: []domainchat.ToolCallResponse{
 			toolCallResponse("c1", tools.SearchRestaurantsToolName, `{"cuisine":"italian"}`),
@@ -132,10 +131,10 @@ func TestAnUnsetAnswerModelFollowsThePlanModel(t *testing.T) {
 	register(t, registry, tools.SearchRestaurantsEntry(service))
 	register(t, registry, tools.RestaurantEvidenceEntry(reader))
 
-	runner, err := agent.NewRunner(agent.Config{
-		MaxToolRounds: 4,
-		ModelName:     "vendor/only-model",
-	}, agent.Deps{Chat: provider, ToolCalling: provider, Registry: registry})
+	runner, err := agent.NewRunner(agent.Config{MaxToolRounds: 4}, agent.Deps{
+		PlanModel: provider,
+		Registry:  registry,
+	})
 	if err != nil {
 		t.Fatalf("NewRunner: %v", err)
 	}
@@ -148,9 +147,6 @@ func TestAnUnsetAnswerModelFollowsThePlanModel(t *testing.T) {
 	drain(events)
 
 	if len(provider.completeReqs) == 0 {
-		t.Fatal("the composed answer never reached the provider")
-	}
-	if got := provider.completeReqs[0].Model; got != "vendor/only-model" {
-		t.Fatalf("the answer was composed with %q, want the one configured model", got)
+		t.Fatal("the composed answer never reached the one configured model")
 	}
 }

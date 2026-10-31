@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cloudwego/eino/schema"
+
 	domainchat "github.com/zed1995/platepilot/shared/domain/chat"
 	"github.com/zed1995/platepilot/shared/domain/conversation"
 	"github.com/zed1995/platepilot/shared/domain/errs"
@@ -20,7 +22,7 @@ import (
 
 	"github.com/zed1995/platepilot/chat-service/internal/agent/answer"
 	"github.com/zed1995/platepilot/chat-service/internal/agent/audit"
-	"github.com/zed1995/platepilot/chat-service/internal/agent/einomodel"
+	"github.com/zed1995/platepilot/chat-service/internal/agent/modelerr"
 	"github.com/zed1995/platepilot/chat-service/internal/agent/slots"
 	"github.com/zed1995/platepilot/chat-service/internal/agent/tools"
 	"github.com/zed1995/platepilot/chat-service/internal/memorywrite"
@@ -66,13 +68,10 @@ func (r *Runner) ingress(ctx context.Context, in TurnInput) (*TurnState, error) 
 		r.interpret(ctx, st)
 	})
 
-	messages := make([]domainchat.ChatMessage, 0, len(in.History)+len(st.replayedHistory)+2)
+	messages := make([]*schema.Message, 0, len(in.History)+len(st.replayedHistory)+2)
 	messages = append(messages, in.History...)
 	messages = append(messages, st.replayedHistory...)
-	messages = append(messages, domainchat.ChatMessage{
-		Role:    domainchat.RoleUser,
-		Content: in.UserInput,
-	})
+	messages = append(messages, schema.UserMessage(in.UserInput))
 	st.Messages = messages
 	return st, nil
 }
@@ -104,22 +103,13 @@ func (r *Runner) plan(ctx context.Context, st *TurnState) (*TurnState, error) {
 		return st, nil
 	}
 
-	messages := make([]domainchat.ChatMessage, 0, len(st.Messages)+2)
-	messages = append(messages, domainchat.ChatMessage{
-		Role:    domainchat.RoleSystem,
-		Content: r.planSystemPrompt(),
-	})
+	messages := make([]*schema.Message, 0, len(st.Messages)+3)
+	messages = append(messages, schema.SystemMessage(r.planSystemPrompt()))
 	if st.MemoryContext != "" {
-		messages = append(messages, domainchat.ChatMessage{
-			Role:    domainchat.RoleSystem,
-			Content: st.MemoryContext,
-		})
+		messages = append(messages, schema.SystemMessage(st.MemoryContext))
 	}
 	if context := referencePrompt(st); context != "" {
-		messages = append(messages, domainchat.ChatMessage{
-			Role:    domainchat.RoleSystem,
-			Content: context,
-		})
+		messages = append(messages, schema.SystemMessage(context))
 	}
 	messages = append(messages, st.Messages...)
 
@@ -133,25 +123,27 @@ func (r *Runner) plan(ctx context.Context, st *TurnState) (*TurnState, error) {
 	// signal "no ticker was started"; the close is therefore a no-op in
 	// that case.
 	stopProgress := startPhaseProgress(ctx, "正在制定下一步计划")
-	resp, err := r.planModel.Generate(ctx, einomodel.ToEinoMessages(messages))
+	resp, err := r.planModel.Generate(ctx, messages)
 	if stopProgress != nil {
 		close(stopProgress)
 	}
 	if err != nil {
-		return nil, err
+		return nil, modelerr.Map(err)
 	}
-	assistant := einomodel.FromEinoMessage(resp)
-	if assistant.Role == "" {
-		assistant.Role = domainchat.RoleAssistant
+	if resp == nil {
+		return nil, errs.New(errs.CodeProviderUnavailable, "模型返回了空响应")
 	}
-	st.Messages = append(st.Messages, assistant)
-	st.FinishReason = einomodel.EinoFinishReason(resp)
-	usage := einomodel.EinoUsage(resp)
+	if resp.Role == "" {
+		resp.Role = schema.Assistant
+	}
+	st.Messages = append(st.Messages, resp)
+	st.FinishReason = finishReasonFrom(resp)
+	usage := usageFrom(resp)
 	st.Usage.InputTokens += usage.InputTokens
 	st.Usage.OutputTokens += usage.OutputTokens
 	st.Usage.TotalTokens += usage.TotalTokens
 
-	st.PendingToolCalls = len(assistant.ToolCalls) > 0
+	st.PendingToolCalls = len(resp.ToolCalls) > 0
 	if st.PendingToolCalls {
 		st.Intent = IntentRestaurantQA
 		if st.ToolRounds >= r.cfg.MaxToolRounds {
@@ -194,7 +186,7 @@ func (r *Runner) runTools(ctx context.Context, st *TurnState) (*TurnState, error
 	if len(st.Messages) == 0 {
 		return nil, errs.New(errs.CodeInternal, "tools node ran without a transcript")
 	}
-	calls := st.Messages[len(st.Messages)-1].ToolCalls
+	calls := toDomainToolCalls(st.Messages[len(st.Messages)-1].ToolCalls)
 	// The turn's plan rides on the tool context so a tool can fill in what the
 	// model left out. It is attached here rather than in ingress because the
 	// plan belongs to the tool call, and a tool invoked outside a turn simply
@@ -344,12 +336,8 @@ func (r *Runner) runReadOnlyTools(
 	st.UsedTools = true
 	for i, call := range calls {
 		r.absorbToolData(ctx, st, call.Name, outcomes[i])
-		st.Messages = append(st.Messages, domainchat.ChatMessage{
-			Role:       domainchat.RoleTool,
-			ToolCallID: call.ID,
-			Name:       call.Name,
-			Content:    toolMessageContent(outcomes[i]),
-		})
+		st.Messages = append(st.Messages, schema.ToolMessage(
+			toolMessageContent(outcomes[i]), call.ID, schema.WithToolName(call.Name)))
 	}
 }
 
@@ -381,13 +369,10 @@ func (r *Runner) parkForConfirmation(
 	}
 	summary, err := r.deps.Registry.ApprovalSummary(ctx, call.Name, call.Arguments)
 	if err != nil {
-		st.Messages = append(st.Messages, domainchat.ChatMessage{
-			Role:       domainchat.RoleTool,
-			ToolCallID: call.ID,
-			Name:       call.Name,
-			Content: "无法生成该操作的确认摘要：" + err.Error() +
+		st.Messages = append(st.Messages, schema.ToolMessage(
+			"无法生成该操作的确认摘要："+err.Error()+
 				"。请检查参数后重试，用户无法在不了解内容的情况下确认。",
-		})
+			call.ID, schema.WithToolName(call.Name)))
 		st.Warnings = appendUnique(st.Warnings,
 			"需要确认的操作无法生成摘要，本轮未挂起："+call.Name)
 		return false, nil
@@ -1098,7 +1083,7 @@ func errorText(result domaintool.ToolResult) string {
 
 func lastAssistantText(st *TurnState) string {
 	for i := len(st.Messages) - 1; i >= 0; i-- {
-		if st.Messages[i].Role == domainchat.RoleAssistant {
+		if st.Messages[i].Role == schema.Assistant {
 			return st.Messages[i].Content
 		}
 	}
@@ -1167,12 +1152,49 @@ func (st *TurnState) valueDomain() tools.ValueDomain {
 
 // domainRefusalMessage feeds a refused write back to the model as a tool result,
 // so it can correct the id instead of believing the booking was parked.
-func domainRefusalMessage(call domaintool.ToolCall, err error) domainchat.ChatMessage {
-	return domainchat.ChatMessage{
-		Role:       domainchat.RoleTool,
-		ToolCallID: call.ID,
-		Name:       call.Name,
-		Content: "该操作引用了本轮没有出现过的餐厅或时段，已拒绝：" + err.Error() +
+func domainRefusalMessage(call domaintool.ToolCall, err error) *schema.Message {
+	return schema.ToolMessage(
+		"该操作引用了本轮没有出现过的餐厅或时段，已拒绝："+err.Error()+
 			"。只能使用本轮 search_restaurants / resolve_restaurant / get_availability 返回过的 id。",
+		call.ID, schema.WithToolName(call.Name))
+}
+
+// finishReasonFrom reads the finish reason out of a model response.
+func finishReasonFrom(msg *schema.Message) domainchat.FinishReason {
+	if msg != nil && msg.ResponseMeta != nil {
+		return domainchat.FinishReason(msg.ResponseMeta.FinishReason)
 	}
+	return ""
+}
+
+// usageFrom reads token usage out of a model response. Providers do not always
+// report a total, so it is derived from the two parts when absent.
+func usageFrom(msg *schema.Message) domainchat.TokenUsage {
+	if msg == nil || msg.ResponseMeta == nil || msg.ResponseMeta.Usage == nil {
+		return domainchat.TokenUsage{}
+	}
+	usage := msg.ResponseMeta.Usage
+	total := usage.TotalTokens
+	if total == 0 {
+		total = usage.PromptTokens + usage.CompletionTokens
+	}
+	return domainchat.TokenUsage{
+		InputTokens:  usage.PromptTokens,
+		OutputTokens: usage.CompletionTokens,
+		TotalTokens:  total,
+	}
+}
+
+// toDomainToolCalls projects Eino tool calls onto the project's tool DTO, which
+// is what the registry, the auditor, and the write guard speak.
+func toDomainToolCalls(calls []schema.ToolCall) []domaintool.ToolCall {
+	out := make([]domaintool.ToolCall, 0, len(calls))
+	for _, call := range calls {
+		out = append(out, domaintool.ToolCall{
+			ID:        call.ID,
+			Name:      call.Function.Name,
+			Arguments: json.RawMessage(call.Function.Arguments),
+		})
+	}
+	return out
 }

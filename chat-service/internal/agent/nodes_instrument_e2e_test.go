@@ -29,20 +29,18 @@ import (
 // gate after a long enough delay to observe at least one tick.
 func TestPlanPhasePublishesProgressHeartbeats(t *testing.T) {
 	gate := make(chan struct{})
-	provider := &startGateProvider{
-		scriptedProvider: &scriptedProvider{
-			supportTools: true,
-			toolResps:    []domainchat.ToolCallResponse{assistantText("为你好。")},
-			completeResps: []domainchat.ChatResponse{{
-				Message:      domainchat.ChatMessage{Role: domainchat.RoleAssistant, Content: "为你好。"},
-				FinishReason: domainchat.FinishReasonStop,
-			}},
-		},
-		gate: gate,
+	provider := &scriptedProvider{
+		supportTools: true,
+		toolResps:    []domainchat.ToolCallResponse{assistantText("为你好。")},
+		completeResps: []domainchat.ChatResponse{{
+			Message:      domainchat.ChatMessage{Role: domainchat.RoleAssistant, Content: "为你好。"},
+			FinishReason: domainchat.FinishReasonStop,
+		}},
+		gate: channelGate(gate),
 	}
 	runner, err := agent.NewRunner(agent.Config{MaxToolRounds: 2, PhaseEvents: true}, agent.Deps{
-		Chat:        provider,
-		ToolCalling: provider,
+		PlanModel:   provider,
+		AnswerModel: provider,
 		Registry:    toolreg.New(0),
 	})
 	if err != nil {
@@ -123,20 +121,18 @@ func TestPlanPhasePublishesProgressHeartbeats(t *testing.T) {
 
 func TestIngressEmitsPhaseAndStepFramesBeforeAnyToolCall(t *testing.T) {
 	gate := make(chan struct{})
-	provider := &startGateProvider{
-		scriptedProvider: &scriptedProvider{
-			supportTools: true,
-			toolResps:    []domainchat.ToolCallResponse{assistantText("为你好。")},
-			completeResps: []domainchat.ChatResponse{{
-				Message:      domainchat.ChatMessage{Role: domainchat.RoleAssistant, Content: "为你好。"},
-				FinishReason: domainchat.FinishReasonStop,
-			}},
-		},
-		gate: gate,
+	provider := &scriptedProvider{
+		supportTools: true,
+		toolResps:    []domainchat.ToolCallResponse{assistantText("为你好。")},
+		completeResps: []domainchat.ChatResponse{{
+			Message:      domainchat.ChatMessage{Role: domainchat.RoleAssistant, Content: "为你好。"},
+			FinishReason: domainchat.FinishReasonStop,
+		}},
+		gate: channelGate(gate),
 	}
 	runner, err := agent.NewRunner(agent.Config{MaxToolRounds: 2, PhaseEvents: true}, agent.Deps{
-		Chat:        provider,
-		ToolCalling: provider,
+		PlanModel:   provider,
+		AnswerModel: provider,
 		Registry:    toolreg.New(0),
 	})
 	if err != nil {

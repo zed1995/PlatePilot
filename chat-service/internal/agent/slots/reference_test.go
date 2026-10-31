@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/zed1995/platepilot/shared/domain/conversation"
-	"github.com/zed1995/platepilot/shared/testkit"
 )
 
 // snapshot builds a candidate list in position order, the way the store returns
@@ -379,7 +378,7 @@ func TestParseCountHandlesTheFormsPeopleWrite(t *testing.T) {
 // rather than load-bearing.
 func TestResolveReferenceCallsNoModel(t *testing.T) {
 	// A provider that fails every call: resolving must not touch it.
-	extractor := New(Deps{Structured: &testkit.MockChatProvider{
+	extractor := New(Deps{Model: &fakeChat{
 		Err: errors.New("structured provider is down"),
 	}})
 	plan, err := extractor.Extract(context.Background(), "第二家安静吗", ThreadContext{

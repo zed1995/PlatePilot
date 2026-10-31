@@ -218,8 +218,8 @@ func TestOneRoundsReadOnlyCallsRunConcurrentlyWithEachOther(t *testing.T) {
 
 	runs := memory.NewRunRepository()
 	runner, err := agent.NewRunner(agent.Config{MaxToolRounds: 3}, agent.Deps{
-		Chat:        provider,
-		ToolCalling: provider,
+		PlanModel:   provider,
+		AnswerModel: provider,
 		Registry:    registry,
 		Auditor:     audit.New(runs, slog.New(slog.NewTextHandler(io.Discard, nil)), audit.Options{}),
 	})
@@ -338,8 +338,8 @@ func TestARoundsReadOnlyCallsStayWithinTheirLimit(t *testing.T) {
 	register(t, registry, noteEntry(rendezvous, nil))
 
 	runner, err := agent.NewRunner(agent.Config{MaxToolRounds: 3}, agent.Deps{
-		Chat:        provider,
-		ToolCalling: provider,
+		PlanModel:   provider,
+		AnswerModel: provider,
 		Registry:    registry,
 	})
 	if err != nil {
@@ -411,8 +411,8 @@ func TestAWriteStopsTheRoundBeforeTheReadsAfterIt(t *testing.T) {
 	}
 
 	runner, err := agent.NewRunner(agent.Config{MaxToolRounds: 3}, agent.Deps{
-		Chat:        provider,
-		ToolCalling: provider,
+		PlanModel:   provider,
+		AnswerModel: provider,
 		Registry:    registry,
 	})
 	if err != nil {

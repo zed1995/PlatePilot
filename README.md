@@ -786,7 +786,7 @@ chat-service/
   internal/agent/         # conversational agent runtime: compiled graph, tools, eval + replay harnesses
   internal/agent/tools/   # the six deterministic store-backed tools
   internal/agent/audit/   # run / tool-call / node trace hooks
-  internal/agent/einomodel/ # Eino graph model bindings
+  internal/agent/toolreg/ # project tools bridged to Eino ToolInfo
   internal/hitl/          # human-in-the-loop confirmation gate
   internal/memorywrite/   # long-term preference extraction and storage
   internal/reservation/   # reservation application service (holds, idempotency)

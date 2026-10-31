@@ -26,11 +26,12 @@ func reservationConfig() config.Config {
 	return cfg
 }
 
-func reservationDeps(chatProvider *testkit.MockChatProvider) Deps {
+func reservationDeps() Deps {
+	chatModel := &fakeChatModel{name: "reservation"}
 	return Deps{
-		Chat:          chatProvider,
-		ToolCalling:   chatProvider,
-		Structured:    chatProvider,
+		PlanModel:     chatModel,
+		AnswerModel:   chatModel,
+		ExtractModel:  chatModel,
 		Restaurants:   testkit.NewRestaurantRepository(),
 		Knowledge:     testkit.NewKnowledgeRepository(),
 		Conversations: testkit.NewConversationRepository(),
@@ -52,7 +53,7 @@ func newAssembly(t *testing.T, cfg config.Config, deps Deps) *App {
 // registered and failing. A deployment without the capability presents a model
 // that cannot even ask for a table, so it never promises one it cannot book.
 func TestReservationToolsAreAbsentWhenTheCapabilityIsOff(t *testing.T) {
-	application := newAssembly(t, assemblyConfig(), reservationDeps(&testkit.MockChatProvider{Tools: true}))
+	application := newAssembly(t, assemblyConfig(), reservationDeps())
 
 	for _, name := range []string{tools.GetAvailabilityToolName, tools.RequestReservationToolName} {
 		if application.registry.RequiresConfirmation(name) {
@@ -65,7 +66,7 @@ func TestReservationToolsAreAbsentWhenTheCapabilityIsOff(t *testing.T) {
 }
 
 func TestReservationToolsArePresentAndGatedWhenTheCapabilityIsOn(t *testing.T) {
-	application := newAssembly(t, reservationConfig(), reservationDeps(&testkit.MockChatProvider{Tools: true}))
+	application := newAssembly(t, reservationConfig(), reservationDeps())
 
 	if !offered(application, tools.GetAvailabilityToolName) {
 		t.Fatal("get_availability is missing from the tool list")
@@ -88,7 +89,7 @@ func TestReservationToolsArePresentAndGatedWhenTheCapabilityIsOn(t *testing.T) {
 // write inventory. Honouring it without a store would produce a booking path
 // that fails at the first request instead of at startup.
 func TestEnablingReservationsWithoutAStoreIsAStartupFailure(t *testing.T) {
-	deps := reservationDeps(&testkit.MockChatProvider{Tools: true})
+	deps := reservationDeps()
 	deps.Reservations = nil
 
 	if _, err := New(reservationConfig(), slog.New(slog.NewTextHandler(io.Discard, nil)), deps, "test"); err == nil {
@@ -100,7 +101,7 @@ func TestEnablingReservationsWithoutAStoreIsAStartupFailure(t *testing.T) {
 // capability degrades to availability-only rather than offering a booking
 // nobody could approve.
 func TestReservationsWithoutAConversationStoreDegradeToAvailabilityOnly(t *testing.T) {
-	deps := reservationDeps(&testkit.MockChatProvider{Tools: true})
+	deps := reservationDeps()
 	deps.Conversations = nil
 
 	application := newAssembly(t, reservationConfig(), deps)

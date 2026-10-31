@@ -9,13 +9,34 @@ import (
 	"strings"
 	"testing"
 
-	domainchat "github.com/zed1995/platepilot/shared/domain/chat"
+	"github.com/cloudwego/eino/components/model"
+	"github.com/cloudwego/eino/schema"
+
 	"github.com/zed1995/platepilot/shared/domain/conversation"
 	"github.com/zed1995/platepilot/shared/domain/errs"
 	"github.com/zed1995/platepilot/shared/domain/review"
 	"github.com/zed1995/platepilot/shared/domain/search"
-	"github.com/zed1995/platepilot/shared/testkit"
 )
+
+// fakeChat is a scripted extraction model: it serves one fixed content (or one
+// error) and records every prompt it was given.
+type fakeChat struct {
+	Content         string
+	Err             error
+	StructuredCalls [][]*schema.Message
+}
+
+func (f *fakeChat) Generate(_ context.Context, in []*schema.Message, _ ...model.Option) (*schema.Message, error) {
+	f.StructuredCalls = append(f.StructuredCalls, in)
+	if f.Err != nil {
+		return nil, f.Err
+	}
+	return schema.AssistantMessage(f.Content, nil), nil
+}
+
+func (f *fakeChat) Stream(context.Context, []*schema.Message, ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+	return nil, nil
+}
 
 // rulesOnly is an extractor with no structured-output provider: the deployment
 // that has no chat channel at all, which is the one the fallback exists for.
@@ -399,30 +420,30 @@ func TestExtractFallsBackToRulesWithoutAProvider(t *testing.T) {
 func TestExtractFallsBackToRulesOnUnusableOutput(t *testing.T) {
 	cases := []struct {
 		name     string
-		provider *testkit.MockChatProvider
+		provider *fakeChat
 	}{
 		{
 			name: "provider error",
-			provider: &testkit.MockChatProvider{
+			provider: &fakeChat{
 				Err: errors.New("upstream is down"),
 			},
 		},
 		{
 			name: "not json",
-			provider: &testkit.MockChatProvider{
-				StructuredResponse: domainchat.StructuredResponse{Content: "抱歉，我无法回答。"},
+			provider: &fakeChat{
+				Content: "抱歉，我无法回答。",
 			},
 		},
 		{
 			name: "json without slots",
-			provider: &testkit.MockChatProvider{
-				StructuredResponse: domainchat.StructuredResponse{Content: "{}"},
+			provider: &fakeChat{
+				Content: "{}",
 			},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			plan, err := New(Deps{Structured: tc.provider}).Extract(
+			plan, err := New(Deps{Model: tc.provider}).Extract(
 				context.Background(), "布鲁克林的泰国菜", ThreadContext{})
 			if err != nil {
 				t.Fatalf("Extract must not fail on a model problem: %v", err)
@@ -456,11 +477,11 @@ func TestExtractUsesTheModelWhenItAnswers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal fixture: %v", err)
 	}
-	provider := &testkit.MockChatProvider{
-		StructuredResponse: domainchat.StructuredResponse{Content: string(encoded)},
+	provider := &fakeChat{
+		Content: string(encoded),
 	}
 
-	plan, err := New(Deps{Structured: provider}).Extract(context.Background(), "安静点的意餐", ThreadContext{})
+	plan, err := New(Deps{Model: provider}).Extract(context.Background(), "安静点的意餐", ThreadContext{})
 	if err != nil {
 		t.Fatalf("Extract returned an error: %v", err)
 	}
@@ -486,15 +507,15 @@ func TestExtractUsesTheModelWhenItAnswers(t *testing.T) {
 // the open slot the model cannot tell a new question from an answer to the last
 // one.
 func TestExtractIncludesPendingStateInThePrompt(t *testing.T) {
-	provider := &testkit.MockChatProvider{
-		StructuredResponse: domainchat.StructuredResponse{Content: `{"intent":"discover","query":"第二家"}`},
+	provider := &fakeChat{
+		Content: `{"intent":"discover","query":"第二家"}`,
 	}
 	pending := &conversation.Checkpoint{
 		State:         conversation.StateAwaitingClarification,
 		PendingAction: "resolve_restaurant",
 		MissingSlots:  []string{SlotRestaurantID},
 	}
-	plan, err := New(Deps{Structured: provider}).Extract(
+	plan, err := New(Deps{Model: provider}).Extract(
 		context.Background(), "第二家安静吗", ThreadContext{Pending: pending})
 	if err != nil {
 		t.Fatalf("Extract returned an error: %v", err)
@@ -503,7 +524,7 @@ func TestExtractIncludesPendingStateInThePrompt(t *testing.T) {
 		t.Fatalf("structured calls = %d, want 1", len(provider.StructuredCalls))
 	}
 	var transcript strings.Builder
-	for _, message := range provider.StructuredCalls[0].Messages {
+	for _, message := range provider.StructuredCalls[0] {
 		transcript.WriteString(message.Content)
 		transcript.WriteString("\n")
 	}

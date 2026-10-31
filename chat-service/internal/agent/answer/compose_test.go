@@ -6,7 +6,9 @@ import (
 	"testing"
 	"time"
 
-	chatport "github.com/zed1995/platepilot/shared/chat"
+	"github.com/cloudwego/eino/components/model"
+	"github.com/cloudwego/eino/schema"
+
 	domainchat "github.com/zed1995/platepilot/shared/domain/chat"
 	"github.com/zed1995/platepilot/shared/domain/errs"
 	"github.com/zed1995/platepilot/shared/domain/evidence"
@@ -15,28 +17,25 @@ import (
 	"github.com/zed1995/platepilot/shared/domain/search"
 )
 
-// scriptedChat answers Complete from a queued script; it records every request
+// scriptedChat answers Generate from a queued script; it records every request
 // so tests can assert on corrective messages and call counts.
 type scriptedChat struct {
 	contents []string
 	err      error
-	requests []domainchat.ChatRequest
+	requests [][]*schema.Message
 }
 
-func (s *scriptedChat) Complete(_ context.Context, req domainchat.ChatRequest) (domainchat.ChatResponse, error) {
-	s.requests = append(s.requests, req)
+func (s *scriptedChat) Generate(_ context.Context, in []*schema.Message, _ ...model.Option) (*schema.Message, error) {
+	s.requests = append(s.requests, in)
 	if s.err != nil {
-		return domainchat.ChatResponse{}, s.err
+		return nil, s.err
 	}
 	content := s.contents[0]
 	s.contents = s.contents[1:]
-	return domainchat.ChatResponse{
-		Message:      domainchat.ChatMessage{Role: domainchat.RoleAssistant, Content: content},
-		FinishReason: domainchat.FinishReasonStop,
-	}, nil
+	return schema.AssistantMessage(content, nil), nil
 }
 
-func (s *scriptedChat) Stream(context.Context, domainchat.ChatRequest) (chatport.ChatStream, error) {
+func (s *scriptedChat) Stream(context.Context, []*schema.Message, ...model.Option) (*schema.StreamReader[*schema.Message], error) {
 	return nil, nil
 }
 
@@ -55,7 +54,7 @@ func adequateEvidence() []evidence.Evidence {
 }
 
 func TestComposeRequiresQuestion(t *testing.T) {
-	c := NewComposer(Deps{Chat: &scriptedChat{}})
+	c := NewComposer(Deps{Model: &scriptedChat{}})
 	_, err := c.Compose(context.Background(), Input{Evidence: []evidence.Evidence{ev(1)}})
 	if errs.CodeOf(err) != errs.CodeInvalidArgument {
 		t.Fatalf("err = %v, want invalid_argument", err)
@@ -64,7 +63,7 @@ func TestComposeRequiresQuestion(t *testing.T) {
 
 func TestComposeWithoutEvidenceReturnsFixedRefusalWithoutModel(t *testing.T) {
 	chat := &scriptedChat{}
-	c := NewComposer(Deps{Chat: chat, Model: "m"})
+	c := NewComposer(Deps{Model: chat})
 	ans, err := c.Compose(context.Background(), Input{Question: "哪家好？"})
 	if err != nil {
 		t.Fatal(err)
@@ -81,7 +80,7 @@ func TestComposeValidAnswerParsesCitationsAndFollowUps(t *testing.T) {
 	chat := &scriptedChat{contents: []string{
 		"结论：A 更好[^10][^20]。细节如此。\nFOLLOWUPS: [\"能订位吗?\",\"人均多少?\"]",
 	}}
-	c := NewComposer(Deps{Chat: chat, Model: "m"})
+	c := NewComposer(Deps{Model: chat})
 	ans, err := c.Compose(context.Background(), Input{
 		Question: "哪家好？",
 		Evidence: adequateEvidence(),
@@ -102,7 +101,7 @@ func TestComposeValidAnswerParsesCitationsAndFollowUps(t *testing.T) {
 		t.Fatalf("Complete called %d times, want 1", len(chat.requests))
 	}
 	// Evidence must be carried into the grounding context.
-	userContent := chat.requests[0].Messages[1].Content
+	userContent := chat.requests[0][1].Content
 	if !strings.Contains(userContent, "<evidence id=\"10\"") {
 		t.Fatalf("evidence block missing from prompt:\n%s", userContent)
 	}
@@ -110,7 +109,7 @@ func TestComposeValidAnswerParsesCitationsAndFollowUps(t *testing.T) {
 
 func TestComposeDeduplicatesAndSortsCitations(t *testing.T) {
 	chat := &scriptedChat{contents: []string{"正文[^20][^10][^20]\nFOLLOWUPS: []"}}
-	c := NewComposer(Deps{Chat: chat})
+	c := NewComposer(Deps{Model: chat})
 	ans, err := c.Compose(context.Background(), Input{
 		Question: "q",
 		Evidence: []evidence.Evidence{ev(10), ev(20)},
@@ -128,7 +127,7 @@ func TestComposeRetriesOnceAfterOutOfRangeCitation(t *testing.T) {
 		"第一次回答[^99]\nFOLLOWUPS: []",
 		"修正回答[^10]\nFOLLOWUPS: []",
 	}}
-	c := NewComposer(Deps{Chat: chat})
+	c := NewComposer(Deps{Model: chat})
 	ans, err := c.Compose(context.Background(), Input{
 		Question: "q",
 		Evidence: adequateEvidence(),
@@ -142,8 +141,8 @@ func TestComposeRetriesOnceAfterOutOfRangeCitation(t *testing.T) {
 	if len(chat.requests) != 2 {
 		t.Fatalf("Complete called %d times, want 2", len(chat.requests))
 	}
-	last := chat.requests[1].Messages[len(chat.requests[1].Messages)-1]
-	if last.Role != domainchat.RoleUser {
+	last := chat.requests[1][len(chat.requests[1])-1]
+	if last.Role != schema.User {
 		t.Fatalf("correction role = %s", last.Role)
 	}
 	if !strings.Contains(last.Content, "99") || !strings.Contains(last.Content, "10") {
@@ -156,7 +155,7 @@ func TestComposeFailsAfterSecondViolation(t *testing.T) {
 		"第一次[^99]\nFOLLOWUPS: []",
 		"第二次还是[^99]\nFOLLOWUPS: []",
 	}}
-	c := NewComposer(Deps{Chat: chat})
+	c := NewComposer(Deps{Model: chat})
 	_, err := c.Compose(context.Background(), Input{
 		Question: "q",
 		Evidence: []evidence.Evidence{ev(10)},
@@ -171,7 +170,7 @@ func TestComposeFailsAfterSecondViolation(t *testing.T) {
 
 func TestComposePropagatesModelError(t *testing.T) {
 	modelErr := errs.New(errs.CodeProviderUnavailable, "down")
-	c := NewComposer(Deps{Chat: &scriptedChat{err: modelErr}})
+	c := NewComposer(Deps{Model: &scriptedChat{err: modelErr}})
 	if _, err := c.Compose(context.Background(), Input{
 		Question: "q",
 		Evidence: []evidence.Evidence{ev(1)},
@@ -184,7 +183,7 @@ func TestFollowUpsClampedToThree(t *testing.T) {
 	chat := &scriptedChat{contents: []string{
 		"正文[^10]\nFOLLOWUPS: [\"a\",\"b\",\"c\",\"d\",\"e\"]",
 	}}
-	c := NewComposer(Deps{Chat: chat})
+	c := NewComposer(Deps{Model: chat})
 	ans, err := c.Compose(context.Background(), Input{
 		Question: "q",
 		Evidence: []evidence.Evidence{ev(10)},
@@ -199,7 +198,7 @@ func TestFollowUpsClampedToThree(t *testing.T) {
 
 func TestFollowUpsMalformedJSONTolerated(t *testing.T) {
 	chat := &scriptedChat{contents: []string{"正文[^10]\nFOLLOWUPS: 不是数组"}}
-	c := NewComposer(Deps{Chat: chat})
+	c := NewComposer(Deps{Model: chat})
 	ans, err := c.Compose(context.Background(), Input{
 		Question: "q",
 		Evidence: adequateEvidence(),
@@ -217,7 +216,7 @@ func TestFollowUpsMalformedJSONTolerated(t *testing.T) {
 
 func TestNoFollowUpsLine(t *testing.T) {
 	chat := &scriptedChat{contents: []string{"只有正文[^10]"}}
-	c := NewComposer(Deps{Chat: chat})
+	c := NewComposer(Deps{Model: chat})
 	ans, err := c.Compose(context.Background(), Input{
 		Question: "q",
 		Evidence: adequateEvidence(),
@@ -260,8 +259,8 @@ func systemOf(t *testing.T, chat *scriptedChat) string {
 	if len(chat.requests) == 0 {
 		t.Fatal("the composer never called the model")
 	}
-	for _, message := range chat.requests[0].Messages {
-		if message.Role == domainchat.RoleSystem {
+	for _, message := range chat.requests[0] {
+		if message.Role == schema.System {
 			return message.Content
 		}
 	}
@@ -276,8 +275,8 @@ func userContentOf(t *testing.T, chat *scriptedChat) string {
 	if len(chat.requests) == 0 {
 		t.Fatal("the composer never called the model")
 	}
-	for _, message := range chat.requests[0].Messages {
-		if message.Role == domainchat.RoleUser {
+	for _, message := range chat.requests[0] {
+		if message.Role == schema.User {
 			return message.Content
 		}
 	}
@@ -290,7 +289,7 @@ func userContentOf(t *testing.T, chat *scriptedChat) string {
 // sentence the user reads.
 func TestComposeInstructionRequiresLabellingReviewInferences(t *testing.T) {
 	chat := &scriptedChat{contents: []string{"结论[^10]\nFOLLOWUPS: []"}}
-	c := NewComposer(Deps{Chat: chat, Model: "m"})
+	c := NewComposer(Deps{Model: chat})
 	if _, err := c.Compose(context.Background(), Input{
 		Question: "安静的意大利餐厅？",
 		Evidence: []evidence.Evidence{ev(10)},
@@ -311,7 +310,7 @@ func TestComposeInstructionRequiresLabellingReviewInferences(t *testing.T) {
 // composer's job is to say, per condition, which of the three situations applies.
 func TestComposeSortsSoftConditionsByWhetherEvidenceSupportsThem(t *testing.T) {
 	chat := &scriptedChat{contents: []string{"结论[^10]\nFOLLOWUPS: []"}}
-	c := NewComposer(Deps{Chat: chat, Model: "m"})
+	c := NewComposer(Deps{Model: chat})
 
 	_, err := c.Compose(context.Background(), Input{
 		Question: "安静的餐厅，服务要好",
@@ -345,7 +344,7 @@ func TestComposeSortsSoftConditionsByWhetherEvidenceSupportsThem(t *testing.T) {
 // different sentence from "the user did not ask".
 func TestComposeOmitsTheSoftBlockWhenNothingIsSoft(t *testing.T) {
 	chat := &scriptedChat{contents: []string{"结论[^10]\nFOLLOWUPS: []"}}
-	c := NewComposer(Deps{Chat: chat, Model: "m"})
+	c := NewComposer(Deps{Model: chat})
 	if _, err := c.Compose(context.Background(), Input{
 		Question: "q",
 		Evidence: []evidence.Evidence{ev(10)},
@@ -363,7 +362,7 @@ func TestComposeOmitsTheSoftBlockWhenNothingIsSoft(t *testing.T) {
 func TestComposeRendersCandidatesWithTheirDataTime(t *testing.T) {
 	snapshot := time.Date(2021, 9, 1, 12, 0, 0, 0, time.UTC)
 	chat := &scriptedChat{contents: []string{"结论[^10]\nFOLLOWUPS: []"}}
-	c := NewComposer(Deps{Chat: chat, Model: "m"})
+	c := NewComposer(Deps{Model: chat})
 
 	_, err := c.Compose(context.Background(), Input{
 		Question: "安静又好吃的意大利餐厅？",
@@ -398,7 +397,7 @@ func TestComposeRendersCandidatesWithTheirDataTime(t *testing.T) {
 // prompt must not suggest otherwise.
 func TestComposeOmitsTheCandidateBlockWhenTheSearchFoundNothing(t *testing.T) {
 	chat := &scriptedChat{contents: []string{"结论[^10]\nFOLLOWUPS: []"}}
-	c := NewComposer(Deps{Chat: chat, Model: "m"})
+	c := NewComposer(Deps{Model: chat})
 	if _, err := c.Compose(context.Background(), Input{
 		Question: "q",
 		Evidence: []evidence.Evidence{ev(10)},
@@ -416,7 +415,7 @@ func TestComposeOmitsTheCandidateBlockWhenTheSearchFoundNothing(t *testing.T) {
 // answer for the same question.
 func TestComposeInstructionFixesTheExplanationOrder(t *testing.T) {
 	chat := &scriptedChat{contents: []string{"结论[^10]\nFOLLOWUPS: []"}}
-	c := NewComposer(Deps{Chat: chat, Model: "m"})
+	c := NewComposer(Deps{Model: chat})
 	if _, err := c.Compose(context.Background(), Input{
 		Question: "安静又好吃的意大利餐厅？",
 		Evidence: []evidence.Evidence{ev(10)},
@@ -440,7 +439,7 @@ func TestComposeInstructionFixesTheExplanationOrder(t *testing.T) {
 // returned nothing could quietly vanish from the answer.
 func TestComposeTellsTheModelWhichHardConditionsWereEnforced(t *testing.T) {
 	chat := &scriptedChat{contents: []string{"结论[^10]\nFOLLOWUPS: []"}}
-	c := NewComposer(Deps{Chat: chat, Model: "m"})
+	c := NewComposer(Deps{Model: chat})
 
 	minRating := 4.0
 	_, err := c.Compose(context.Background(), Input{
@@ -476,7 +475,7 @@ func TestComposeTellsTheModelWhichHardConditionsWereEnforced(t *testing.T) {
 // including on the turn where it is the only warning that matters.
 func TestComposeDerivesTheCannotConfirmSectionFromRealGaps(t *testing.T) {
 	chat := &scriptedChat{contents: []string{"结论[^10]\nFOLLOWUPS: []"}}
-	c := NewComposer(Deps{Chat: chat, Model: "m"})
+	c := NewComposer(Deps{Model: chat})
 
 	_, err := c.Compose(context.Background(), Input{
 		Question: "安静的有包间的意大利餐厅？",
@@ -506,7 +505,7 @@ func TestComposeDerivesTheCannotConfirmSectionFromRealGaps(t *testing.T) {
 // read as "something is missing and we are not saying what".
 func TestComposeOmitsTheGapsBlockWhenNothingIsMissing(t *testing.T) {
 	chat := &scriptedChat{contents: []string{"结论[^10]\nFOLLOWUPS: []"}}
-	c := NewComposer(Deps{Chat: chat, Model: "m"})
+	c := NewComposer(Deps{Model: chat})
 	if _, err := c.Compose(context.Background(), Input{
 		Question: "q",
 		Evidence: []evidence.Evidence{ev(10)},
@@ -524,7 +523,7 @@ func TestComposeOmitsTheGapsBlockWhenNothingIsMissing(t *testing.T) {
 // general disclaimer rather than a statement about this answer.
 func TestComposeOrdersTheContextBlocks(t *testing.T) {
 	chat := &scriptedChat{contents: []string{"结论[^10]\nFOLLOWUPS: []"}}
-	c := NewComposer(Deps{Chat: chat, Model: "m"})
+	c := NewComposer(Deps{Model: chat})
 
 	_, err := c.Compose(context.Background(), Input{
 		Question: "安静的有包间的意大利餐厅？",
@@ -561,7 +560,7 @@ func TestComposeOrdersTheContextBlocks(t *testing.T) {
 // dropped, and a scripted model here returns a bare sentence with no caveat.
 func TestComposeStatesInsufficientEvidenceInTheAnswerItself(t *testing.T) {
 	chat := &scriptedChat{contents: []string{"结论：这家很好[^10]\nFOLLOWUPS: []"}}
-	c := NewComposer(Deps{Chat: chat, Model: "m"})
+	c := NewComposer(Deps{Model: chat})
 	ans, err := c.Compose(context.Background(), Input{
 		Question: "这家怎么样？",
 		Evidence: []evidence.Evidence{ev(10)},
@@ -594,7 +593,7 @@ func TestComposeCountsKindsNotDocuments(t *testing.T) {
 		reviewEvidence(12, review.TopicFood, "菜不错"),
 	}
 	chat := &scriptedChat{contents: []string{"结论[^10][^11][^12]\nFOLLOWUPS: []"}}
-	c := NewComposer(Deps{Chat: chat, Model: "m"})
+	c := NewComposer(Deps{Model: chat})
 	ans, err := c.Compose(context.Background(), Input{Question: "q", Evidence: items})
 	if err != nil {
 		t.Fatal(err)
@@ -606,7 +605,7 @@ func TestComposeCountsKindsNotDocuments(t *testing.T) {
 
 func TestComposeDropsTheCaveatWhenTwoDocTypesSupportIt(t *testing.T) {
 	chat := &scriptedChat{contents: []string{"结论[^10]\nFOLLOWUPS: []"}}
-	c := NewComposer(Deps{Chat: chat, Model: "m"})
+	c := NewComposer(Deps{Model: chat})
 	ans, err := c.Compose(context.Background(), Input{Question: "q", Evidence: adequateEvidence()})
 	if err != nil {
 		t.Fatal(err)
@@ -621,7 +620,7 @@ func TestComposeDropsTheCaveatWhenTwoDocTypesSupportIt(t *testing.T) {
 // generalise anyway.
 func TestComposeTellsTheModelTheEvidenceIsTooThinToGeneralise(t *testing.T) {
 	chat := &scriptedChat{contents: []string{"结论[^10]\nFOLLOWUPS: []"}}
-	c := NewComposer(Deps{Chat: chat, Model: "m"})
+	c := NewComposer(Deps{Model: chat})
 	if _, err := c.Compose(context.Background(), Input{
 		Question: "服务好不好？",
 		Evidence: []evidence.Evidence{ev(10)},
@@ -642,7 +641,7 @@ func TestComposeTellsTheModelTheEvidenceIsTooThinToGeneralise(t *testing.T) {
 
 func TestComposeOmitsTheAdequacyBlockWhenTheEvidenceIsEnough(t *testing.T) {
 	chat := &scriptedChat{contents: []string{"结论[^10]\nFOLLOWUPS: []"}}
-	c := NewComposer(Deps{Chat: chat, Model: "m"})
+	c := NewComposer(Deps{Model: chat})
 	if _, err := c.Compose(context.Background(), Input{
 		Question: "q",
 		Evidence: adequateEvidence(),

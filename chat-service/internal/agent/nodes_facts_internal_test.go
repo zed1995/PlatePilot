@@ -5,8 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	chatport "github.com/zed1995/platepilot/shared/chat"
-	domainchat "github.com/zed1995/platepilot/shared/domain/chat"
+	"github.com/cloudwego/eino/components/model"
+	"github.com/cloudwego/eino/schema"
+
 	"github.com/zed1995/platepilot/shared/domain/search"
 
 	"github.com/zed1995/platepilot/chat-service/internal/agent/answer"
@@ -19,15 +20,14 @@ type nodesFactChat struct {
 	calls   int
 }
 
-func (c *nodesFactChat) Complete(_ context.Context, req domainchat.ChatRequest) (domainchat.ChatResponse, error) {
+func (c *nodesFactChat) Generate(_ context.Context, _ []*schema.Message, _ ...model.Option) (*schema.Message, error) {
 	c.calls++
-	return domainchat.ChatResponse{
-		Message:      domainchat.ChatMessage{Role: domainchat.RoleAssistant, Content: c.content},
-		FinishReason: domainchat.FinishReasonStop,
-	}, nil
+	return schema.AssistantMessage(c.content, nil), nil
 }
 
-func (c *nodesFactChat) Stream(context.Context, domainchat.ChatRequest) (chatport.ChatStream, error) {
+func (c *nodesFactChat) Stream(
+	context.Context, []*schema.Message, ...model.Option,
+) (*schema.StreamReader[*schema.Message], error) {
 	return nil, nil
 }
 
@@ -60,7 +60,7 @@ func TestAnswerNodeGroundsFactOnlyTurnFromCandidates(t *testing.T) {
 	chat := &nodesFactChat{content: "推荐 Royal Bay Restaurant，评分 4.8（8 条评论样本），据 Google Local 2021 年快照。\nFOLLOWUPS: []"}
 	runner := &Runner{
 		cfg:      Config{},
-		composer: answer.NewComposer(answer.Deps{Chat: chat, Model: "m"}),
+		composer: answer.NewComposer(answer.Deps{Model: chat}),
 	}
 
 	got, err := runner.answerNode(ctx, st)
@@ -98,7 +98,7 @@ func TestAnswerNodeRefusesWhenNeitherCandidatesNorEvidence(t *testing.T) {
 	chat := &nodesFactChat{content: "不该被调用"}
 	runner := &Runner{
 		cfg:      Config{},
-		composer: answer.NewComposer(answer.Deps{Chat: chat, Model: "m"}),
+		composer: answer.NewComposer(answer.Deps{Model: chat}),
 	}
 
 	got, err := runner.answerNode(ctx, st)

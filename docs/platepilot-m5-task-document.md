@@ -184,8 +184,9 @@ HTTP 层（hertz）
 
 - `shared/domain/**` 不 import 数据库驱动 / Eino / Hertz / 厂商 SDK；新增 `domain/reservation` 与
   `domain/review` 常量必须只依赖标准库。
-- Eino 类型只允许出现在 `chat-service/internal/agent/{einomodel,toolreg}`；
-  新增节点写成普通 Go 函数（Lambda 节点），不要把 `schema.Message` 带出这两个包。
+- Eino 类型只允许出现在 `chat-service/internal/agent/**` 与 `chat-service/internal/app`
+  （后者仅装配模型）；新增节点写成普通 Go 函数（Lambda 节点），节点之间直接使用
+  `schema.Message`，不要再引入适配层。
 - 两个服务之间仍不得互相 import；chat-service 需要的新类型放 `shared/` 或本服务 `internal/`。
 - 候选、预约、记忆的**业务状态一律进数据库**，Eino 内存不是事实来源。
 
@@ -835,7 +836,7 @@ M5-06                        # 切片 3：可选预约（最后，默认关闭�
 
 - [ ] 任务目标对应的验收标准全部满足，并有对应测试。
 - [ ] 新增公开接口有用法注释；包注释说明分层位置。
-- [ ] 领域层无厂商/框架依赖；Eino 类型不跨出 `agent/{einomodel,toolreg}`；新增 `shared/domain` 包只依赖标准库。
+- [ ] 领域层无厂商/框架依赖；Eino 类型不跨出 `agent/**` 与 `app`（仅装配模型）；新增 `shared/domain` 包只依赖标准库。
 - [ ] 新增配置有默认值、校验、启动摘要与 `.env.example` 文档；密钥只从环境读取且日志脱敏。
 - [ ] 应用层错误使用 `*errs.Error`，HTTP 层只做 code→status 映射；新错误码在 `errs` 中追加并配映射。
 - [ ] 单测覆盖成功路径与主要失败路径；数据库行为进 `shared/store/contract`，memory + postgres 双实现通过。

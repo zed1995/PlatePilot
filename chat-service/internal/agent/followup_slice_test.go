@@ -127,8 +127,8 @@ func TestAFollowUpReadsTheSecondRecommendationAndStaysOnIt(t *testing.T) {
 	newRunner := func(t *testing.T) *agent.Runner {
 		t.Helper()
 		runner, err := agent.NewRunner(agent.Config{MaxToolRounds: 4}, agent.Deps{
-			Chat:          provider,
-			ToolCalling:   provider,
+			PlanModel:     provider,
+			AnswerModel:   provider,
 			Registry:      registry,
 			Extractor:     slots.New(slots.Deps{}),
 			Conversations: repo,
@@ -238,8 +238,8 @@ func parkOnAmbiguousName(
 		toolCallResponse("c1", tools.ResolveRestaurantToolName, `{"name":"Joe's Pizza"}`))
 
 	runner, err := agent.NewRunner(agent.Config{MaxToolRounds: 4}, agent.Deps{
-		Chat:          provider,
-		ToolCalling:   provider,
+		PlanModel:     provider,
+		AnswerModel:   provider,
 		Registry:      ambiguousRegistry(t),
 		Extractor:     slots.New(slots.Deps{}),
 		Conversations: repo,
@@ -312,8 +312,8 @@ func TestAnOrdinalAnswersAClarificationAndContinuesThePendingAction(t *testing.T
 	})
 
 	runner, err := agent.NewRunner(agent.Config{MaxToolRounds: 4}, agent.Deps{
-		Chat:          provider,
-		ToolCalling:   provider,
+		PlanModel:     provider,
+		AnswerModel:   provider,
 		Registry:      answeringRegistry(t, reader),
 		Extractor:     slots.New(slots.Deps{}),
 		Conversations: repo,
@@ -410,8 +410,8 @@ func transportRun(
 ) (*agent.TurnResult, <-chan agent.Event) {
 	t.Helper()
 	runner, err := agent.NewRunner(agent.Config{MaxToolRounds: 4}, agent.Deps{
-		Chat:          provider,
-		ToolCalling:   provider,
+		PlanModel:     provider,
+		AnswerModel:   provider,
 		Registry:      ambiguousRegistry(t),
 		Extractor:     slots.New(slots.Deps{}),
 		Conversations: repo,
@@ -478,8 +478,8 @@ func TestAPinSurvivesAFollowUpAndIsReleasedByANewSearch(t *testing.T) {
 	register(t, registry, tools.SearchRestaurantsEntry(service))
 
 	runner, err := agent.NewRunner(agent.Config{MaxToolRounds: 4}, agent.Deps{
-		Chat:          provider,
-		ToolCalling:   provider,
+		PlanModel:     provider,
+		AnswerModel:   provider,
 		Registry:      registry,
 		Extractor:     slots.New(slots.Deps{}),
 		Conversations: repo,
@@ -593,8 +593,8 @@ func TestAPendingStateSurvivesAProcessRestart(t *testing.T) {
 	})
 
 	runner, err := agent.NewRunner(agent.Config{MaxToolRounds: 4}, agent.Deps{
-		Chat:          second,
-		ToolCalling:   second,
+		PlanModel:     second,
+		AnswerModel:   second,
 		Registry:      answeringRegistry(t, reader),
 		Extractor:     slots.New(slots.Deps{}),
 		Conversations: repo,
@@ -639,7 +639,7 @@ func TestAPendingStateSurvivesAProcessRestart(t *testing.T) {
 
 // ---- two requests for one thread -------------------------------------------
 
-// gatedProvider holds every turn at its model round until all the turns under
+// gatedModel holds every turn at its model round until all the turns under
 // test have reached it.
 //
 // Without it the concurrency test would depend on the scheduler: one turn can
@@ -647,21 +647,15 @@ func TestAPendingStateSurvivesAProcessRestart(t *testing.T) {
 // no conflict ever arises. Holding both turns after ingress and before the
 // write makes the interleaving the test needs deterministic instead of likely.
 //
-// It gates Complete because the fixture registers no tools, and a tools-bound
-// model with an empty spec list is a plain completion. That also fixes the
-// arrival count at one per turn — a turn would deadlock a barrier it arrived at
-// twice.
-type gatedProvider struct {
-	*scriptedProvider
-	gate *sync.WaitGroup
-}
-
-func (p *gatedProvider) Complete(
-	ctx context.Context, req domainchat.ChatRequest,
-) (domainchat.ChatResponse, error) {
-	p.gate.Done()
-	p.gate.Wait()
-	return p.scriptedProvider.Complete(ctx, req)
+// The fixture registers no tools, so a turn makes exactly one model call — the
+// plan round — and the barrier's arrival count is one per turn. A turn that
+// arrived twice would deadlock it.
+func gatedModel(gate *sync.WaitGroup) func(context.Context) error {
+	return func(ctx context.Context) error {
+		gate.Done()
+		gate.Wait()
+		return ctx.Err()
+	}
 }
 
 // TestConcurrentTurnsOnOneThreadConflict pins the concurrency contract: threads
@@ -681,24 +675,22 @@ func TestConcurrentTurnsOnOneThreadConflict(t *testing.T) {
 	const turns = 2
 	var gate sync.WaitGroup
 	gate.Add(turns)
-	provider := &gatedProvider{
-		scriptedProvider: &scriptedProvider{
-			supportTools: true,
-			// One plain completion per turn: the fixture registers no tools, so
-			// the plan round is the only model call a turn makes.
-			completeResps: []domainchat.ChatResponse{
-				{Message: domainchat.ChatMessage{Role: domainchat.RoleAssistant, Content: "好的。"},
-					FinishReason: domainchat.FinishReasonStop},
-				{Message: domainchat.ChatMessage{Role: domainchat.RoleAssistant, Content: "好的。"},
-					FinishReason: domainchat.FinishReasonStop},
-			},
+	provider := &scriptedProvider{
+		supportTools: true,
+		// One plain completion per turn: the fixture registers no tools, so
+		// the plan round is the only model call a turn makes.
+		completeResps: []domainchat.ChatResponse{
+			{Message: domainchat.ChatMessage{Role: domainchat.RoleAssistant, Content: "好的。"},
+				FinishReason: domainchat.FinishReasonStop},
+			{Message: domainchat.ChatMessage{Role: domainchat.RoleAssistant, Content: "好的。"},
+				FinishReason: domainchat.FinishReasonStop},
 		},
-		gate: &gate,
+		gate: gatedModel(&gate),
 	}
 
 	runner, err := agent.NewRunner(agent.Config{MaxToolRounds: 2}, agent.Deps{
-		Chat:          provider,
-		ToolCalling:   provider,
+		PlanModel:     provider,
+		AnswerModel:   provider,
 		Conversations: repo,
 	})
 	if err != nil {

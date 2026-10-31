@@ -388,8 +388,8 @@ func conversationRunner(
 ) *agent.Runner {
 	t.Helper()
 	runner, err := agent.NewRunner(agent.Config{MaxToolRounds: 4}, agent.Deps{
-		Chat:          provider,
-		ToolCalling:   provider,
+		PlanModel:     provider,
+		AnswerModel:   provider,
 		Registry:      registry,
 		Extractor:     slots.New(slots.Deps{}),
 		Conversations: conversations,

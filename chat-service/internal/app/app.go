@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 
+	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/hertz/pkg/app/server"
 
 	adminapp "github.com/zed1995/platepilot/chat-service/internal/admin"
@@ -22,8 +23,6 @@ import (
 	"github.com/zed1995/platepilot/chat-service/internal/memorywrite"
 	"github.com/zed1995/platepilot/chat-service/internal/reservation"
 	"github.com/zed1995/platepilot/chat-service/internal/retrieval"
-	"github.com/zed1995/platepilot/shared/chat"
-	"github.com/zed1995/platepilot/shared/chat/openai"
 	sharedcfg "github.com/zed1995/platepilot/shared/config"
 	"github.com/zed1995/platepilot/shared/embedding"
 	"github.com/zed1995/platepilot/shared/embedding/fake"
@@ -41,9 +40,15 @@ import (
 // the exception: it is wired below because nothing else should know how to
 // build one.
 type Deps struct {
-	Chat          chat.ChatProvider
-	ToolCalling   chat.ToolCallingProvider
-	Structured    chat.StructuredOutputProvider
+	// PlanModel decides what the turn does next and carries the registry's
+	// tools. It is the signal that a chat endpoint was configured: without it
+	// the conversational surface stays unwired.
+	PlanModel model.BaseChatModel
+	// AnswerModel composes the grounded answer. Nil means "the plan model".
+	AnswerModel model.BaseChatModel
+	// ExtractModel reads the user's sentence into slots. Nil means extraction
+	// falls back to rules, which is a supported deployment.
+	ExtractModel  model.BaseChatModel
 	Embedding     embedding.EmbeddingProvider
 	Rerank        rerank.RerankProvider
 	Restaurants   store.RestaurantRepository
@@ -100,8 +105,7 @@ func New(cfg config.Config, logger *slog.Logger, deps Deps, version string) (*Ap
 	// conversation path is designed to work from a rule-derived plan rather than
 	// to refuse the turn.
 	extractor := slots.New(slots.Deps{
-		Structured: deps.Structured,
-		Model:      cfg.Chat.ExtractModel,
+		Model: deps.ExtractModel,
 		Config: slots.Config{
 			MaxClarifications:    cfg.Agent.MaxClarifications,
 			ResolveMinSimilarity: cfg.Agent.ResolveMinSimilarity,
@@ -133,7 +137,7 @@ func New(cfg config.Config, logger *slog.Logger, deps Deps, version string) (*Ap
 	var confirmation *hitl.Service
 	var summarize ApprovalSummarizer
 
-	if deps.Chat != nil {
+	if deps.PlanModel != nil {
 		registry := toolreg.New(cfg.Agent.ToolTimeout)
 		app.registry = registry
 		if err := registry.Register(tools.SearchRestaurantsEntry(searchService)); err != nil {
@@ -217,12 +221,13 @@ func New(cfg config.Config, logger *slog.Logger, deps Deps, version string) (*Ap
 				slog.Bool("confirmable", confirmation != nil))
 		}
 		agentDeps := agent.Deps{
-			Chat:          deps.Chat,
-			ToolCalling:   deps.ToolCalling,
-			Registry:      registry,
-			Extractor:     extractor,
-			Conversations: deps.Conversations,
-			Memories:      deps.Memories,
+			PlanModel:        deps.PlanModel,
+			AnswerModel:      deps.AnswerModel,
+			ToolsUnsupported: !cfg.Chat.SupportsTools,
+			Registry:         registry,
+			Extractor:        extractor,
+			Conversations:    deps.Conversations,
+			Memories:         deps.Memories,
 		}
 		if deps.Runs != nil {
 			agentDeps.Auditor = audit.New(deps.Runs, logger, audit.Options{
@@ -239,8 +244,6 @@ func New(cfg config.Config, logger *slog.Logger, deps Deps, version string) (*Ap
 		}
 		runner, err := agent.NewRunner(agent.Config{
 			MaxToolRounds:     cfg.Agent.MaxToolRounds,
-			ModelName:         cfg.Chat.PlanModel,
-			AnswerModel:       cfg.Chat.AnswerModel,
 			MaxClarifications: cfg.Agent.MaxClarifications,
 			AnswerStreaming:   cfg.Agent.AnswerStreaming,
 			PhaseEvents:       cfg.Agent.PhaseEvents,
@@ -419,55 +422,24 @@ func Connect(ctx context.Context, cfg config.Config, logger *slog.Logger, versio
 		// build is a startup failure: from M4 on the chat model is the primary
 		// capability, and silently serving without it would surface later as
 		// confusing runtime errors instead of a clear configuration fault.
-		chatClient, err := buildChatClient(cfg.Chat)
+		planModel, answerModel, extractModel, err := buildChatModels(cfg.Chat)
 		if err != nil {
-			return nil, fmt.Errorf("build chat provider: %w", err)
+			return nil, fmt.Errorf("build chat models: %w", err)
 		}
-		// One client satisfies all three chat ports; the agent decides which
-		// capability a turn needs.
-		deps.Chat = chatClient
-		deps.ToolCalling = chatClient
-		deps.Structured = chatClient
-		logger.Info("chat provider assembled",
+		deps.PlanModel = planModel
+		deps.AnswerModel = answerModel
+		deps.ExtractModel = extractModel
+		logger.Info("chat models assembled",
 			slog.String("provider", cfg.Chat.Provider),
-			slog.String("model", cfg.Chat.Model),
+			slog.String("plan_model", cfg.Chat.PlanModel),
+			slog.String("answer_model", cfg.Chat.AnswerModel),
+			slog.String("extract_model", cfg.Chat.ExtractModel),
 			slog.Bool("tools", cfg.Chat.SupportsTools),
 			slog.Bool("parallel_tools", cfg.Chat.SupportsParallelTools),
 			slog.Bool("json_schema", cfg.Chat.SupportsJSONSchema))
 	}
 
 	return New(cfg, logger, deps, version)
-}
-
-// providerOpenAICompatible is the only chat adapter shipped in M4. The value
-// is part of the environment contract documented in .env.example.
-const providerOpenAICompatible = "openai_compatible"
-
-// buildChatClient maps chat configuration onto the OpenAI-compatible adapter.
-func buildChatClient(cfg config.ChatConfig) (*openai.Client, error) {
-	if cfg.Provider != providerOpenAICompatible {
-		return nil, fmt.Errorf("unsupported CHAT_PROVIDER %q (supported value: %q)",
-			cfg.Provider, providerOpenAICompatible)
-	}
-	client, err := openai.New(openai.Options{
-		BaseURL:      cfg.BaseURL,
-		APIKey:       cfg.APIKey,
-		Model:        cfg.Model,
-		ExtraHeaders: cfg.ExtraHeaders,
-		Capabilities: openai.Capabilities{
-			Tools:         cfg.SupportsTools,
-			ParallelTools: cfg.SupportsParallelTools,
-			JSONSchema:    cfg.SupportsJSONSchema,
-			Streaming:     true,
-			ContextTokens: cfg.ContextTokens,
-		},
-		Timeout:    cfg.Timeout,
-		MaxRetries: cfg.MaxRetries,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return client, nil
 }
 
 // buildEmbedding resolves the configured embedding provider.

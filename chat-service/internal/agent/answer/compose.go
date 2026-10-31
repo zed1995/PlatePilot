@@ -17,13 +17,16 @@ import (
 	"sort"
 	"strings"
 
-	chatport "github.com/zed1995/platepilot/shared/chat"
+	"github.com/cloudwego/eino/components/model"
+	"github.com/cloudwego/eino/schema"
+
 	domainchat "github.com/zed1995/platepilot/shared/domain/chat"
 	"github.com/zed1995/platepilot/shared/domain/errs"
 	"github.com/zed1995/platepilot/shared/domain/evidence"
 	domainretrieval "github.com/zed1995/platepilot/shared/domain/retrieval"
 	"github.com/zed1995/platepilot/shared/domain/search"
 
+	"github.com/zed1995/platepilot/chat-service/internal/agent/modelerr"
 	"github.com/zed1995/platepilot/chat-service/internal/retrieval"
 )
 
@@ -74,19 +77,19 @@ var ErrStreamUnavailable = errors.New("answer: chat provider cannot stream")
 
 // Deps builds a Composer.
 type Deps struct {
-	Chat  chatport.ChatProvider
-	Model string
+	// Model is the chat model answers are generated with. It is bound to no
+	// tools: composition only produces text.
+	Model model.BaseChatModel
 }
 
 // NewComposer returns a grounded-answer composer.
 func NewComposer(deps Deps) *Composer {
-	return &Composer{chat: deps.Chat, model: deps.Model}
+	return &Composer{model: deps.Model}
 }
 
 // Composer generates citation-validated answers.
 type Composer struct {
-	chat  chatport.ChatProvider
-	model string
+	model model.BaseChatModel
 }
 
 // Input is one answer composition request.
@@ -129,7 +132,7 @@ type Input struct {
 	// Without it the answer can restate a conclusion the user has moved past,
 	// because the composer never saw them move. It is not citable material and
 	// the composer says so explicitly — see recentTurnsContext.
-	History []domainchat.ChatMessage
+	History []*schema.Message
 }
 
 // citationPattern matches [^123] markers.
@@ -277,7 +280,7 @@ func (c *Composer) ComposeStream(
 // by generating a whole answer and letting the caller ship it as a replacement.
 func (c *Composer) streamAttemptOrRecover(
 	ctx context.Context,
-	messages []domainchat.ChatMessage,
+	messages []*schema.Message,
 	lead string,
 	allowed map[int64]struct{},
 	handlers StreamHandlers,
@@ -301,7 +304,7 @@ func (c *Composer) streamAttemptOrRecover(
 // "the provider cannot stream at all".
 func (c *Composer) streamAttempt(
 	ctx context.Context,
-	messages []domainchat.ChatMessage,
+	messages []*schema.Message,
 	lead string,
 	allowed map[int64]struct{},
 	handlers StreamHandlers,
@@ -309,15 +312,12 @@ func (c *Composer) streamAttempt(
 	streamCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	stream, err := c.chat.Stream(streamCtx, domainchat.ChatRequest{
-		Model:    c.model,
-		Messages: messages,
-	})
+	stream, err := c.model.Stream(streamCtx, messages)
 	if err != nil {
 		// Nothing has been published: the caller owns the fallback decision.
-		return "", false, fmt.Errorf("%w: %v", ErrStreamUnavailable, err)
+		return "", false, fmt.Errorf("%w: %v", ErrStreamUnavailable, modelerr.Map(err))
 	}
-	defer func() { _ = stream.Close() }()
+	defer stream.Close()
 
 	sink := handlers.Delta
 
@@ -343,21 +343,21 @@ func (c *Composer) streamAttempt(
 			if flushErr := emitter.flush(); flushErr != nil {
 				return buf.String(), false, flushErr
 			}
-			return buf.String(), true, recvErr
+			return buf.String(), true, modelerr.Map(recvErr)
 		}
 		// Reasoning is published on its own channel as it arrives. It is not
 		// buffered like the answer body: there is no FOLLOWUPS tail to hide and
 		// no trimming to apply, and the whole point is to show bytes during the
 		// stretch where the model has not written any answer yet.
-		if chunk.Reasoning != "" && handlers.Thinking != nil {
-			if err := handlers.Thinking(chunk.Reasoning); err != nil {
+		if chunk.ReasoningContent != "" && handlers.Thinking != nil {
+			if err := handlers.Thinking(chunk.ReasoningContent); err != nil {
 				return buf.String(), false, err
 			}
 		}
-		if chunk.Delta == "" {
+		if chunk.Content == "" {
 			continue
 		}
-		buf.WriteString(chunk.Delta)
+		buf.WriteString(chunk.Content)
 		// A complete out-of-range marker is grounds to stop paying for the rest
 		// of a generation that will be discarded. Cancelling the stream is what
 		// makes this cheaper than validating after the fact.
@@ -365,7 +365,7 @@ func (c *Composer) streamAttempt(
 			cancel()
 			return buf.String(), false, nil
 		}
-		if err := emitter.push(chunk.Delta); err != nil {
+		if err := emitter.push(chunk.Content); err != nil {
 			return buf.String(), false, err
 		}
 	}
@@ -377,16 +377,16 @@ func (c *Composer) streamAttempt(
 
 // completeOnce performs one non-streaming completion.
 func (c *Composer) completeOnce(
-	ctx context.Context, messages []domainchat.ChatMessage,
+	ctx context.Context, messages []*schema.Message,
 ) (string, error) {
-	resp, err := c.chat.Complete(ctx, domainchat.ChatRequest{
-		Model:    c.model,
-		Messages: messages,
-	})
+	resp, err := c.model.Generate(ctx, messages)
 	if err != nil {
-		return "", err
+		return "", modelerr.Map(err)
 	}
-	return resp.Message.Content, nil
+	if resp == nil {
+		return "", errs.New(errs.CodeProviderUnavailable, "模型返回了空响应")
+	}
+	return resp.Content, nil
 }
 
 // correctionMessage tells the model which of its citations were outside the
@@ -394,14 +394,11 @@ func (c *Composer) completeOnce(
 //
 // It is shared by both paths so a correction means the same thing whether it
 // followed a streamed generation or a one-shot one.
-func correctionMessage(invalid []int64, allowed map[int64]struct{}) domainchat.ChatMessage {
-	return domainchat.ChatMessage{
-		Role: domainchat.RoleUser,
-		Content: fmt.Sprintf(
-			"Your previous answer cited evidence IDs that do not belong to this round's material: %s. "+
-				"You may only use the following evidence IDs: %s. Re-answer strictly from the <evidence> material, and output the %s line again.",
-			joinInts(invalid), joinInts(mapKeysSorted(allowed)), followUpsPrefix),
-	}
+func correctionMessage(invalid []int64, allowed map[int64]struct{}) *schema.Message {
+	return schema.UserMessage(fmt.Sprintf(
+		"Your previous answer cited evidence IDs that do not belong to this round's material: %s. "+
+			"You may only use the following evidence IDs: %s. Re-answer strictly from the <evidence> material, and output the %s line again.",
+		joinInts(invalid), joinInts(mapKeysSorted(allowed)), followUpsPrefix))
 }
 
 // lineEmitter publishes the answer body incrementally while producing exactly
@@ -506,18 +503,12 @@ func mapKeysSorted(m map[int64]struct{}) []int64 {
 // because the two carry opposite instructions — one is citable, the other
 // explicitly is not — and a single message with both would leave the model to
 // work out which sentence covered which block.
-func buildMessages(in Input) []domainchat.ChatMessage {
-	messages := []domainchat.ChatMessage{
-		{
-			Role:    domainchat.RoleSystem,
-			Content: systemInstruction,
-		},
+func buildMessages(in Input) []*schema.Message {
+	messages := []*schema.Message{
+		schema.SystemMessage(systemInstruction),
 	}
 	if turns := recentTurnsContext(in.History); turns != "" {
-		messages = append(messages, domainchat.ChatMessage{
-			Role:    domainchat.RoleUser,
-			Content: turns,
-		})
+		messages = append(messages, schema.UserMessage(turns))
 	}
 
 	var b strings.Builder
@@ -546,10 +537,7 @@ func buildMessages(in Input) []domainchat.ChatMessage {
 	b.WriteString("\n\n（再次提醒：你的内部思考过程和最终回答都必须使用与上面问题相同的语言，" +
 		"不要用其他语言列提纲或推理。）")
 
-	return append(messages, domainchat.ChatMessage{
-		Role:    domainchat.RoleUser,
-		Content: b.String(),
-	})
+	return append(messages, schema.UserMessage(b.String()))
 }
 
 // recentTurnsContext renders the tail of the conversation as a tagged block.
@@ -566,7 +554,7 @@ func buildMessages(in Input) []domainchat.ChatMessage {
 //     regeneration, or the whole turn if it happens twice.
 //   - The FOLLOWUPS tail is dropped. It is machine-readable instruction, not
 //     something either party said.
-func recentTurnsContext(history []domainchat.ChatMessage) string {
+func recentTurnsContext(history []*schema.Message) string {
 	turns := trimHistory(history)
 	if len(turns) == 0 {
 		return ""
@@ -575,7 +563,7 @@ func recentTurnsContext(history []domainchat.ChatMessage) string {
 	lines := make([]string, 0, len(turns))
 	for _, msg := range turns {
 		label := "用户"
-		if msg.Role == domainchat.RoleAssistant {
+		if msg.Role == schema.Assistant {
 			label = "助手"
 		}
 		content := historyText(msg)
@@ -598,9 +586,9 @@ func recentTurnsContext(history []domainchat.ChatMessage) string {
 }
 
 // historyText is one prior message as the block shows it.
-func historyText(msg domainchat.ChatMessage) string {
+func historyText(msg *schema.Message) string {
 	content := msg.Content
-	if msg.Role == domainchat.RoleAssistant {
+	if msg.Role == schema.Assistant {
 		content, _ = splitFollowUps(content)
 		content = citationPattern.ReplaceAllString(content, "")
 	}
@@ -615,7 +603,7 @@ func historyText(msg domainchat.ChatMessage) string {
 // on its own over the budget drops everything, which is the honest outcome: the
 // block is supplementary, and spending the prompt on a single stale answer
 // would push out the evidence the answer actually has to cite.
-func trimHistory(history []domainchat.ChatMessage) []domainchat.ChatMessage {
+func trimHistory(history []*schema.Message) []*schema.Message {
 	if len(history) == 0 {
 		return nil
 	}

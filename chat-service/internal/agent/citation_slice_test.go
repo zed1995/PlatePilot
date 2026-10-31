@@ -108,8 +108,8 @@ func TestATurnWithNoNewEvidenceRefusesRatherThanReusingLastTurnCitations(t *test
 		t.Fatal(err)
 	}
 	runner, err := agent.NewRunner(agent.Config{MaxToolRounds: 3}, agent.Deps{
-		Chat:          provider,
-		ToolCalling:   provider,
+		PlanModel:     provider,
+		AnswerModel:   provider,
 		Registry:      registry,
 		Conversations: repo,
 	})

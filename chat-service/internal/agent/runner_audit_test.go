@@ -167,8 +167,8 @@ func newAuditedRunner(t *testing.T, p *scriptedProvider, reg *toolreg.Registry, 
 	t.Helper()
 	hooks := audit.New(repo, nil, audit.Options{ModelProvider: "test-provider", ModelName: "test-model"})
 	runner, err := agent.NewRunner(agent.Config{MaxToolRounds: 3}, agent.Deps{
-		Chat:        p,
-		ToolCalling: p,
+		PlanModel:   p,
+		AnswerModel: p,
 		Registry:    reg,
 		Auditor:     hooks,
 	})
@@ -302,8 +302,10 @@ func TestRunnerAuditsFailedTurn(t *testing.T) {
 	if fin.Status != run.StatusFailed || fin.RunID != runID {
 		t.Fatalf("failed finish row = %+v, event run id %q", fin, runID)
 	}
-	if fin.ErrorCode != string(errs.CodeInternal) {
-		t.Fatalf("error code = %q, want internal", fin.ErrorCode)
+	// The model failed before answering, and modelerr.Map classifies an
+	// otherwise-unclassified model failure as the provider being unavailable.
+	if fin.ErrorCode != string(errs.CodeProviderUnavailable) {
+		t.Fatalf("error code = %q, want provider_unavailable", fin.ErrorCode)
 	}
 	if fin.FinishedAt == nil {
 		t.Fatal("failed row must carry finished_at")

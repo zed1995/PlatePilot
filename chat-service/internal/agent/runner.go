@@ -5,17 +5,15 @@ import (
 	"log/slog"
 	"time"
 
-	chatport "github.com/zed1995/platepilot/shared/chat"
+	"github.com/cloudwego/eino/components/model"
+	"github.com/cloudwego/eino/compose"
+
 	"github.com/zed1995/platepilot/shared/domain/errs"
 	"github.com/zed1995/platepilot/shared/idgen"
 	"github.com/zed1995/platepilot/shared/store"
 
-	"github.com/cloudwego/eino/components/model"
-	"github.com/cloudwego/eino/compose"
-
 	"github.com/zed1995/platepilot/chat-service/internal/agent/answer"
 	"github.com/zed1995/platepilot/chat-service/internal/agent/audit"
-	"github.com/zed1995/platepilot/chat-service/internal/agent/einomodel"
 	"github.com/zed1995/platepilot/chat-service/internal/agent/slots"
 	"github.com/zed1995/platepilot/chat-service/internal/agent/toolreg"
 )
@@ -35,14 +33,6 @@ const (
 type Config struct {
 	// MaxToolRounds bounds how many tool-execution rounds one turn may run.
 	MaxToolRounds int
-	// ModelName optionally overrides the provider's default model for the
-	// planning rounds — the model that decides what to do next.
-	ModelName string
-	// AnswerModel optionally overrides the provider's default model for
-	// composing the final answer. Empty means "the same as ModelName": the two
-	// jobs may share a model, and a caller that names only one should not have
-	// to name it twice.
-	AnswerModel string
 	// MaxClarifications bounds consecutive disambiguation rounds per thread.
 	MaxClarifications int
 	// AnswerStreaming publishes the composed answer token by token instead of
@@ -63,10 +53,21 @@ type Config struct {
 
 // Deps are the assembled capabilities a runner needs.
 type Deps struct {
-	Chat        chatport.ChatProvider
-	ToolCalling chatport.ToolCallingProvider
-	Registry    *toolreg.Registry
-	// Composer may be nil; it is then built from Chat.
+	// PlanModel is the chat model the planning rounds run on. When it also
+	// implements model.ToolCallingChatModel, the registry's tools are bound to
+	// it; a model that does not implement it cannot be given tools at all.
+	PlanModel model.BaseChatModel
+	// AnswerModel composes the final answer. When nil it falls back to
+	// PlanModel: the two jobs may share a model, and a caller that names only
+	// one should not have to name it twice.
+	AnswerModel model.BaseChatModel
+	// ToolsUnsupported records that the configured provider cannot tool-call.
+	// The model interface cannot express that: an OpenAI-compatible model
+	// implements WithTools whether or not the endpoint honours it, so the
+	// application reports the capability it read from configuration.
+	ToolsUnsupported bool
+	Registry         *toolreg.Registry
+	// Composer may be nil; it is then built from AnswerModel.
 	Composer *answer.Composer
 	// Extractor interprets the user's message into this turn's plan. When nil,
 	// the turn runs without one and every tool works purely from the arguments
@@ -91,8 +92,8 @@ type Deps struct {
 
 // NewRunner assembles and compiles the turn graph.
 func NewRunner(cfg Config, deps Deps) (*Runner, error) {
-	if deps.Chat == nil {
-		return nil, errs.New(errs.CodeInvalidArgument, "agent runner requires a Chat provider")
+	if deps.PlanModel == nil {
+		return nil, errs.New(errs.CodeInvalidArgument, "agent runner requires a chat model")
 	}
 	if deps.Registry == nil {
 		deps.Registry = toolreg.New(toolreg.DefaultTimeout)
@@ -106,29 +107,30 @@ func NewRunner(cfg Config, deps Deps) (*Runner, error) {
 	if deps.Logger == nil {
 		deps.Logger = slog.Default()
 	}
-	baseModel, err := einomodel.New(einomodel.Deps{
-		Chat:        deps.Chat,
-		ToolCalling: deps.ToolCalling,
-		Model:       cfg.ModelName,
-	})
-	if err != nil {
-		return nil, err
-	}
 	toolInfos, err := deps.Registry.ToolInfos()
 	if err != nil {
 		return nil, err
 	}
-	planModel, err := baseModel.WithTools(toolInfos)
-	if err != nil {
-		return nil, err
+	planModel := deps.PlanModel
+	// Tool support is a capability the model interface does not expose, so it
+	// is decided here: a model that cannot be bound is a runner that cannot run
+	// tools, and invoke() rejects a turn that would need them.
+	toolSupport := !deps.ToolsUnsupported
+	if bound, ok := planModel.(model.ToolCallingChatModel); ok && toolSupport {
+		planModel, err = bound.WithTools(toolInfos)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		toolSupport = false
 	}
 	composer := deps.Composer
 	if composer == nil {
-		answerModel := cfg.AnswerModel
-		if answerModel == "" {
-			answerModel = cfg.ModelName
+		answerModel := deps.AnswerModel
+		if answerModel == nil {
+			answerModel = deps.PlanModel
 		}
-		composer = answer.NewComposer(answer.Deps{Chat: deps.Chat, Model: answerModel})
+		composer = answer.NewComposer(answer.Deps{Model: answerModel})
 	}
 
 	r := &Runner{
@@ -139,7 +141,7 @@ func NewRunner(cfg Config, deps Deps) (*Runner, error) {
 		composer:     composer,
 		streamAnswer: cfg.AnswerStreaming,
 		hasTools:     len(toolInfos) > 0,
-		toolSupport:  deps.ToolCalling != nil && deps.ToolCalling.SupportsTools(),
+		toolSupport:  toolSupport,
 	}
 	if err := r.compile(); err != nil {
 		return nil, err
@@ -151,7 +153,7 @@ func NewRunner(cfg Config, deps Deps) (*Runner, error) {
 type Runner struct {
 	cfg       Config
 	deps      Deps
-	planModel model.ToolCallingChatModel
+	planModel model.BaseChatModel
 	composer  *answer.Composer
 	// logger is deps.Logger resolved once at construction, so it can never be
 	// nil on a failure path that has no chance to check.

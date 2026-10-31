@@ -27,9 +27,9 @@ make eval-retrieval   # 检索指标门禁（需 make -C .. pg-up）
 | `internal/httpapi` | 路由、handler、SSE、中间件 | 不含业务规则，只做绑定与错误映射 |
 | `internal/httperr` | 统一 HTTP 错误信封 | — |
 | `internal/retrieval` | 读路径：三通道检索 → 融合 → rerank → 证据组装 | 不许出现 Eino |
-| `internal/agent` | Plan/Tool/Answer 图、工具注册表、模型适配、审计 | **Eino 只准出现在这里** |
+| `internal/agent` | Plan/Tool/Answer 图、工具注册表、模型装配、审计 | **Eino 只准出现在这里**（`schema.Message` 与 `model.BaseChatModel` 可直接使用；`internal/app` 仅装配模型时可命名模型接口） |
 | `internal/agent/tools/` | 被 LLM 调用的工具（目前：`search_restaurants`、`restaurant_evidence`） | 复用 retrieval，不重复实现检索 |
-| `internal/agent/einomodel`、`toolreg` | 唯一允许碰 Eino message/schema DTO 的两个桥接包 | 图 runtime 本身只传项目自有 DTO |
+| `internal/agent/toolreg` | 项目工具 → Eino `ToolInfo` 的桥接 | 工具实现本身不碰 Eino |
 | `internal/admin` | 只读管理应用层（分页 clamp、keyset cursor） | **不许 import `shared/store/postgres`**，只面向端口 |
 | `internal/config` | 本服务的环境变量面 + 脱敏摘要 | — |
 

@@ -54,8 +54,8 @@ func TestAnIncrementalConditionIsReadAgainstTheLastAnswer(t *testing.T) {
 	register(t, registry, tools.RestaurantEvidenceEntry(reader))
 
 	runner, err := agent.NewRunner(agent.Config{MaxToolRounds: 4}, agent.Deps{
-		Chat:          provider,
-		ToolCalling:   provider,
+		PlanModel:     provider,
+		AnswerModel:   provider,
 		Registry:      registry,
 		Extractor:     slots.New(slots.Deps{}),
 		Conversations: repo,
@@ -188,9 +188,9 @@ func TestAnIncrementalConditionIsReadAgainstTheLastAnswer(t *testing.T) {
 // composerPromptOf returns the messages the composer sent on the turn whose
 // model call is at index turn.
 //
-// The composer is the only caller of Complete on a tools-bound turn — the plan
-// goes through ChatWithTools and the slot extractor is rules-only here — so the
-// completion log is exactly the composer's log.
+// The composer is the only unbound caller of the model on a tools-bound turn —
+// the plan goes through the tool-bound view and the slot extractor is rules-only
+// here — so the completion log is exactly the composer's log.
 func composerPromptOf(t *testing.T, provider *scriptedProvider, turn int) []domainchat.ChatMessage {
 	t.Helper()
 	if turn >= len(provider.completeReqs) {

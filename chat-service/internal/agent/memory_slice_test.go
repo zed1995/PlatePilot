@@ -32,8 +32,8 @@ func memoryRunner(
 	registry := toolreg.New(0)
 	register(t, registry, tools.SaveMemoryEntry(svc))
 	runner, err := agent.NewRunner(agent.Config{MaxToolRounds: 4}, agent.Deps{
-		Chat:        provider,
-		ToolCalling: provider,
+		PlanModel:   provider,
+		AnswerModel: provider,
 		Registry:    registry,
 		Extractor:   slots.New(slots.Deps{}),
 		Memories:    memories,

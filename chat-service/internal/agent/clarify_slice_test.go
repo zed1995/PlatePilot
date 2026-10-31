@@ -138,8 +138,8 @@ func TestAnAmbiguousRestaurantNameParksTheThreadOnAQuestion(t *testing.T) {
 		},
 	}
 	runner, err := agent.NewRunner(agent.Config{MaxToolRounds: 3}, agent.Deps{
-		Chat:          provider,
-		ToolCalling:   provider,
+		PlanModel:     provider,
+		AnswerModel:   provider,
 		Registry:      ambiguousRegistry(t),
 		Conversations: repo,
 	})
@@ -255,8 +255,8 @@ func TestTheClarificationCapAnswersOnAStatedAssumption(t *testing.T) {
 		MaxToolRounds:     3,
 		MaxClarifications: 1,
 	}, agent.Deps{
-		Chat:          provider,
-		ToolCalling:   provider,
+		PlanModel:     provider,
+		AnswerModel:   provider,
 		Registry:      ambiguousRegistry(t),
 		Conversations: repo,
 	})
@@ -345,8 +345,8 @@ func TestANamedRestaurantAnswerCitesOnlyThatRestaurantsEvidence(t *testing.T) {
 	register(t, registry, stubEvidenceEntry(docs))
 
 	runner, err := agent.NewRunner(agent.Config{MaxToolRounds: 4}, agent.Deps{
-		Chat:          provider,
-		ToolCalling:   provider,
+		PlanModel:     provider,
+		AnswerModel:   provider,
 		Registry:      registry,
 		Conversations: repo,
 	})

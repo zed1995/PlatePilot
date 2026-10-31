@@ -20,54 +20,31 @@ import (
 	"time"
 
 	domainchat "github.com/zed1995/platepilot/shared/domain/chat"
-	domaintool "github.com/zed1995/platepilot/shared/domain/tool"
 
 	"github.com/zed1995/platepilot/chat-service/internal/agent"
 	"github.com/zed1995/platepilot/chat-service/internal/agent/toolreg"
 )
 
-// startGateProvider holds the turn's model rounds until the test opens the
-// gate.
+// channelGate builds the blocking hook the live-forwarding test needs: every
+// model round waits until the test closes the channel.
 //
 // It is what makes "the frame arrived while the turn was still running" an
 // observable claim rather than a timing coincidence: with an instantaneous
 // provider every frame arrives after the graph has finished whether it was
 // forwarded live or replayed at the end, so nothing could be distinguished.
 //
-// Both model entry points are held, not just the tool-calling one. Which of
-// them a plan round reaches depends on what the registry offers, and that is
-// not what this test is about — a gate that only held one of them would leave
-// the assertion resting on a dispatch decision made somewhere else.
-type startGateProvider struct {
-	*scriptedProvider
-	gate chan struct{}
-}
-
-func (p *startGateProvider) wait(ctx context.Context) error {
-	select {
-	case <-p.gate:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+// The gate lives on the provider as a field rather than as an overridden method
+// so a tool-bound view — the one a plan round actually calls — still honours
+// it; a method on an outer wrapper would be bypassed by WithTools.
+func channelGate(gate <-chan struct{}) func(context.Context) error {
+	return func(ctx context.Context) error {
+		select {
+		case <-gate:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
-}
-
-func (p *startGateProvider) ChatWithTools(
-	ctx context.Context, req domainchat.ChatRequest, specs []domaintool.ToolSpec,
-) (domainchat.ToolCallResponse, error) {
-	if err := p.wait(ctx); err != nil {
-		return domainchat.ToolCallResponse{}, err
-	}
-	return p.scriptedProvider.ChatWithTools(ctx, req, specs)
-}
-
-func (p *startGateProvider) Complete(
-	ctx context.Context, req domainchat.ChatRequest,
-) (domainchat.ChatResponse, error) {
-	if err := p.wait(ctx); err != nil {
-		return domainchat.ChatResponse{}, err
-	}
-	return p.scriptedProvider.Complete(ctx, req)
 }
 
 // TestRunLiveForwardsEventsBeforeTheTurnEnds is the claim the SSE handler rests
@@ -76,20 +53,18 @@ func (p *startGateProvider) Complete(
 // past.
 func TestRunLiveForwardsEventsBeforeTheTurnEnds(t *testing.T) {
 	gate := make(chan struct{})
-	provider := &startGateProvider{
-		scriptedProvider: &scriptedProvider{
-			supportTools: true,
-			toolResps:    []domainchat.ToolCallResponse{assistantText("你好。")},
-			completeResps: []domainchat.ChatResponse{{
-				Message:      domainchat.ChatMessage{Role: domainchat.RoleAssistant, Content: "你好。"},
-				FinishReason: domainchat.FinishReasonStop,
-			}},
-		},
-		gate: gate,
+	provider := &scriptedProvider{
+		supportTools: true,
+		toolResps:    []domainchat.ToolCallResponse{assistantText("你好。")},
+		completeResps: []domainchat.ChatResponse{{
+			Message:      domainchat.ChatMessage{Role: domainchat.RoleAssistant, Content: "你好。"},
+			FinishReason: domainchat.FinishReasonStop,
+		}},
+		gate: channelGate(gate),
 	}
 	runner, err := agent.NewRunner(agent.Config{MaxToolRounds: 2}, agent.Deps{
-		Chat:        provider,
-		ToolCalling: provider,
+		PlanModel:   provider,
+		AnswerModel: provider,
 		Registry:    toolreg.New(0),
 	})
 	if err != nil {
@@ -154,8 +129,8 @@ func TestRunLiveStopsTheTurnWhenTheConsumerFails(t *testing.T) {
 		toolResps:    []domainchat.ToolCallResponse{assistantText("你好。")},
 	}
 	runner, err := agent.NewRunner(agent.Config{MaxToolRounds: 2}, agent.Deps{
-		Chat:        provider,
-		ToolCalling: provider,
+		PlanModel:   provider,
+		AnswerModel: provider,
 		Registry:    toolreg.New(0),
 	})
 	if err != nil {
@@ -196,8 +171,8 @@ func TestTheTwoEntryPointsPublishTheSameEvents(t *testing.T) {
 			FinishReason: domainchat.FinishReasonStop,
 		}}}
 		runner, err := agent.NewRunner(agent.Config{MaxToolRounds: 2}, agent.Deps{
-			Chat:        provider,
-			ToolCalling: provider,
+			PlanModel:   provider,
+			AnswerModel: provider,
 			Registry:    toolreg.New(0),
 		})
 		if err != nil {

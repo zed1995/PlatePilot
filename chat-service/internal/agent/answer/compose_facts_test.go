@@ -43,7 +43,7 @@ func TestComposeAnswersRatingQuestionFromCandidatesWithoutEvidence(t *testing.T)
 	chat := &scriptedChat{contents: []string{
 		"结论：推荐 Royal Bay Restaurant，评分 4.8（8 条评论样本），据 Google Local 2021 年快照，满足评分 4.0 以上的要求。\nFOLLOWUPS: []",
 	}}
-	c := NewComposer(Deps{Chat: chat, Model: "m"})
+	c := NewComposer(Deps{Model: chat})
 
 	ans, err := c.Compose(context.Background(), Input{
 		Question:   "帮我推荐一家布鲁克林评分4以上的餐厅",
@@ -72,7 +72,7 @@ func TestComposeAnswersRatingQuestionFromCandidatesWithoutEvidence(t *testing.T)
 // would ship unvalidated, unprompted text.
 func TestComposeFactOnlyTurnReachesTheModel(t *testing.T) {
 	chat := &scriptedChat{contents: []string{"档案事实回答。\nFOLLOWUPS: []"}}
-	c := NewComposer(Deps{Chat: chat, Model: "m"})
+	c := NewComposer(Deps{Model: chat})
 
 	ans, err := c.Compose(context.Background(), Input{
 		Question:   "这家店评分多少？",
@@ -90,7 +90,7 @@ func TestComposeFactOnlyTurnReachesTheModel(t *testing.T) {
 // lives on the candidate and the block has to render it next to the rating.
 func TestComposeRendersRatingSampleSizeNextToTheRating(t *testing.T) {
 	chat := &scriptedChat{contents: []string{"结论\nFOLLOWUPS: []"}}
-	c := NewComposer(Deps{Chat: chat, Model: "m"})
+	c := NewComposer(Deps{Model: chat})
 
 	if _, err := c.Compose(context.Background(), Input{
 		Question:   "评分多少",
@@ -112,7 +112,7 @@ func TestComposeRendersRatingSampleSizeNextToTheRating(t *testing.T) {
 // a structured fact.
 func TestComposeFactOnlyTurnHasNoAdequacyLeadOrBlock(t *testing.T) {
 	chat := &scriptedChat{contents: []string{"评分 4.8。\nFOLLOWUPS: []"}}
-	c := NewComposer(Deps{Chat: chat, Model: "m"})
+	c := NewComposer(Deps{Model: chat})
 
 	ans, err := c.Compose(context.Background(), Input{
 		Question:   "这家店评分多少？",
@@ -137,7 +137,7 @@ func TestComposeOpinionGapWithCandidatesKeepsFactsButFlagsReviewsMissing(t *test
 	chat := &scriptedChat{contents: []string{
 		"Royal Bay 评分 4.8（8 条评论样本）。\n无法确认：安静——本次没有评论资料。\nFOLLOWUPS: []",
 	}}
-	c := NewComposer(Deps{Chat: chat, Model: "m"})
+	c := NewComposer(Deps{Model: chat})
 
 	ans, err := c.Compose(context.Background(), Input{
 		Question:   "这家店评分多少，安静吗？",
@@ -173,7 +173,7 @@ func TestComposeStreamFactOnlyTurnStreamsInsteadOfRefusal(t *testing.T) {
 		"Royal Bay 评分 4.8（8 条评论样本）。",
 		"\nFOLLOWUPS: []",
 	}}
-	c := NewComposer(Deps{Chat: chat, Model: "m"})
+	c := NewComposer(Deps{Model: chat})
 	sink, deltas := collectingSink()
 
 	ans, err := c.ComposeStream(context.Background(), Input{
@@ -198,7 +198,7 @@ func TestComposeStreamFactOnlyTurnStreamsInsteadOfRefusal(t *testing.T) {
 // fact route without these three would invite invented opening hours.
 func TestComposeInstructionSeparatesFactSourceFromReviewCitations(t *testing.T) {
 	chat := &scriptedChat{contents: []string{"结论\nFOLLOWUPS: []"}}
-	c := NewComposer(Deps{Chat: chat, Model: "m"})
+	c := NewComposer(Deps{Model: chat})
 	if _, err := c.Compose(context.Background(), Input{
 		Question:   "评分多少，几点关门？",
 		Candidates: factCandidates(),
@@ -226,7 +226,7 @@ func TestComposeInstructionSeparatesFactSourceFromReviewCitations(t *testing.T) 
 // stating that satisfaction directly rather than demanding a citation.
 func TestComposeFiltersBlockAuthorisesStatingSatisfaction(t *testing.T) {
 	chat := &scriptedChat{contents: []string{"结论\nFOLLOWUPS: []"}}
-	c := NewComposer(Deps{Chat: chat, Model: "m"})
+	c := NewComposer(Deps{Model: chat})
 	if _, err := c.Compose(context.Background(), Input{
 		Question:   "布鲁克林评分4以上",
 		Candidates: factCandidates(),

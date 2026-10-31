@@ -12,7 +12,7 @@ import (
 
 func assemblyConfig() config.Config {
 	return config.Config{
-		Chat: config.ChatConfig{Model: "vendor/test-model"},
+		Chat: config.ChatConfig{Model: "vendor/test-model", SupportsTools: true},
 		Agent: config.AgentConfig{
 			MaxToolRounds: 5,
 			ToolTimeout:   15 * time.Second,
@@ -21,13 +21,13 @@ func assemblyConfig() config.Config {
 }
 
 func TestNewAssemblesAgentRunnerWhenChatProviderPresent(t *testing.T) {
-	chatProvider := &testkit.MockChatProvider{Tools: true}
+	chatModel := &fakeChatModel{name: "test-model"}
 	application, err := New(assemblyConfig(), slog.New(slog.NewTextHandler(io.Discard, nil)), Deps{
-		Chat:        chatProvider,
-		ToolCalling: chatProvider,
-		Structured:  chatProvider,
-		Restaurants: testkit.NewRestaurantRepository(),
-		Knowledge:   testkit.NewKnowledgeRepository(),
+		PlanModel:    chatModel,
+		AnswerModel:  chatModel,
+		ExtractModel: chatModel,
+		Restaurants:  testkit.NewRestaurantRepository(),
+		Knowledge:    testkit.NewKnowledgeRepository(),
 	}, "test")
 	if err != nil {
 		t.Fatalf("New: %v", err)

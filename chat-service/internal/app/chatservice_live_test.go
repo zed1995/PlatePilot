@@ -15,66 +15,40 @@ import (
 	"testing"
 	"time"
 
-	domainchat "github.com/zed1995/platepilot/shared/domain/chat"
-	domaintool "github.com/zed1995/platepilot/shared/domain/tool"
-	"github.com/zed1995/platepilot/shared/testkit"
+	"github.com/cloudwego/eino/schema"
 
 	"github.com/zed1995/platepilot/chat-service/internal/agent"
 	"github.com/zed1995/platepilot/chat-service/internal/agent/toolreg"
 	"github.com/zed1995/platepilot/chat-service/internal/httpapi"
 )
 
-// gatedChatProvider holds the turn's model rounds until the test opens the gate.
+// channelGate holds every model call until the test opens the gate.
 //
 // A blocking model round is what makes "the frame arrived before the turn
 // finished" observable: with an instant provider the turn is over before the
 // assertions run, and live forwarding cannot be told from an end-of-turn
 // replay.
-//
-// Both entry points are held rather than only the tool-calling one: which of
-// them a plan round reaches depends on what the registry offers, and the
-// assertion here is about the adapter's forwarding, not about that dispatch.
-type gatedChatProvider struct {
-	*testkit.MockChatProvider
-	gate chan struct{}
-}
-
-func (p *gatedChatProvider) wait(ctx context.Context) error {
-	select {
-	case <-p.gate:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+func channelGate(gate <-chan struct{}) func(context.Context) error {
+	return func(ctx context.Context) error {
+		select {
+		case <-gate:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
-}
-
-func (p *gatedChatProvider) ChatWithTools(
-	ctx context.Context, req domainchat.ChatRequest, specs []domaintool.ToolSpec,
-) (domainchat.ToolCallResponse, error) {
-	if err := p.wait(ctx); err != nil {
-		return domainchat.ToolCallResponse{}, err
-	}
-	return p.MockChatProvider.ChatWithTools(ctx, req, specs)
-}
-
-func (p *gatedChatProvider) Complete(
-	ctx context.Context, req domainchat.ChatRequest,
-) (domainchat.ChatResponse, error) {
-	if err := p.wait(ctx); err != nil {
-		return domainchat.ChatResponse{}, err
-	}
-	return p.MockChatProvider.Complete(ctx, req)
 }
 
 func TestSendMessageForwardsFramesBeforeTheTurnFinishes(t *testing.T) {
 	gate := make(chan struct{})
-	provider := &gatedChatProvider{
-		MockChatProvider: &testkit.MockChatProvider{Tools: true},
-		gate:             gate,
+	provider := &fakeChatModel{
+		name:  "live",
+		resps: []*schema.Message{schema.AssistantMessage("你好。", nil)},
+		gate:  channelGate(gate),
 	}
 	runner, err := agent.NewRunner(agent.Config{MaxToolRounds: 2}, agent.Deps{
-		Chat:        provider,
-		ToolCalling: provider,
+		PlanModel:   provider,
+		AnswerModel: provider,
 		Registry:    toolreg.New(0),
 	})
 	if err != nil {
@@ -125,13 +99,13 @@ func TestSendMessageForwardsFramesBeforeTheTurnFinishes(t *testing.T) {
 // cancelled. That makes the assertion a statement about cancellation reaching
 // the model call rather than about how quickly the adapter gives up.
 func TestSendMessageStopsTheRunWhenTheClientDisconnects(t *testing.T) {
-	provider := &gatedChatProvider{
-		MockChatProvider: &testkit.MockChatProvider{Tools: true},
-		gate:             make(chan struct{}),
+	provider := &fakeChatModel{
+		name: "disconnect",
+		gate: channelGate(make(chan struct{})),
 	}
 	runner, err := agent.NewRunner(agent.Config{MaxToolRounds: 2}, agent.Deps{
-		Chat:        provider,
-		ToolCalling: provider,
+		PlanModel:   provider,
+		AnswerModel: provider,
 		Registry:    toolreg.New(0),
 	})
 	if err != nil {

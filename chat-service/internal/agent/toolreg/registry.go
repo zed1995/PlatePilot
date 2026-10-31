@@ -192,8 +192,8 @@ func (r *Registry) Register(entry Entry) error {
 	return nil
 }
 
-// Specs returns the registered tool specs in name order, ready to pass to
-// ChatWithTools.
+// Specs returns the registered tool specs in name order, ready to pass to the
+// model's WithTools call.
 func (r *Registry) Specs() []domaintool.ToolSpec {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

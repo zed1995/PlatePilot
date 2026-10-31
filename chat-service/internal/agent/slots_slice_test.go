@@ -155,10 +155,10 @@ func TestHardConditionsSurviveAModelThatOmitsThem(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner, err := agent.NewRunner(agent.Config{MaxToolRounds: 3}, agent.Deps{
-		Chat:        provider,
-		ToolCalling: provider,
+		PlanModel:   provider,
+		AnswerModel: provider,
 		Registry:    registry,
-		Extractor:   slots.New(slots.Deps{Structured: provider}),
+		Extractor:   slots.New(slots.Deps{Model: provider.extractor()}),
 	})
 	if err != nil {
 		t.Fatalf("NewRunner: %v", err)
@@ -246,8 +246,8 @@ func TestExplicitModelArgumentsAreNotOverridden(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner, err := agent.NewRunner(agent.Config{MaxToolRounds: 3}, agent.Deps{
-		Chat: provider, ToolCalling: provider, Registry: registry,
-		Extractor: slots.New(slots.Deps{Structured: provider}),
+		PlanModel: provider, AnswerModel: provider, Registry: registry,
+		Extractor: slots.New(slots.Deps{Model: provider.extractor()}),
 	})
 	if err != nil {
 		t.Fatalf("NewRunner: %v", err)
@@ -300,8 +300,8 @@ func TestSoftConditionsReachTheRequestButNeverTheFilter(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner, err := agent.NewRunner(agent.Config{MaxToolRounds: 3}, agent.Deps{
-		Chat: provider, ToolCalling: provider, Registry: registry,
-		Extractor: slots.New(slots.Deps{Structured: provider}),
+		PlanModel: provider, AnswerModel: provider, Registry: registry,
+		Extractor: slots.New(slots.Deps{Model: provider.extractor()}),
 	})
 	if err != nil {
 		t.Fatalf("NewRunner: %v", err)
@@ -348,7 +348,7 @@ func TestTurnWithoutAnExtractorStillRuns(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner, err := agent.NewRunner(agent.Config{MaxToolRounds: 3}, agent.Deps{
-		Chat: provider, ToolCalling: provider, Registry: registry,
+		PlanModel: provider, AnswerModel: provider, Registry: registry,
 	})
 	if err != nil {
 		t.Fatalf("NewRunner: %v", err)

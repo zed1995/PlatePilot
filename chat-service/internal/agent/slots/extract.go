@@ -7,9 +7,12 @@ import (
 	"strings"
 	"time"
 
-	chatport "github.com/zed1995/platepilot/shared/chat"
-	domainchat "github.com/zed1995/platepilot/shared/domain/chat"
+	"github.com/cloudwego/eino/components/model"
+	"github.com/cloudwego/eino/schema"
+
 	"github.com/zed1995/platepilot/shared/domain/conversation"
+
+	"github.com/zed1995/platepilot/chat-service/internal/agent/modelerr"
 )
 
 // DefaultTimeout bounds one structured extraction call.
@@ -73,12 +76,15 @@ func (c Config) withDefaults() Config {
 	return c
 }
 
-// Deps builds an Extractor. Structured may be nil: the extractor then runs
-// entirely on rules, which is a supported deployment rather than a degraded one.
+// Deps builds an Extractor. Model may be nil: the extractor then runs entirely
+// on rules, which is a supported deployment rather than a degraded one.
+//
+// The model must already be configured for structured output (the response
+// format is fixed when the application builds it), because the request itself
+// carries no schema.
 type Deps struct {
-	Structured chatport.StructuredOutputProvider
-	Model      string
-	Config     Config
+	Model  model.BaseChatModel
+	Config Config
 }
 
 // Extractor turns one user message into a Plan.
@@ -86,17 +92,15 @@ type Deps struct {
 // The zero value is not usable; construct it with New. It holds no mutable
 // state and is safe to share.
 type Extractor struct {
-	structured chatport.StructuredOutputProvider
-	model      string
-	cfg        Config
+	chatModel model.BaseChatModel
+	cfg       Config
 }
 
 // New builds an extractor.
 func New(deps Deps) *Extractor {
 	return &Extractor{
-		structured: deps.Structured,
-		model:      deps.Model,
-		cfg:        deps.Config.withDefaults(),
+		chatModel: deps.Model,
+		cfg:       deps.Config.withDefaults(),
 	}
 }
 
@@ -191,7 +195,7 @@ func applyReference(plan *Plan, userInput string, thread ThreadContext) {
 func (e *Extractor) chooseExtraction(
 	ctx context.Context, userInput string, pending *conversation.Checkpoint,
 ) (Extraction, string, string) {
-	if e.structured == nil {
+	if e.chatModel == nil {
 		return e.rulesExtraction(userInput), SourceRules, ""
 	}
 	extraction, err := e.modelExtraction(ctx, userInput, pending)
@@ -206,30 +210,23 @@ func (e *Extractor) chooseExtraction(
 func (e *Extractor) modelExtraction(
 	ctx context.Context, userInput string, pending *conversation.Checkpoint,
 ) (Extraction, error) {
-	messages := []domainchat.ChatMessage{
-		{Role: domainchat.RoleSystem, Content: extractionInstruction},
+	messages := []*schema.Message{
+		schema.SystemMessage(extractionInstruction),
 	}
 	if context := pendingContext(pending); context != "" {
-		messages = append(messages, domainchat.ChatMessage{
-			Role:    domainchat.RoleSystem,
-			Content: context,
-		})
+		messages = append(messages, schema.SystemMessage(context))
 	}
-	messages = append(messages, domainchat.ChatMessage{
-		Role:    domainchat.RoleUser,
-		Content: userInput,
-	})
+	messages = append(messages, schema.UserMessage(userInput))
 
 	callCtx, cancel := context.WithTimeout(ctx, e.cfg.Timeout)
 	defer cancel()
 
-	resp, err := e.structured.CompleteStructured(callCtx, domainchat.StructuredRequest{
-		Messages: messages,
-		Model:    e.model,
-		Metadata: map[string]string{"task": "slot_extraction"},
-	}, json.RawMessage(extractionSchema))
+	resp, err := e.chatModel.Generate(callCtx, messages)
 	if err != nil {
-		return Extraction{}, err
+		return Extraction{}, modelerr.Map(err)
+	}
+	if resp == nil {
+		return Extraction{}, errEmptyExtraction
 	}
 	var extraction Extraction
 	if err := json.Unmarshal([]byte(resp.Content), &extraction); err != nil {

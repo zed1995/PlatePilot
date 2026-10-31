@@ -1,16 +1,19 @@
 // Package agent runs one user turn through an explicit Eino state machine:
 // ingress, plan, tool execution, grounded answer composition, and finalize.
 //
-// The state between nodes is a project-owned TurnState; schema.Message never
-// crosses a node boundary — it lives behind the einomodel adapter. Events
-// emitted while the graph runs mirror the SSE contract the transport layer will
-// forward in M4-11.
+// The state between nodes is a project-owned TurnState. The transcript it
+// carries is Eino's schema.Message — the same type the model interface takes
+// and returns — so a node can hand it to Generate or Stream without a
+// conversion layer in between. Events emitted while the graph runs mirror the
+// SSE contract the transport layer forwards.
 package agent
 
 import (
 	"context"
 	"encoding/json"
 	"time"
+
+	"github.com/cloudwego/eino/schema"
 
 	domainchat "github.com/zed1995/platepilot/shared/domain/chat"
 	"github.com/zed1995/platepilot/shared/domain/conversation"
@@ -41,7 +44,7 @@ type TurnInput struct {
 	UserInput string
 	// History carries the prior conversation, oldest first. M4-08 populates it
 	// from the conversation store; slice 1 runs without it.
-	History []domainchat.ChatMessage
+	History []*schema.Message
 }
 
 // TurnState is the mutable state every graph node reads and writes.
@@ -55,10 +58,10 @@ type TurnState struct {
 	UserInput string
 	// Messages is the live transcript sent to the model: history, the new user
 	// message, assistant messages, and tool messages.
-	Messages []domainchat.ChatMessage
+	Messages []*schema.Message
 	// replayedHistory is the persisted transcript replayed at ingress. It is
 	// kept separate from Messages so finalize never double-persists it.
-	replayedHistory []domainchat.ChatMessage
+	replayedHistory []*schema.Message
 	// CheckpointVersion is the version loaded at ingress, or zero for a new
 	// thread; finalize writes version+1.
 	CheckpointVersion int64

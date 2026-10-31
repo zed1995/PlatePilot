@@ -149,14 +149,14 @@ func TestMemoryManagementReportsADisabledCapability(t *testing.T) {
 func TestSaveMemoryIsRegisteredOnlyWhenTheSwitchIsOn(t *testing.T) {
 	on := assemblyConfig()
 	on.Agent.MemoryWriteEnabled = true
-	application := newAssembly(t, on, reservationDeps(&testkit.MockChatProvider{Tools: true}))
+	application := newAssembly(t, on, reservationDeps())
 	if !offered(application, tools.SaveMemoryToolName) {
 		t.Fatal("save_memory is missing with AGENT_MEMORY_WRITE_ENABLED=true")
 	}
 
 	off := assemblyConfig()
 	off.Agent.MemoryWriteEnabled = false
-	application = newAssembly(t, off, reservationDeps(&testkit.MockChatProvider{Tools: true}))
+	application = newAssembly(t, off, reservationDeps())
 	if offered(application, tools.SaveMemoryToolName) {
 		t.Fatal("save_memory was offered with AGENT_MEMORY_WRITE_ENABLED=false")
 	}
@@ -168,7 +168,7 @@ func TestSaveMemoryIsRegisteredOnlyWhenTheSwitchIsOn(t *testing.T) {
 func TestSaveMemoryIsNotOfferedWithoutAMemoryStore(t *testing.T) {
 	cfg := assemblyConfig()
 	cfg.Agent.MemoryWriteEnabled = true
-	deps := reservationDeps(&testkit.MockChatProvider{Tools: true})
+	deps := reservationDeps()
 	deps.Memories = nil
 
 	application := newAssembly(t, cfg, deps)

@@ -4,24 +4,41 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"sync"
 	"testing"
 	"time"
 
-	chatport "github.com/zed1995/platepilot/shared/chat"
+	"github.com/cloudwego/eino/components/model"
+	"github.com/cloudwego/eino/schema"
+
 	domainchat "github.com/zed1995/platepilot/shared/domain/chat"
+	"github.com/zed1995/platepilot/shared/domain/errs"
 	domaintool "github.com/zed1995/platepilot/shared/domain/tool"
 
 	"github.com/zed1995/platepilot/chat-service/internal/agent"
 	"github.com/zed1995/platepilot/chat-service/internal/agent/toolreg"
 )
 
-// scriptedProvider is a queue-driven fake of all three chat ports for the
-// graph tests. Each response queue pops strictly in order so a test fails
-// loudly if the agent makes a call it did not script.
+// scriptedProvider is a queue-driven fake of the chat model for the graph
+// tests. Each response queue pops strictly in order so a test fails loudly if
+// the agent makes a call it did not script.
+//
+// It implements model.ToolCallingChatModel directly: the runner binds the
+// registry's tools through WithTools and then calls Generate on the returned
+// view, so the fake models both the bound and the unbound call instead of three
+// separate domain ports.
 type scriptedProvider struct {
 	mu sync.Mutex
+
+	// name identifies the instance. A test that routes planning to one model
+	// and answering to another asserts which instance recorded the call,
+	// because a model instance carries its own identity and no request field
+	// does.
+	name string
+	// gate, when set, runs before every model call on this instance. The
+	// blocking tests use it to hold a turn inside a model round; it is a field
+	// rather than an overridden method so a WithTools view still honours it.
+	gate func(context.Context) error
 
 	completeResps []domainchat.ChatResponse
 	completeErr   error
@@ -32,13 +49,15 @@ type scriptedProvider struct {
 	toolReqs      []toolCallReq
 	receivedSpecs [][]domaintool.ToolSpec
 
-	supportTools    bool
-	supportParallel bool
+	// supportTools reports whether a bound view accepts tools at all. The
+	// runner decides that from configuration (Deps.ToolsUnsupported), so this
+	// only guards against a test scripting a tool round against a provider it
+	// declared incapable.
+	supportTools bool
 
-	structuredResps   []domainchat.StructuredResponse
-	structuredErr     error
-	structuredReqs    []domainchat.StructuredRequest
-	supportJSONSchema bool
+	structuredResps []domainchat.StructuredResponse
+	structuredErr   error
+	structuredReqs  []domainchat.StructuredRequest
 
 	chunks    []domainchat.ChatChunk
 	streamErr error
@@ -56,35 +75,29 @@ type toolCallReq struct {
 	specs []domaintool.ToolSpec
 }
 
-func (p *scriptedProvider) Complete(ctx context.Context, req domainchat.ChatRequest) (domainchat.ChatResponse, error) {
-	// A completion pays the same decode cost as the equivalent stream — the
-	// tokens take that long either way; the difference under test is when the
-	// runtime lets the client see them, not how fast the model is.
-	if p.completeDelay > 0 {
-		select {
-		case <-time.After(p.completeDelay):
-		case <-ctx.Done():
-			return domainchat.ChatResponse{}, ctx.Err()
-		}
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.completeReqs = append(p.completeReqs, req)
-	if p.completeErr != nil {
-		return domainchat.ChatResponse{}, p.completeErr
-	}
-	if len(p.completeResps) == 0 {
-		return domainchat.ChatResponse{}, errors.New("scripted provider: no more Complete responses queued")
-	}
-	resp := p.completeResps[0]
-	p.completeResps = p.completeResps[1:]
-	return resp, nil
+var _ model.ToolCallingChatModel = (*scriptedProvider)(nil)
+
+// WithTools returns a view bound to the given tools. It is a copy, matching the
+// interface contract: the unbound provider stays usable for answer composition.
+func (p *scriptedProvider) WithTools(tools []*schema.ToolInfo) (model.ToolCallingChatModel, error) {
+	return &boundProvider{base: p, tools: tools}, nil
 }
 
-func (p *scriptedProvider) Stream(_ context.Context, req domainchat.ChatRequest) (chatport.ChatStream, error) {
+func (p *scriptedProvider) Generate(
+	ctx context.Context, in []*schema.Message, opts ...model.Option,
+) (*schema.Message, error) {
+	return p.generate(ctx, in, nil, opts...)
+}
+
+func (p *scriptedProvider) Stream(
+	ctx context.Context, in []*schema.Message, _ ...model.Option,
+) (*schema.StreamReader[*schema.Message], error) {
+	if err := p.wait(ctx); err != nil {
+		return nil, err
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.completeReqs = append(p.completeReqs, req)
+	p.completeReqs = append(p.completeReqs, toDomainMessages(in))
 	// An error here is a provider that cannot stream at all, which is what the
 	// answer composer recovers from by falling back to a one-shot completion.
 	// A stream that opens and then dies is a different case, and tests that want
@@ -92,97 +105,276 @@ func (p *scriptedProvider) Stream(_ context.Context, req domainchat.ChatRequest)
 	if p.streamErr != nil {
 		return nil, p.streamErr
 	}
-	if len(p.chunks) > 0 {
-		return &scriptedStream{chunks: p.chunks, delay: p.chunkDelay}, nil
+	chunks := p.chunks
+	if len(chunks) == 0 && len(p.completeResps) > 0 {
+		// No streamed script: serve the next one-shot answer as a single chunk.
+		// It keeps a turn that only queued completeResps behaving the same
+		// whether or not streaming is switched on, so enabling the flag cannot
+		// silently change what an existing test asserts.
+		resp := p.completeResps[0]
+		p.completeResps = p.completeResps[1:]
+		if resp.Message.Content != "" {
+			chunks = []domainchat.ChatChunk{{
+				Delta:        resp.Message.Content,
+				FinishReason: resp.FinishReason,
+			}}
+		}
 	}
-	// No streamed script: serve the next one-shot answer as a single chunk. It
-	// keeps a turn that only queued completeResps behaving the same whether or
-	// not streaming is switched on, so enabling the flag cannot silently change
-	// what an existing test asserts.
-	if len(p.completeResps) == 0 {
-		return &scriptedStream{}, nil
-	}
-	resp := p.completeResps[0]
-	p.completeResps = p.completeResps[1:]
-	if resp.Message.Content == "" {
-		return &scriptedStream{}, nil
-	}
-	return &scriptedStream{delay: p.chunkDelay, chunks: []domainchat.ChatChunk{{
-		Delta:        resp.Message.Content,
-		FinishReason: resp.FinishReason,
-	}}}, nil
+	delay := p.chunkDelay
+	reader, writer := schema.Pipe[*schema.Message](0)
+	go func() {
+		defer writer.Close()
+		for _, chunk := range chunks {
+			// The wait models decode time, so it comes before a token and not
+			// before the end of the stream.
+			if delay > 0 {
+				select {
+				case <-time.After(delay):
+				case <-ctx.Done():
+					return
+				}
+			}
+			if writer.Send(chunkToSchema(chunk), nil) {
+				// The consumer closed the stream; further sends are pointless.
+				return
+			}
+		}
+	}()
+	return reader, nil
 }
 
-func (p *scriptedProvider) SupportsTools() bool         { return p.supportTools }
-func (p *scriptedProvider) SupportsParallelTools() bool { return p.supportParallel }
-
-func (p *scriptedProvider) ChatWithTools(ctx context.Context, req domainchat.ChatRequest, specs []domaintool.ToolSpec) (domainchat.ToolCallResponse, error) {
+// wait holds the call until the instance's gate opens, or reports that the
+// caller's context ended. An ungated provider returns immediately.
+func (p *scriptedProvider) wait(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
-		return domainchat.ToolCallResponse{}, err
+		return err
 	}
+	if p.gate != nil {
+		return p.gate(ctx)
+	}
+	return nil
+}
+
+// generate serves one model round. A tool-bound call consumes the tool queue;
+// an unbound call — which is also what a bound view with no tools asks for —
+// consumes the completion queue.
+func (p *scriptedProvider) generate(
+	ctx context.Context, in []*schema.Message, tools []*schema.ToolInfo, _ ...model.Option,
+) (*schema.Message, error) {
+	if err := p.wait(ctx); err != nil {
+		return nil, err
+	}
+	if len(tools) > 0 && !p.supportTools {
+		return nil, errs.New(errs.CodeInvalidArgument,
+			"scripted provider: configured without tool support")
+	}
+	if len(tools) == 0 && p.completeDelay > 0 {
+		// A completion pays the same decode cost as the equivalent stream — the
+		// tokens take that long either way; the difference under test is when
+		// the runtime lets the client see them, not how fast the model is.
+		select {
+		case <-time.After(p.completeDelay):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	req := toDomainMessages(in)
+	if len(tools) == 0 {
+		p.completeReqs = append(p.completeReqs, req)
+		if p.completeErr != nil {
+			return nil, p.completeErr
+		}
+		if len(p.completeResps) == 0 {
+			return nil, errors.New("scripted provider: no more Complete responses queued")
+		}
+		resp := p.completeResps[0]
+		p.completeResps = p.completeResps[1:]
+		return responseToSchema(resp), nil
+	}
+
+	specs := toDomainSpecs(tools)
 	p.toolReqs = append(p.toolReqs, toolCallReq{req: req, specs: specs})
 	p.receivedSpecs = append(p.receivedSpecs, specs)
 	if p.toolErr != nil {
-		return domainchat.ToolCallResponse{}, p.toolErr
+		return nil, p.toolErr
 	}
 	if len(p.toolResps) == 0 {
-		return domainchat.ToolCallResponse{}, errors.New("scripted provider: no more ChatWithTools responses queued")
+		return nil, errors.New("scripted provider: no more tool responses queued")
 	}
 	resp := p.toolResps[0]
 	p.toolResps = p.toolResps[1:]
-	return resp, nil
+	return responseToSchema(domainchat.ChatResponse{
+		Message:      resp.Message,
+		FinishReason: resp.FinishReason,
+		Usage:        resp.Usage,
+		Model:        resp.Model,
+	}), nil
 }
 
-// scriptedStream replays a queued chunk list. Chunks are consumed, so a test
-// that wants a second stream must queue a second script.
-type scriptedStream struct {
-	chunks []domainchat.ChatChunk
-	// delay is waited before each chunk. Zero means no wait at all rather than
-	// an immediate timer, so the default costs nothing.
-	delay time.Duration
+// boundProvider is the tool-bound view WithTools returns.
+//
+// A non-empty tool list consumes the tool-response queue and records which
+// specs were bound; an empty list falls through to the completion queue, which
+// is what a runner with no registered tools actually asks for.
+type boundProvider struct {
+	base  *scriptedProvider
+	tools []*schema.ToolInfo
 }
 
-func (s *scriptedStream) Recv() (domainchat.ChatChunk, error) {
-	if len(s.chunks) == 0 {
-		return domainchat.ChatChunk{}, io.EOF
+var _ model.ToolCallingChatModel = (*boundProvider)(nil)
+
+func (b *boundProvider) Generate(
+	ctx context.Context, in []*schema.Message, opts ...model.Option,
+) (*schema.Message, error) {
+	return b.base.generate(ctx, in, b.tools, opts...)
+}
+
+func (b *boundProvider) Stream(
+	ctx context.Context, in []*schema.Message, opts ...model.Option,
+) (*schema.StreamReader[*schema.Message], error) {
+	return b.base.Stream(ctx, in, opts...)
+}
+
+func (b *boundProvider) WithTools(tools []*schema.ToolInfo) (model.ToolCallingChatModel, error) {
+	return &boundProvider{base: b.base, tools: tools}, nil
+}
+
+// extractor returns a model view that consumes the structured-response queue.
+// The slot extractor asks for JSON once per turn and is its only caller, so its
+// requests are recorded separately from the planning rounds.
+func (p *scriptedProvider) extractor() model.BaseChatModel {
+	return &extractorModel{provider: p}
+}
+
+type extractorModel struct{ provider *scriptedProvider }
+
+var _ model.BaseChatModel = (*extractorModel)(nil)
+
+func (m *extractorModel) Generate(
+	ctx context.Context, in []*schema.Message, _ ...model.Option,
+) (*schema.Message, error) {
+	if err := m.provider.wait(ctx); err != nil {
+		return nil, err
 	}
-	// The wait models decode time, so it comes before a token and not before
-	// the end of the stream.
-	if s.delay > 0 {
-		time.Sleep(s.delay)
-	}
-	chunk := s.chunks[0]
-	s.chunks = s.chunks[1:]
-	return chunk, nil
-}
-
-func (s *scriptedStream) Close() error { return nil }
-
-// SupportsJSONSchema reports the scripted capability. It defaults to false,
-// which is the degraded path: the adapter falls back to a json_object response
-// with the schema in the prompt, and the graph sees no difference.
-func (p *scriptedProvider) SupportsJSONSchema() bool { return p.supportJSONSchema }
-
-// CompleteStructured pops the next scripted structured response. The slot
-// extractor is the only caller, and it is called once per turn.
-func (p *scriptedProvider) CompleteStructured(
-	_ context.Context, req domainchat.StructuredRequest, _ json.RawMessage,
-) (domainchat.StructuredResponse, error) {
+	p := m.provider
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.structuredReqs = append(p.structuredReqs, req)
+	p.structuredReqs = append(p.structuredReqs, domainchat.StructuredRequest{
+		Messages: toDomainMessages(in).Messages,
+	})
 	if p.structuredErr != nil {
-		return domainchat.StructuredResponse{}, p.structuredErr
+		return nil, p.structuredErr
 	}
 	if len(p.structuredResps) == 0 {
-		return domainchat.StructuredResponse{}, errors.New(
-			"scripted provider: no more CompleteStructured responses queued")
+		return nil, errors.New("scripted provider: no more structured responses queued")
 	}
 	resp := p.structuredResps[0]
 	p.structuredResps = p.structuredResps[1:]
-	return resp, nil
+	return schema.AssistantMessage(resp.Content, nil), nil
+}
+
+func (m *extractorModel) Stream(
+	context.Context, []*schema.Message, ...model.Option,
+) (*schema.StreamReader[*schema.Message], error) {
+	return nil, errors.New("scripted provider: the extractor does not stream")
+}
+
+// responseToSchema maps a scripted domain response onto the model interface's
+// message shape. It is the only conversion in this fake: everything the tests
+// assert about requests goes through toDomainMessages instead.
+func responseToSchema(resp domainchat.ChatResponse) *schema.Message {
+	msg := &schema.Message{
+		Role:       schema.RoleType(resp.Message.Role),
+		Content:    resp.Message.Content,
+		Name:       resp.Message.Name,
+		ToolCallID: resp.Message.ToolCallID,
+	}
+	for _, call := range resp.Message.ToolCalls {
+		msg.ToolCalls = append(msg.ToolCalls, schemaToolCall(call))
+	}
+	msg.ResponseMeta = &schema.ResponseMeta{FinishReason: string(resp.FinishReason)}
+	if resp.Usage.TotalTokens != 0 || resp.Usage.InputTokens != 0 || resp.Usage.OutputTokens != 0 {
+		msg.ResponseMeta.Usage = &schema.TokenUsage{
+			PromptTokens:     resp.Usage.InputTokens,
+			CompletionTokens: resp.Usage.OutputTokens,
+			TotalTokens:      resp.Usage.TotalTokens,
+		}
+	}
+	return msg
+}
+
+func chunkToSchema(chunk domainchat.ChatChunk) *schema.Message {
+	msg := &schema.Message{
+		Role:             schema.Assistant,
+		Content:          chunk.Delta,
+		ReasoningContent: chunk.Reasoning,
+	}
+	for _, call := range chunk.ToolCalls {
+		msg.ToolCalls = append(msg.ToolCalls, schemaToolCall(call))
+	}
+	msg.ResponseMeta = &schema.ResponseMeta{FinishReason: string(chunk.FinishReason)}
+	if chunk.Usage != nil {
+		msg.ResponseMeta.Usage = &schema.TokenUsage{
+			PromptTokens:     chunk.Usage.InputTokens,
+			CompletionTokens: chunk.Usage.OutputTokens,
+			TotalTokens:      chunk.Usage.TotalTokens,
+		}
+	}
+	return msg
+}
+
+func schemaToolCall(call domaintool.ToolCall) schema.ToolCall {
+	return schema.ToolCall{
+		ID:       call.ID,
+		Type:     "function",
+		Function: schema.FunctionCall{Name: call.Name, Arguments: string(call.Arguments)},
+	}
+}
+
+// toDomainMessages records a request in the DTO the tests assert against. The
+// conversion lives in the fake, not in production code: production nodes pass
+// schema.Message straight to the model.
+func toDomainMessages(in []*schema.Message) domainchat.ChatRequest {
+	msgs := make([]domainchat.ChatMessage, 0, len(in))
+	for _, msg := range in {
+		if msg == nil {
+			continue
+		}
+		out := domainchat.ChatMessage{
+			Role:       domainchat.Role(msg.Role),
+			Content:    msg.Content,
+			Name:       msg.Name,
+			ToolCallID: msg.ToolCallID,
+		}
+		for _, call := range msg.ToolCalls {
+			out.ToolCalls = append(out.ToolCalls, domaintool.ToolCall{
+				ID:        call.ID,
+				Name:      call.Function.Name,
+				Arguments: json.RawMessage(call.Function.Arguments),
+			})
+		}
+		msgs = append(msgs, out)
+	}
+	return domainchat.ChatRequest{Messages: msgs}
+}
+
+func toDomainSpecs(infos []*schema.ToolInfo) []domaintool.ToolSpec {
+	specs := make([]domaintool.ToolSpec, 0, len(infos))
+	for _, info := range infos {
+		spec := domaintool.ToolSpec{Name: info.Name, Description: info.Desc}
+		if info.ParamsOneOf != nil {
+			if js, err := info.ParamsOneOf.ToJSONSchema(); err == nil {
+				if raw, err := json.Marshal(js); err == nil {
+					spec.Parameters = raw
+				}
+			}
+		}
+		specs = append(specs, spec)
+	}
+	return specs
 }
 
 func assistantText(content string) domainchat.ToolCallResponse {
@@ -215,8 +407,8 @@ func drain(events <-chan agent.Event) []agent.Event {
 func newTestRunner(t *testing.T, p *scriptedProvider, reg *toolreg.Registry, maxRounds int) *agent.Runner {
 	t.Helper()
 	runner, err := agent.NewRunner(agent.Config{MaxToolRounds: maxRounds}, agent.Deps{
-		Chat:        p,
-		ToolCalling: p,
+		PlanModel:   p,
+		AnswerModel: p,
 		Registry:    reg,
 	})
 	if err != nil {
@@ -449,8 +641,19 @@ func TestRunnerRejectsToolsWithoutProviderSupport(t *testing.T) {
 	if err := reg.Register(echoEntry()); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+	// Tool capability is now a configuration fact rather than something the
+	// model interface reveals: an OpenAI-compatible model implements WithTools
+	// whether or not the endpoint honours it, so the application reports it.
 	provider := &scriptedProvider{supportTools: false}
-	runner := newTestRunner(t, provider, reg, 3)
+	runner, err := agent.NewRunner(agent.Config{MaxToolRounds: 3}, agent.Deps{
+		PlanModel:        provider,
+		AnswerModel:      provider,
+		ToolsUnsupported: true,
+		Registry:         reg,
+	})
+	if err != nil {
+		t.Fatalf("NewRunner: %v", err)
+	}
 
 	result, eventsCh := runner.Run(context.Background(), agent.TurnInput{
 		ThreadID:  "th-6",

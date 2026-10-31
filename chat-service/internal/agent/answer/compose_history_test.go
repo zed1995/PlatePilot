@@ -6,38 +6,44 @@ import (
 	"strings"
 	"testing"
 
-	domainchat "github.com/zed1995/platepilot/shared/domain/chat"
+	"github.com/cloudwego/eino/schema"
 )
+
+func userMessage(content string) *schema.Message { return schema.UserMessage(content) }
+
+func assistantMessage(content string) *schema.Message {
+	return schema.AssistantMessage(content, nil)
+}
 
 // The history block is a separate message on purpose. Folding it into the
 // evidence message would put citable and non-citable material in one place and
 // leave the model to work out which instruction covered which block.
 func TestComposeSendsTheConversationAsItsOwnNonCitableBlock(t *testing.T) {
 	chat := &scriptedChat{contents: []string{"结论[^10]\nFOLLOWUPS: []"}}
-	c := NewComposer(Deps{Chat: chat, Model: "m"})
+	c := NewComposer(Deps{Model: chat})
 
 	if _, err := c.Compose(context.Background(), Input{
 		Question: "便宜一点的",
 		Evidence: adequateEvidence(),
-		History: []domainchat.ChatMessage{
-			{Role: domainchat.RoleUser, Content: "曼哈顿 4 星以上的意大利菜"},
-			{Role: domainchat.RoleAssistant, Content: "找到两家，都符合条件[^10]。\nFOLLOWUPS: [\"能订位吗?\"]"},
+		History: []*schema.Message{
+			userMessage("曼哈顿 4 星以上的意大利菜"),
+			assistantMessage("找到两家，都符合条件[^10]。\nFOLLOWUPS: [\"能订位吗?\"]"),
 		},
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	messages := chat.requests[0].Messages
+	messages := chat.requests[0]
 	if len(messages) != 3 {
 		t.Fatalf("sent %d messages, want system + recent_turns + material", len(messages))
 	}
-	if messages[0].Role != domainchat.RoleSystem {
+	if messages[0].Role != schema.System {
 		t.Fatalf("messages[0].Role = %s, want system", messages[0].Role)
 	}
-	if messages[1].Role != domainchat.RoleUser || !strings.Contains(messages[1].Content, "<recent_turns>") {
+	if messages[1].Role != schema.User || !strings.Contains(messages[1].Content, "<recent_turns>") {
 		t.Fatalf("messages[1] must be the history block:\n%+v", messages[1])
 	}
-	if messages[2].Role != domainchat.RoleUser || !strings.Contains(messages[2].Content, "<evidence ") {
+	if messages[2].Role != schema.User || !strings.Contains(messages[2].Content, "<evidence ") {
 		t.Fatalf("messages[2] must be this turn's material:\n%+v", messages[2])
 	}
 
@@ -61,7 +67,7 @@ func TestComposeSendsTheConversationAsItsOwnNonCitableBlock(t *testing.T) {
 // conversation".
 func TestComposeOmitsTheHistoryBlockOnAFirstTurn(t *testing.T) {
 	chat := &scriptedChat{contents: []string{"结论[^10]\nFOLLOWUPS: []"}}
-	c := NewComposer(Deps{Chat: chat, Model: "m"})
+	c := NewComposer(Deps{Model: chat})
 
 	if _, err := c.Compose(context.Background(), Input{
 		Question: "曼哈顿的意大利菜",
@@ -70,7 +76,7 @@ func TestComposeOmitsTheHistoryBlockOnAFirstTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if messages := chat.requests[0].Messages; len(messages) != 2 {
+	if messages := chat.requests[0]; len(messages) != 2 {
 		t.Fatalf("sent %d messages, want system + material only", len(messages))
 	}
 	if content := userContentOf(t, chat); strings.Contains(content, "<recent_turns>") {
@@ -83,13 +89,13 @@ func TestComposeOmitsTheHistoryBlockOnAFirstTurn(t *testing.T) {
 // regeneration, or the whole turn if it happens twice.
 func TestComposeStripsPriorCitationMarkersAndTheFollowUpsTail(t *testing.T) {
 	chat := &scriptedChat{contents: []string{"结论[^10]\nFOLLOWUPS: []"}}
-	c := NewComposer(Deps{Chat: chat, Model: "m"})
+	c := NewComposer(Deps{Model: chat})
 
 	if _, err := c.Compose(context.Background(), Input{
 		Question: "那家呢",
 		Evidence: adequateEvidence(),
-		History: []domainchat.ChatMessage{
-			{Role: domainchat.RoleAssistant, Content: "上一轮的结论[^20][^10]。\nFOLLOWUPS: [\"还有别的吗?\"]"},
+		History: []*schema.Message{
+			assistantMessage("上一轮的结论[^20][^10]。\nFOLLOWUPS: [\"还有别的吗?\"]"),
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -110,11 +116,11 @@ func TestComposeStripsPriorCitationMarkersAndTheFollowUpsTail(t *testing.T) {
 // in the block would still be free to treat a fact it read there as established.
 func TestComposeInstructionDeclaresTheHistoryNonCitable(t *testing.T) {
 	chat := &scriptedChat{contents: []string{"结论[^10]\nFOLLOWUPS: []"}}
-	c := NewComposer(Deps{Chat: chat, Model: "m"})
+	c := NewComposer(Deps{Model: chat})
 	if _, err := c.Compose(context.Background(), Input{
 		Question: "那家呢",
 		Evidence: adequateEvidence(),
-		History:  []domainchat.ChatMessage{{Role: domainchat.RoleUser, Content: "之前的那个问题"}},
+		History:  []*schema.Message{userMessage("之前的那个问题")},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -138,15 +144,15 @@ func TestComposeRejectsACitationThatOnlyAppearedInTheHistory(t *testing.T) {
 		"沿用上一轮那家[^77]\nFOLLOWUPS: []",
 		"修正回答[^10]\nFOLLOWUPS: []",
 	}}
-	c := NewComposer(Deps{Chat: chat, Model: "m"})
+	c := NewComposer(Deps{Model: chat})
 
 	ans, err := c.Compose(context.Background(), Input{
 		Question: "那家还开着吗",
 		Evidence: adequateEvidence(),
-		History: []domainchat.ChatMessage{
+		History: []*schema.Message{
 			// The marker is in a user message, so it reaches the block verbatim:
 			// the model really can see the number it is about to cite.
-			{Role: domainchat.RoleUser, Content: "上一轮你说的那家是不是[^77]"},
+			userMessage("上一轮你说的那家是不是[^77]"),
 		},
 	})
 	if err != nil {
@@ -161,7 +167,7 @@ func TestComposeRejectsACitationThatOnlyAppearedInTheHistory(t *testing.T) {
 	if !strings.Contains(historyBlockOf(t, chat), "[^77]") {
 		t.Fatal("the fixture is vacuous: the history block never showed the ID")
 	}
-	correction := chat.requests[1].Messages[len(chat.requests[1].Messages)-1]
+	correction := chat.requests[1][len(chat.requests[1])-1]
 	for _, want := range []string{"77", "10, 20"} {
 		if !strings.Contains(correction.Content, want) {
 			t.Fatalf("the correction must name %q:\n%s", want, correction.Content)
@@ -172,12 +178,9 @@ func TestComposeRejectsACitationThatOnlyAppearedInTheHistory(t *testing.T) {
 // Six messages is three exchanges. Beyond that the block stops being context
 // for an incremental condition and starts being a transcript.
 func TestComposeKeepsOnlyTheNewestSixHistoryMessages(t *testing.T) {
-	history := make([]domainchat.ChatMessage, 0, 8)
+	history := make([]*schema.Message, 0, 8)
 	for i := 1; i <= 8; i++ {
-		history = append(history, domainchat.ChatMessage{
-			Role:    domainchat.RoleUser,
-			Content: fmt.Sprintf("历史消息%d", i),
-		})
+		history = append(history, userMessage(fmt.Sprintf("历史消息%d", i)))
 	}
 
 	got := trimHistory(history)
@@ -198,12 +201,10 @@ func TestComposeKeepsOnlyTheNewestSixHistoryMessages(t *testing.T) {
 func TestComposeTrimsHistoryOverBudgetFromTheOldestEnd(t *testing.T) {
 	// 302 tokens each, so six of them are comfortably over the 1000-token half
 	// of the evidence budget and exactly three fit.
-	history := make([]domainchat.ChatMessage, 0, 6)
+	history := make([]*schema.Message, 0, 6)
 	for i := 0; i < 6; i++ {
-		history = append(history, domainchat.ChatMessage{
-			Role:    domainchat.RoleUser,
-			Content: fmt.Sprintf("第%d轮%s", i, strings.Repeat("字", 300)),
-		})
+		history = append(history, userMessage(
+			fmt.Sprintf("第%d轮%s", i, strings.Repeat("字", 300))))
 	}
 
 	got := trimHistory(history)
@@ -225,10 +226,7 @@ func TestComposeTrimsHistoryOverBudgetFromTheOldestEnd(t *testing.T) {
 // on one stale answer would push out the evidence the answer has to cite, and
 // half a conversation is worse than none.
 func TestComposeDropsTheBlockWhenOneMessageIsOverBudget(t *testing.T) {
-	history := []domainchat.ChatMessage{{
-		Role:    domainchat.RoleAssistant,
-		Content: strings.Repeat("字", historyTokenBudget+200),
-	}}
+	history := []*schema.Message{assistantMessage(strings.Repeat("字", historyTokenBudget+200))}
 
 	if got := trimHistory(history); len(got) != 0 {
 		t.Fatalf("kept %d messages, want none", len(got))
@@ -241,10 +239,10 @@ func TestComposeDropsTheBlockWhenOneMessageIsOverBudget(t *testing.T) {
 // An empty message is not a turn, and rendering it would put a bare "用户："
 // line in front of the model.
 func TestComposeSkipsBlankHistoryMessages(t *testing.T) {
-	block := recentTurnsContext([]domainchat.ChatMessage{
-		{Role: domainchat.RoleUser, Content: "   "},
-		{Role: domainchat.RoleAssistant, Content: "\n\nFOLLOWUPS: []"},
-		{Role: domainchat.RoleUser, Content: "真正的问题"},
+	block := recentTurnsContext([]*schema.Message{
+		userMessage("   "),
+		assistantMessage("\n\nFOLLOWUPS: []"),
+		userMessage("真正的问题"),
 	})
 
 	if !strings.Contains(block, "真正的问题") {
@@ -267,8 +265,8 @@ func historyBlockOf(t *testing.T, chat *scriptedChat) string {
 	if len(chat.requests) == 0 {
 		t.Fatal("the composer never called the model")
 	}
-	for _, message := range chat.requests[0].Messages {
-		if message.Role == domainchat.RoleUser && strings.Contains(message.Content, "<recent_turns>") {
+	for _, message := range chat.requests[0] {
+		if message.Role == schema.User && strings.Contains(message.Content, "<recent_turns>") {
 			return message.Content
 		}
 	}
