@@ -351,8 +351,9 @@ digest 可选且默认关闭——**先把"哪些调用会花钱"说清楚，再
   与 `rescorePool`（"ANN 页外"不等于"不相关"）。
 - `data-pipeline/internal/pipeline/knowledge/digest.go`：`digest:rules:v1` 零模型基线、
   LLM digest 的开关与来源校验（第 6、24 章）。
-- `shared/embedding/ollama/`：本地 `qwen3-embedding:0.6b`、1024 维；`shared/chat/openai/`：
-  远端 chat 的 `Timeout` / `MaxRetries` / `Retry-After` 处理。
+- `shared/embedding/ollama/`：本地 `qwen3-embedding:0.6b`、1024 维；
+  `data-pipeline/internal/llm/` 与 `chat-service/internal/app/chatmodel.go` 的
+  `retryTransport`：远端 chat 的 `Timeout` / `MaxRetries` / `Retry-After` 处理。
 
 **把两本账接起来读**
 

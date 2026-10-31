@@ -265,7 +265,9 @@ cd chat-service && go test ./internal/agent/...
   工具调用响应、消息上的 `ToolCalls` 字段。
 - [shared/domain/tool/tool.go](../../shared/domain/tool/tool.go)：工具说明书、
   调用请求、调用结果三个 DTO。
-- [shared/chat/chat.go](../../shared/chat/chat.go)：循环依赖的那个模型能力端口。
+- 模型能力面：仓库里如今由 Eino 的模型接口（在线侧）与
+  [data-pipeline/internal/llm/llm.go](../../data-pipeline/internal/llm/llm.go)
+  的单方法 `Completer`（批量侧）承担——第 4 章版本注记。
 
 下一章，我们解决问题 6 和 7 的工程底座：把具体的模型厂商藏到端口后面，让
 全部测试离线、确定、免费可跑——这是第 4 章，也是后续一切评测体系的地基。

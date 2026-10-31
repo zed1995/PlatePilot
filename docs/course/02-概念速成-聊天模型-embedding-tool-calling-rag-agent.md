@@ -277,17 +277,19 @@ cd shared && go test ./...        # 全部领域 DTO 与适配器测试，不需
 
 **端口（能力如何被切成接口）**
 
-- [shared/chat/chat.go](../../shared/chat/chat.go)：普通补全、工具调用、结构化
-  输出三个独立聊天端口；能力位 `SupportsTools()` / `SupportsParallelTools()`。
+- 聊天模型：在线侧直接面向 Eino 的 `model.BaseChatModel`（装配于
+  [chat-service/internal/app/chatmodel.go](../../chat-service/internal/app/chatmodel.go)），
+  批量侧是 [data-pipeline/internal/llm/llm.go](../../data-pipeline/internal/llm/llm.go)
+  的单方法 `Completer`——能力位是配置（`CHAT_SUPPORTS_TOOLS` 等），不是接口方法
+  （第 4 章版本注记）。
 - [shared/embedding/embedding.go](../../shared/embedding/embedding.go)：独立的
   embedding 端口；`EmbedDocuments` 与 `EmbedQuery` 同路径。
 
 **适配器（协议细节，第 4 章细讲）**
 
-- [shared/chat/openai/types.go](../../shared/chat/openai/types.go)：协议 wire 类型；
-  工具参数是「内容为 JSON 的字符串」（自定义序列化），流式时按片段拼接。
-- [shared/chat/openai/capabilities.go](../../shared/chat/openai/capabilities.go)：
-  能力表与默认上下文窗口 32,768。
+- [data-pipeline/internal/llm/client.go](../../data-pipeline/internal/llm/client.go)：
+  OpenAI 兼容协议的批量侧实现（在线侧协议细节由 eino-ext 处理）；协议里
+  工具参数是「内容为 JSON 的字符串」，流式时按片段拼接。
 - [shared/embedding/ollama/client.go](../../shared/embedding/ollama/client.go)：
   本地 Qwen 适配器；查询复用文档路径、返回向量逐个校验（空向量/维度/NaN）。
 
